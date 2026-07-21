@@ -86,4 +86,31 @@ final class LegacyConfigTests: XCTestCase {
         try RestoreLogStore.save(logs, to: url, bufferSize: 128)
         XCTAssertEqual(try RestoreLogStore.load(from: url, bufferSize: 128), logs)
     }
+
+    func testRestoreLogRejectsTrailingPartialRecord() throws {
+        var encoded = try RestoreLogCodec.write([[
+            .init(kind: .received, windowsFileTime: 1, payload: Data("ok".utf8)),
+        ]], bufferSize: 64)
+        // Extend the logical byte count by one without adding a complete record.
+        encoded[4] += 1
+        XCTAssertThrowsError(try RestoreLogCodec.read(encoded, bufferSize: 64)) { error in
+            guard case RestoreLogError.corruptRecord = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+        }
+    }
+
+    func testWindowsV331GoldenRestoreLogIsReadable() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Golden/windows-v331-Restore.dat")
+        let logs = try RestoreLogStore.load(from: url, bufferSize: 256 * 1024)
+
+        XCTAssertEqual(logs.count, 1)
+        XCTAssertFalse(logs[0].isEmpty)
+        let combinedPayload = logs[0].reduce(into: Data()) { $0.append($1.payload) }
+        XCTAssertNotNil(combinedPayload.range(of: Data("Golden prompt> ".utf8)))
+        XCTAssertNotNil(combinedPayload.range(of: Data("Golden room".utf8)))
+    }
 }

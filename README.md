@@ -20,12 +20,16 @@ download ZIP and SHA-256 checksum. Releases are intentionally not notarized.
 
 ## Current state
 
-The first vertical slice includes the module boundaries, immutable session
+Milestone 1, the executable parity specification and foundation, is complete.
+It includes
+the module boundaries, immutable session
 model, Telnet/GMCP and ANSI pipeline, lossless legacy configuration parser,
 atlas reader, aliases/triggers, Network.framework transport, an AppKit client
 window, a JavaScriptCore XPC service, and automated tests. The live-session
 fixture covers loopback TCP, ordered connection states, fragmented Telnet/ANSI
 input, negotiated NAWS and resize updates, text transmission, and remote close.
-This is an
-executable foundation rather than a parity release: remaining work and its
-required differential evidence are tracked in `Documentation/PARITY.md`.
+The universal direct-distribution build covers Apple silicon and Intel.
+
+This is an executable foundation rather than a parity release. Milestone status
+is recorded in `Documentation/MILESTONES.md`; remaining compatibility work and
+its required differential evidence are tracked in `Documentation/PARITY.md`.

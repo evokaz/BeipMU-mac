@@ -114,6 +114,7 @@ public enum RestoreLogCodec {
             records.append(.init(kind: kind, windowsFileTime: timestamp, payload: Data(logical[cursor..<(cursor + size)])))
             cursor += size
         }
+        guard cursor == logical.count else { throw RestoreLogError.corruptRecord }
         return records
     }
 

@@ -108,6 +108,26 @@ final class TelnetParserTests: XCTestCase {
         XCTAssertTrue(events.contains(.line(Data("beforeafter".utf8))))
     }
 
+    func testPromptIsRemovedFromFollowingLineAcrossEveryChunkBoundary() {
+        let bytes = Data("Name: ".utf8) + Data([255, 249]) + Data("Welcome\r\n".utf8)
+        for split in 0...bytes.count {
+            var parser = TelnetParser()
+            let events = parser.consume(Data(bytes.prefix(split))) + parser.consume(Data(bytes.dropFirst(split)))
+            XCTAssertTrue(events.contains(.prompt(Data("Name: ".utf8))), "split \(split)")
+            XCTAssertTrue(events.contains(.line(Data("Welcome".utf8))), "split \(split)")
+        }
+    }
+
+    func testEscapedIACInsideGMCPRemainsInSubnegotiation() {
+        var parser = TelnetParser()
+        let input = Data([255, 250, 201]) + Data("Core.Test abc".utf8) + Data([255, 255])
+            + Data("def".utf8) + Data([255, 240]) + Data("line\n".utf8)
+
+        let events = parser.consume(input)
+        XCTAssertTrue(events.contains(.gmcp(.init(package: "Core.Test", payload: "abc�def"))))
+        XCTAssertTrue(events.contains(.line(Data("line".utf8))))
+    }
+
     private func sentPayloads(_ events: [TelnetParser.Event]) -> [Data] {
         events.compactMap { event in
             guard case let .send(data) = event else { return nil }

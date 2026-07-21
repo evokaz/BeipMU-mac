@@ -1,0 +1,12 @@
+{
+  "actions": [
+    {"send": "Prompt> ", "chunks": [2, 3, 3]},
+    {"send_hex": "fff9", "chunks": [1, 1]},
+    {"delay_ms": 5},
+    {"send_hex": "fffaC9436f72652e50696e67207b7dfff0", "chunks": [3, 5, 9]},
+    {"send": "#$#mcp version: 2.1 to: 2.1\r\n"},
+    {"send": "<PUEBLO><A XCH_CMD='look'>Room</A>\r\n"},
+    {"send_hex": "fffaff00f0", "chunks": [1, 1, 1, 1, 1]},
+    {"disconnect": true}
+  ]
+}

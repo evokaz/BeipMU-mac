@@ -70,7 +70,10 @@ public struct TelnetParser: Sendable {
             case .iac:
                 switch byte {
                 case Code.ga, Code.eor:
-                    if !buffer.isEmpty { events.append(.prompt(buffer)) }
+                    if !buffer.isEmpty {
+                        events.append(.prompt(buffer))
+                        buffer.removeAll(keepingCapacity: true)
+                    }
                     state = .normal
                 case Code.dont: state = .dont
                 case Code.do: state = .do
@@ -131,8 +134,14 @@ public struct TelnetParser: Sendable {
                     let package = pieces.first.map(String.init) ?? ""
                     let payload = pieces.count > 1 ? String(pieces[1]) : ""
                     events.append(.gmcp(.init(package: package, payload: payload)))
+                    state = .normal
+                } else if byte == Code.iac {
+                    sideBuffer.append(Code.iac)
+                    state = .gmcp
+                } else {
+                    events.append(.diagnostic("Invalid IAC command in GMCP subnegotiation: \(byte)"))
+                    state = .gmcp
                 }
-                state = .normal
             case .charset:
                 if byte == 1 { sideBuffer.removeAll(keepingCapacity: true); state = .charsetList }
                 else { state = .waitForIAC }
@@ -147,8 +156,14 @@ public struct TelnetParser: Sendable {
                         events.append(.send(subnegotiation(Code.charset, Data([2]) + Data("UTF-8".utf8))))
                         events.append(.encoding(.utf8))
                     }
+                    state = .normal
+                } else if byte == Code.iac {
+                    sideBuffer.append(Code.iac)
+                    state = .charsetList
+                } else {
+                    events.append(.diagnostic("Invalid IAC command in CHARSET subnegotiation: \(byte)"))
+                    state = .charsetList
                 }
-                state = .normal
             case .terminalType:
                 if byte == 1 {
                     let response: String

@@ -37,11 +37,16 @@ let package = Package(
                 .linkedFramework("UserNotifications"),
             ]
         ),
+        .target(
+            name: "BeipTestSupport",
+            dependencies: ["BeipCore"],
+            path: "Tests/Support",
+            linkerSettings: [.linkedFramework("Network"), .linkedFramework("Security")]
+        ),
         .testTarget(name: "BeipCoreTests", dependencies: ["BeipCore"]),
-        .testTarget(name: "BeipProtocolsTests", dependencies: ["BeipProtocols", "BeipCore"]),
+        .testTarget(name: "BeipProtocolsTests", dependencies: ["BeipProtocols", "BeipCore", "BeipTestSupport"]),
         .testTarget(name: "BeipPersistenceTests", dependencies: ["BeipPersistence", "BeipCore"]),
         .testTarget(name: "BeipAutomationTests", dependencies: ["BeipAutomation", "BeipCore"]),
         .testTarget(name: "BeipScriptRuntimeTests", dependencies: ["BeipScriptRuntime"]),
     ]
 )
-

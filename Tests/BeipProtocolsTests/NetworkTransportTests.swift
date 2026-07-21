@@ -1,11 +1,88 @@
 @preconcurrency import Network
 import BeipCore
 import BeipProtocols
+import BeipTestSupport
 import Foundation
 import Security
 import XCTest
 
 final class NetworkTransportTests: XCTestCase {
+    func testProtocolMatrixScriptCanEmitAllMilestoneServerStimuli() async throws {
+        let fixtureURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/protocol-matrix.json")
+        let script = try MUServerScript.load(from: fixtureURL)
+        let server = try ScriptedMUServer()
+        let port = try await server.start()
+        defer { server.stop() }
+
+        let transport = NetworkTransport()
+        let stream = await transport.events()
+        let recorder = TransportEventRecorder()
+        let disconnected = expectation(description: "matrix script disconnected")
+        let eventTask = Task {
+            for await event in stream {
+                await recorder.append(event)
+                if case .state(.disconnected) = event { disconnected.fulfill() }
+            }
+        }
+        defer { eventTask.cancel() }
+
+        try await transport.connect(to: .init(server: .init(name: "matrix", host: "127.0.0.1", port: port)))
+        let scriptTask = Task { try await server.run(script) }
+        await fulfillment(of: [disconnected], timeout: 3)
+        try await scriptTask.value
+
+        let received = await recorder.receivedBytes()
+        XCTAssertTrue(received.starts(with: Data("Prompt> ".utf8) + Data([255, 249])))
+        XCTAssertTrue(received.range(of: Data([255, 250, 201]) + Data("Core.Ping {}".utf8) + Data([255, 240])) != nil)
+        XCTAssertTrue(received.range(of: Data("#$#mcp version: 2.1 to: 2.1\r\n".utf8)) != nil)
+        XCTAssertTrue(received.range(of: Data("<PUEBLO><A XCH_CMD='look'>Room</A>\r\n".utf8)) != nil)
+        XCTAssertEqual(received.suffix(5), Data([255, 250, 255, 0, 240]))
+    }
+
+    func testJSONScriptDrivesFragmentedSessionScenario() async throws {
+        let fixtureURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/basic-session.json")
+        let script = try MUServerScript.load(from: fixtureURL)
+        let server = try ScriptedMUServer()
+        let port = try await server.start()
+        defer { server.stop() }
+
+        let session = SessionActor(transport: NetworkTransport(), processor: MUDProtocolPipeline())
+        let stream = await session.events()
+        let welcome = expectation(description: "scripted welcome")
+        let room = expectation(description: "scripted ANSI room")
+        let disconnected = expectation(description: "scripted disconnect")
+        let recorder = SessionEventRecorder()
+        let eventTask = Task {
+            for await event in stream {
+                await recorder.append(event)
+                switch event {
+                case let .renderedLine(line) where line.text == "Welcome, traveler!": welcome.fulfill()
+                case let .renderedLine(line) where line.text == "A room full of green light.": room.fulfill()
+                case .state(.disconnected): disconnected.fulfill()
+                default: break
+                }
+            }
+        }
+        defer { eventTask.cancel() }
+
+        await session.connect(.init(server: .init(name: "script", host: "127.0.0.1", port: port)))
+        let scriptTask = Task { try await server.run(script) }
+        await fulfillment(of: [welcome], timeout: 3)
+        await session.send("look")
+        await fulfillment(of: [room, disconnected], timeout: 3)
+        try await scriptTask.value
+
+        let lines = await recorder.renderedLines()
+        XCTAssertEqual(lines.map(\.text), ["Welcome, traveler!", "A room full of green light."])
+        XCTAssertEqual(lines.last?.runs.last?.style.foreground, RGBColor(red: 0, green: 205, blue: 0))
+    }
+
     func testTLSWithCertificateVerificationEnabledRejectsSelfSignedServer() async throws {
         let server = try FakeTCPServer(tlsIdentity: try testTLSIdentity())
         let port = try await server.start()
@@ -151,6 +228,11 @@ private actor TransportEventRecorder {
 
     func append(_ event: TransportEvent) { recorded.append(event) }
     func events() -> [TransportEvent] { recorded }
+    func receivedBytes() -> Data {
+        recorded.reduce(into: Data()) { result, event in
+            if case let .received(data) = event { result.append(data) }
+        }
+    }
 }
 
 private actor SessionEventRecorder {
