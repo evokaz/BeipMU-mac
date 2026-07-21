@@ -1,0 +1,55 @@
+name: BeipMU
+options:
+  bundleIdPrefix: org.beipmu
+  deploymentTarget:
+    macOS: "14.0"
+  xcodeVersion: "26.0"
+packages:
+  BeipModules:
+    path: .
+settings:
+  base:
+    SWIFT_VERSION: 6.0
+    MACOSX_DEPLOYMENT_TARGET: 14.0
+    ARCHS: "arm64 x86_64"
+targets:
+  BeipMU:
+    type: application
+    platform: macOS
+    sources:
+      - path: App
+    dependencies:
+      - package: BeipModules
+        product: BeipUI
+      - target: BeipScriptService
+        embed: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.beipmu.BeipMU
+        PRODUCT_NAME: BeipMU
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: BeipMU
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.games
+        INFOPLIST_KEY_NSHighResolutionCapable: YES
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_HARDENED_RUNTIME: NO
+        SWIFT_STRICT_CONCURRENCY: complete
+    scheme:
+      testTargets: []
+  BeipScriptService:
+    type: xpc-service
+    platform: macOS
+    sources:
+      - path: ScriptService
+    dependencies:
+      - package: BeipModules
+        product: BeipScriptRuntime
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.beipmu.BeipMU.ScriptService
+        PRODUCT_NAME: BeipScriptService
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_HARDENED_RUNTIME: NO
+        SKIP_INSTALL: YES
+        SWIFT_STRICT_CONCURRENCY: complete

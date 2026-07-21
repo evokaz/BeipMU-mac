@@ -1,0 +1,9 @@
+[
+  {"send_hex": "fffb19", "chunks": [1, 2]},
+  {"expect_hex": "fffd19"},
+  {"send": "Welcome, traveler!\r\n"},
+  {"expect": "look\r\n"},
+  {"send": "\u001b[32mA room full of green light.\u001b[0m\r\n"},
+  {"disconnect": true}
+]
+

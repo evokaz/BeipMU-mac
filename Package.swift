@@ -1,0 +1,47 @@
+// swift-tools-version: 6.2
+import PackageDescription
+
+let package = Package(
+    name: "BeipMU",
+    platforms: [.macOS(.v14)],
+    products: [
+        .library(name: "BeipCore", targets: ["BeipCore"]),
+        .library(name: "BeipProtocols", targets: ["BeipProtocols"]),
+        .library(name: "BeipPersistence", targets: ["BeipPersistence"]),
+        .library(name: "BeipAutomation", targets: ["BeipAutomation"]),
+        .library(name: "BeipUI", targets: ["BeipUI"]),
+        .library(name: "BeipScriptRuntime", targets: ["BeipScriptRuntime"]),
+    ],
+    targets: [
+        .target(name: "BeipCore"),
+        .target(
+            name: "BeipProtocols",
+            dependencies: ["BeipCore"],
+            linkerSettings: [.linkedFramework("Network"), .linkedFramework("Security")]
+        ),
+        .target(name: "BeipPersistence", dependencies: ["BeipCore"]),
+        .target(name: "BeipAutomation", dependencies: ["BeipCore"]),
+        .target(
+            name: "BeipScriptRuntime",
+            dependencies: ["BeipCore"],
+            linkerSettings: [.linkedFramework("JavaScriptCore")]
+        ),
+        .target(
+            name: "BeipUI",
+            dependencies: ["BeipCore", "BeipProtocols", "BeipPersistence", "BeipAutomation", "BeipScriptRuntime"],
+            resources: [.process("Resources")],
+            linkerSettings: [
+                .linkedFramework("AppKit"),
+                .linkedFramework("AVFoundation"),
+                .linkedFramework("WebKit"),
+                .linkedFramework("UserNotifications"),
+            ]
+        ),
+        .testTarget(name: "BeipCoreTests", dependencies: ["BeipCore"]),
+        .testTarget(name: "BeipProtocolsTests", dependencies: ["BeipProtocols", "BeipCore"]),
+        .testTarget(name: "BeipPersistenceTests", dependencies: ["BeipPersistence", "BeipCore"]),
+        .testTarget(name: "BeipAutomationTests", dependencies: ["BeipAutomation", "BeipCore"]),
+        .testTarget(name: "BeipScriptRuntimeTests", dependencies: ["BeipScriptRuntime"]),
+    ]
+)
+

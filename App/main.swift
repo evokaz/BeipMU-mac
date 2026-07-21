@@ -1,0 +1,4 @@
+import BeipUI
+
+BeipApplication.run()
+
