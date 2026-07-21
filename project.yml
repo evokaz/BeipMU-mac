@@ -35,7 +35,8 @@ targets:
         ENABLE_HARDENED_RUNTIME: NO
         SWIFT_STRICT_CONCURRENCY: complete
     scheme:
-      testTargets: []
+      testTargets:
+        - BeipMUXCUITests
   BeipScriptService:
     type: xpc-service
     platform: macOS
@@ -52,4 +53,20 @@ targets:
         CODE_SIGN_STYLE: Automatic
         ENABLE_HARDENED_RUNTIME: NO
         SKIP_INSTALL: YES
+        SWIFT_STRICT_CONCURRENCY: complete
+  BeipMUXCUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - path: UITests
+        excludes:
+          - Baselines
+    dependencies:
+      - target: BeipMU
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.beipmu.BeipMU.UITests
+        PRODUCT_NAME: BeipMUXCUITests
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_STYLE: Automatic
         SWIFT_STRICT_CONCURRENCY: complete

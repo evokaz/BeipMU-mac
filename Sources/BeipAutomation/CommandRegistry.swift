@@ -1,6 +1,31 @@
 import BeipCore
 import Foundation
 
+public struct EditWindowOptions: Sendable, Equatable {
+    public var title: String
+    public var captureLineCount: Int
+    public var captureSkipCount: Int
+    public var checksSpelling: Bool
+    public var prepend: String
+    public var append: String
+
+    public init(
+        title: String = "",
+        captureLineCount: Int = 0,
+        captureSkipCount: Int = 0,
+        checksSpelling: Bool = true,
+        prepend: String = "",
+        append: String = ""
+    ) {
+        self.title = title
+        self.captureLineCount = captureLineCount
+        self.captureSkipCount = captureSkipCount
+        self.checksSpelling = checksSpelling
+        self.prepend = prepend
+        self.append = append
+    }
+}
+
 public enum CommandOutcome: Sendable, Equatable {
     case send(String)
     case display(String)
@@ -29,6 +54,8 @@ public enum CommandOutcome: Sendable, Equatable {
     case exit
     case newWindow
     case newTab
+    case newInput(prefix: String, unique: Bool)
+    case newEdit(EditWindowOptions)
     case silence
     case removeLast
     case wall(String)
@@ -129,6 +156,21 @@ public struct CommandRegistry: Sendable {
         case "exit": return .exit
         case "new": return .newWindow
         case "newtab": return .newTab
+        case "newinput":
+            var unique = false
+            for argument in arguments {
+                if argument.hasPrefix("/") {
+                    guard argument.caseInsensitiveCompare("/unique") == .orderedSame else {
+                        return .display("Unknown option: \(argument)")
+                    }
+                    unique = true
+                }
+            }
+            let prefix = arguments.last.flatMap { $0.hasPrefix("/") ? nil : $0 } ?? ""
+            return .newInput(prefix: prefix, unique: unique)
+        case "newedit":
+            do { return .newEdit(try parseEditWindowOptions(String(rawArguments))) }
+            catch { return .display("Command error: \(error.localizedDescription)") }
         case "silence": return .silence
         case "removelast": return .removeLast
         case "wall":
@@ -234,6 +276,116 @@ public struct CommandRegistry: Sendable {
         }
         if !current.isEmpty { words.append(current) }
         return words
+    }
+
+    private func parseEditWindowOptions(_ source: String) throws -> EditWindowOptions {
+        var options = EditWindowOptions()
+        var index = source.startIndex
+
+        func skipWhitespace() {
+            while index < source.endIndex, source[index].isWhitespace {
+                index = source.index(after: index)
+            }
+        }
+
+        while true {
+            skipWhitespace()
+            guard index < source.endIndex else { return options }
+
+            let nameStart = index
+            while index < source.endIndex, !source[index].isWhitespace, source[index] != "=" {
+                index = source.index(after: index)
+            }
+            let name = String(source[nameStart..<index]).lowercased()
+            guard !name.isEmpty else { throw EditOptionError("Missing attribute name") }
+            skipWhitespace()
+            guard index < source.endIndex, source[index] == "=" else {
+                throw EditOptionError("Missing '=' after attribute: \(name)")
+            }
+            index = source.index(after: index)
+            skipWhitespace()
+            guard index < source.endIndex else { throw EditOptionError("Missing value for attribute: \(name)") }
+
+            let rawValue: String
+            if source[index] == "\"" || source[index] == "'" {
+                let quote = source[index]
+                index = source.index(after: index)
+                let valueStart = index
+                while index < source.endIndex, source[index] != quote {
+                    index = source.index(after: index)
+                }
+                guard index < source.endIndex else { throw EditOptionError("Unterminated quoted value for attribute: \(name)") }
+                rawValue = String(source[valueStart..<index])
+                index = source.index(after: index)
+            } else {
+                let valueStart = index
+                while index < source.endIndex, !source[index].isWhitespace {
+                    index = source.index(after: index)
+                }
+                rawValue = String(source[valueStart..<index])
+            }
+            let value = try decodeXMLEntities(rawValue)
+
+            switch name {
+            case "title": options.title = value
+            case "capture":
+                guard let count = Int(value), count >= 0 else { throw EditOptionError("Capture attribute is not a number") }
+                options.captureLineCount = count
+            case "capture_skip":
+                guard let count = Int(value), count >= 0 else { throw EditOptionError("Capture_skip attribute is not a number") }
+                options.captureSkipCount = count
+            case "spellcheck": options.checksSpelling = try parseFlag(value)
+            case "prepend": options.prepend = value
+            case "append": options.append = value
+            default: throw EditOptionError("Unknown attribute: \(name)")
+            }
+        }
+    }
+
+    private func parseFlag(_ value: String) throws -> Bool {
+        switch value.lowercased() {
+        case "t", "true", "1", "yes", "y", "on": return true
+        case "f", "false", "0", "no", "n", "off": return false
+        default: throw EditOptionError("Invalid flag: \(value)")
+        }
+    }
+
+    private func decodeXMLEntities(_ source: String) throws -> String {
+        var result = ""
+        var index = source.startIndex
+        while index < source.endIndex {
+            guard source[index] == "&" else {
+                result.append(source[index])
+                index = source.index(after: index)
+                continue
+            }
+            guard let semicolon = source[index...].firstIndex(of: ";") else {
+                throw EditOptionError("Unterminated XML entity")
+            }
+            let entity = String(source[source.index(after: index)..<semicolon])
+            switch entity {
+            case "amp": result.append("&")
+            case "lt": result.append("<")
+            case "gt": result.append(">")
+            case "quot": result.append("\"")
+            case "apos": result.append("'")
+            default:
+                let number: UInt32?
+                if entity.hasPrefix("#x") || entity.hasPrefix("#X") {
+                    number = UInt32(entity.dropFirst(2), radix: 16)
+                } else if entity.hasPrefix("#") {
+                    number = UInt32(entity.dropFirst())
+                } else {
+                    number = nil
+                }
+                guard let number, let scalar = UnicodeScalar(number) else {
+                    throw EditOptionError("Unknown XML entity: &\(entity);")
+                }
+                result.unicodeScalars.append(scalar)
+            }
+            index = source.index(after: semicolon)
+        }
+        return result
     }
 
     private func gmcpMessage(from arguments: Substring) -> GMCPMessage? {
@@ -372,4 +524,10 @@ public struct CommandRegistry: Sendable {
     """
 
     private static let unrecognizedCommandMessage = "Unrecognized Command, use // to send text directly to the mu*, /help for a list of commands, or set 'Send unrecognized commands' in settings/input window"
+}
+
+private struct EditOptionError: LocalizedError {
+    let message: String
+    init(_ message: String) { self.message = message }
+    var errorDescription: String? { message }
 }

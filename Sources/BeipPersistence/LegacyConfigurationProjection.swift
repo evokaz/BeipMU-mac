@@ -153,6 +153,7 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
         }
         var result = document
         try migratePortableLegacyValues(in: &result)
+        try removeStaleProfileEntries(from: &result)
         try result.upsertValue(String(targetVersion), at: ["Version"], quoted: false)
         try result.upsertValue(String(settings.connectTimeoutMilliseconds), at: ["Connections", "ConnectTimeout"], quoted: false)
         try result.upsertValue(String(settings.connectRetryCount), at: ["Connections", "ConnectRetry"], quoted: false)
@@ -202,6 +203,52 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
             }
         }
         return result
+    }
+
+    /// Reconciles deletions before portable fields are upserted. This is kept
+    /// separate from projection so unknown properties on retained entries stay
+    /// exactly where they were in the original syntax tree.
+    private func removeStaleProfileEntries(from document: inout LegacyConfigurationDocument) throws {
+        let connections = document.firstBlock(named: "Connections")?.children ?? []
+        let shortcutNodes = connections.firstBlock(named: "Shortcuts")?.children ?? []
+        var desiredServers: [String: Server] = [:]
+        for server in servers { desiredServers[server.profile.name.lowercased()] = server }
+
+        for (serverName, serverNodes) in shortcutNodes.namedBlocks() {
+            guard let desiredServer = desiredServers[serverName.lowercased()] else {
+                try document.removeCollectionEntry(
+                    named: serverName,
+                    at: ["Connections", "Shortcuts"]
+                )
+                continue
+            }
+
+            let characterNodes = serverNodes.firstBlock(named: "Characters")?.children ?? []
+            var desiredCharacters: [String: CharacterProfile] = [:]
+            for character in desiredServer.characters { desiredCharacters[character.name.lowercased()] = character }
+            for (characterName, properties) in characterNodes.namedBlocks() {
+                guard let desiredCharacter = desiredCharacters[characterName.lowercased()] else {
+                    try document.removeCollectionEntry(
+                        named: characterName,
+                        at: ["Connections", "Shortcuts", serverName, "Characters"]
+                    )
+                    continue
+                }
+
+                let puppetNodes = properties.firstBlock(named: "Puppets")?.children ?? []
+                let desiredPuppets = Set(desiredCharacter.puppets.map { $0.name.lowercased() })
+                for (puppetName, _) in puppetNodes.namedBlocks()
+                    where !desiredPuppets.contains(puppetName.lowercased()) {
+                    try document.removeCollectionEntry(
+                        named: puppetName,
+                        at: [
+                            "Connections", "Shortcuts", serverName,
+                            "Characters", characterName, "Puppets",
+                        ]
+                    )
+                }
+            }
+        }
     }
 
     /// Applies the connection-related version gates from Config.cpp before
@@ -276,7 +323,7 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
     private static func variables(_ nodes: [LegacyConfigurationDocument.Node]) -> [String: String] {
         guard let variableNodes = nodes.firstBlock(named: "Variables")?.children else { return [:] }
         return Dictionary(uniqueKeysWithValues: variableNodes.compactMap { node in
-            guard case let .assignment(name, value, _) = node else { return nil }
+            guard case let .assignment(name, value, _, _) = node else { return nil }
             return (name, LegacyConfigurationDocument.decoded(value))
         })
     }
@@ -311,7 +358,7 @@ private extension LegacyConfigurationDocument {
 private extension Array where Element == LegacyConfigurationDocument.Node {
     func value(_ name: String) -> String? {
         for node in self {
-            if case let .assignment(candidate, value, _) = node,
+            if case let .assignment(candidate, value, _, _) = node,
                candidate.caseInsensitiveCompare(name) == .orderedSame {
                 return LegacyConfigurationDocument.decoded(value)
             }
@@ -330,7 +377,7 @@ private extension Array where Element == LegacyConfigurationDocument.Node {
 
     func firstBlock(named name: String) -> (name: String, children: [Element])? {
         for node in self {
-            if case let .block(candidate?, children, _) = node,
+            if case let .block(candidate?, children, _, _) = node,
                candidate.caseInsensitiveCompare(name) == .orderedSame {
                 return (candidate, children)
             }
@@ -344,17 +391,22 @@ private extension Array where Element == LegacyConfigurationDocument.Node {
         var groups: [String: [Element]] = [:]
         for node in self {
             switch node {
-            case let .block(name?, children, _):
+            case let .block(name?, children, _, _):
                 let key = name.lowercased()
                 if groups[key] == nil { order.append(key); canonicalNames[key] = name }
                 groups[key, default: []].append(contentsOf: children)
-            case let .assignment(name, value, range):
+            case let .assignment(name, value, range, sourceRange):
                 guard let dot = name.firstIndex(of: ".") else { continue }
                 let owner = String(name[..<dot])
                 let field = String(name[name.index(after: dot)...])
                 let key = owner.lowercased()
                 if groups[key] == nil { order.append(key); canonicalNames[key] = owner }
-                groups[key, default: []].append(.assignment(name: field, value: value, valueRange: range))
+                groups[key, default: []].append(.assignment(
+                    name: field,
+                    value: value,
+                    valueRange: range,
+                    sourceRange: sourceRange
+                ))
             default: break
             }
         }

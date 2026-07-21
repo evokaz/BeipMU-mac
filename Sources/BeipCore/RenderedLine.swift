@@ -77,6 +77,8 @@ public struct ParagraphStyle: Sendable, Hashable, Codable {
     public enum Alignment: String, Sendable, Hashable, Codable { case left, center, right }
     public var alignment: Alignment
     public var leftIndent: Double
+    /// Additional indentation applied to wrapped continuation lines.
+    public var wrappedIndent: Double
     public var rightIndent: Double
     public var topPadding: Double
     public var bottomPadding: Double
@@ -85,6 +87,7 @@ public struct ParagraphStyle: Sendable, Hashable, Codable {
     public init(
         alignment: Alignment = .left,
         leftIndent: Double = 0,
+        wrappedIndent: Double = 0,
         rightIndent: Double = 0,
         topPadding: Double = 0,
         bottomPadding: Double = 0,
@@ -92,10 +95,26 @@ public struct ParagraphStyle: Sendable, Hashable, Codable {
     ) {
         self.alignment = alignment
         self.leftIndent = leftIndent
+        self.wrappedIndent = wrappedIndent
         self.rightIndent = rightIndent
         self.topPadding = topPadding
         self.bottomPadding = bottomPadding
         self.background = background
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case alignment, leftIndent, wrappedIndent, rightIndent, topPadding, bottomPadding, background
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        alignment = try values.decodeIfPresent(Alignment.self, forKey: .alignment) ?? .left
+        leftIndent = try values.decodeIfPresent(Double.self, forKey: .leftIndent) ?? 0
+        wrappedIndent = try values.decodeIfPresent(Double.self, forKey: .wrappedIndent) ?? 0
+        rightIndent = try values.decodeIfPresent(Double.self, forKey: .rightIndent) ?? 0
+        topPadding = try values.decodeIfPresent(Double.self, forKey: .topPadding) ?? 0
+        bottomPadding = try values.decodeIfPresent(Double.self, forKey: .bottomPadding) ?? 0
+        background = try values.decodeIfPresent(RGBColor.self, forKey: .background)
     }
 }
 
@@ -145,4 +164,3 @@ public struct RenderedLine: Identifiable, Sendable, Hashable, Codable {
         self.source = source
     }
 }
-

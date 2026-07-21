@@ -69,6 +69,40 @@ final class LegacyConfigTests: XCTestCase {
         XCTAssertTrue(document.serialized().contains("Unknown.Future.Value=\"preserve me\""))
     }
 
+    func testCollectionEntryRemovalSupportsBlocksAndDottedShorthand() throws {
+        let source = """
+        Connections {
+          Shortcuts {
+            Keep { Host="keep.example:1" Future="untouched" }
+            Remove {
+              Host="remove.example:2"
+            }
+          }
+        }
+        Characters {
+          Guest.Connect="connect guest"
+          Guest.Future="legacy extension"
+          Keep.Connect="connect keep"
+        }
+        Unknown="preserve me"
+        """
+        var document = try LegacyConfigurationDocument(source: source)
+
+        XCTAssertTrue(try document.removeCollectionEntry(
+            named: "Remove",
+            at: ["Connections", "Shortcuts"]
+        ))
+        XCTAssertTrue(try document.removeCollectionEntry(named: "Guest", at: ["Characters"]))
+        XCTAssertFalse(try document.removeCollectionEntry(named: "Missing", at: ["Characters"]))
+
+        let serialized = document.serialized()
+        XCTAssertFalse(serialized.contains("remove.example"))
+        XCTAssertFalse(serialized.contains("Guest."))
+        XCTAssertTrue(serialized.contains("Keep { Host=\"keep.example:1\" Future=\"untouched\" }"))
+        XCTAssertTrue(serialized.contains("Keep.Connect=\"connect keep\""))
+        XCTAssertTrue(serialized.contains("Unknown=\"preserve me\""))
+    }
+
     func testWindowsV331GoldenConfigurationParsesLosslesslyAndProjectsProfiles() throws {
         let url = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -255,6 +289,125 @@ final class LegacyConfigTests: XCTestCase {
         let reparsed = try LegacyConfigurationProjection(document: migrated)
         XCTAssertEqual(reparsed.servers[0].characters.count, 1)
         XCTAssertEqual(reparsed.servers[0].characters[0].password, "portable secret")
+    }
+
+    func testProjectionDeletionRemovesOnlySelectedProfilesAndPreservesExtensions() throws {
+        let source = """
+        Version=331
+        Connections {
+          Shortcuts {
+            Keep {
+              Host="keep.example:1"
+              FutureServerField="preserve"
+              Characters {
+                KeepChar {
+                  Connect="keep"
+                  FutureCharacterField="preserve"
+                  Puppets {
+                    KeepPuppet { ReceivePrefix="keep> " FuturePuppetField="preserve" }
+                    RemovePuppet { ReceivePrefix="remove> " }
+                  }
+                }
+                RemoveChar.Connect="remove"
+                RemoveChar.Future="remove with profile"
+              }
+            }
+            Remove { Host="remove.example:2" }
+          }
+        }
+        WindowsOnly="untouched"
+        """
+        let document = try LegacyConfigurationDocument(source: source)
+        var projection = try LegacyConfigurationProjection(document: document)
+        projection.servers.removeAll { $0.profile.name == "Remove" }
+        projection.servers[0].characters.removeAll { $0.name == "RemoveChar" }
+        projection.servers[0].characters[0].puppets.removeAll { $0.name == "RemovePuppet" }
+
+        let saved = try projection.applying(to: document)
+        let serialized = saved.serialized()
+        XCTAssertFalse(serialized.contains("remove.example"))
+        XCTAssertFalse(serialized.contains("RemoveChar"))
+        XCTAssertFalse(serialized.contains("RemovePuppet"))
+        XCTAssertTrue(serialized.contains("FutureServerField=\"preserve\""))
+        XCTAssertTrue(serialized.contains("FutureCharacterField=\"preserve\""))
+        XCTAssertTrue(serialized.contains("FuturePuppetField=\"preserve\""))
+        XCTAssertTrue(serialized.contains("WindowsOnly=\"untouched\""))
+    }
+
+    func testEditableConfigurationWorkspaceAddsRenamesAndRemovesProfiles() throws {
+        let source = """
+        Version=331
+        Connections {
+          Shortcuts {
+            Existing {
+              Host="existing.example:7777"
+              WindowsOnly="preserve"
+              Characters { Hero { Connect="connect hero" } }
+            }
+          }
+        }
+        """
+        var workspace = try LegacyConfigurationWorkspace(
+            document: LegacyConfigurationDocument(source: source)
+        )
+        let existingID = try XCTUnwrap(workspace.servers.first?.profile.id)
+        let newID = workspace.addServer(named: "Existing")
+        XCTAssertEqual(workspace.servers.map(\.profile.name), ["Existing", "Existing 2"])
+
+        try workspace.updateServer(id: newID) {
+            $0.profile.name = "New World"
+            $0.profile.host = "new.example"
+            $0.profile.port = 4321
+            $0.profile.usesTLS = true
+        }
+        let characterID = try workspace.addCharacter(toServerID: newID, named: "Player")
+        try workspace.updateCharacter(id: characterID, inServerID: newID) {
+            $0.connectText = "connect player"
+            $0.autoConnect = true
+        }
+        let puppetID = try workspace.addPuppet(
+            toCharacterID: characterID,
+            inServerID: newID,
+            named: "Helper"
+        )
+        try workspace.updatePuppet(
+            id: puppetID,
+            inCharacterID: characterID,
+            serverID: newID
+        ) {
+            $0.receivePrefix = "Helper> "
+            $0.sendPrefix = "tell Helper "
+        }
+        try workspace.removeServer(id: existingID)
+
+        XCTAssertTrue(workspace.isDirty)
+        let rendered = try workspace.renderedDocument()
+        let reparsed = try LegacyConfigurationProjection(document: rendered)
+        XCTAssertEqual(reparsed.servers.map(\.profile.name), ["New World"])
+        XCTAssertEqual(reparsed.servers[0].profile.host, "new.example")
+        XCTAssertEqual(reparsed.servers[0].characters[0].connectText, "connect player")
+        XCTAssertEqual(reparsed.servers[0].characters[0].puppets[0].sendPrefix, "tell Helper ")
+        XCTAssertFalse(rendered.serialized().contains("WindowsOnly=\"preserve\""))
+
+        let destination = URL(fileURLWithPath: "/tmp/Config.txt")
+        workspace.acceptSavedDocument(rendered, at: destination)
+        XCTAssertFalse(workspace.isDirty)
+        XCTAssertEqual(workspace.sourceURL, destination)
+    }
+
+    func testEditableConfigurationWorkspaceRejectsDuplicateSiblingNames() throws {
+        var workspace = try LegacyConfigurationWorkspace.empty()
+        let first = workspace.addServer(named: "Alpha")
+        let second = workspace.addServer(named: "Beta")
+
+        XCTAssertThrowsError(try workspace.updateServer(id: second) { $0.profile.name = "alpha" }) {
+            XCTAssertEqual(
+                $0 as? LegacyConfigurationWorkspace.WorkspaceError,
+                .duplicateName("alpha")
+            )
+        }
+        XCTAssertEqual(workspace.servers.first { $0.profile.id == first }?.profile.name, "Alpha")
+        XCTAssertEqual(workspace.servers.first { $0.profile.id == second }?.profile.name, "Beta")
     }
 
     func testStartupConnectionsUseAutoConnectCharactersAndGlobalPolicy() throws {

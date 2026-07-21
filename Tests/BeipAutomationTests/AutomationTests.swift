@@ -103,6 +103,37 @@ final class AutomationTests: XCTestCase {
         XCTAssertEqual(registry.parse("/stoplogs", variables: [:]), .stopLogs)
     }
 
+    func testSecondaryInputAndEditWindowCommandsHaveTypedOutcomes() {
+        let registry = CommandRegistry()
+        XCTAssertEqual(
+            registry.parse(#"/newinput /unique "say ""#, variables: [:]),
+            .newInput(prefix: "say ", unique: true)
+        )
+        XCTAssertEqual(
+            registry.parse("/newinput /unsupported", variables: [:]),
+            .display("Unknown option: /unsupported")
+        )
+        XCTAssertEqual(
+            registry.parse("/newinput say /unique", variables: [:]),
+            .newInput(prefix: "", unique: true)
+        )
+        XCTAssertEqual(
+            registry.parse(#"/newedit title='Description' capture='5' capture_skip='2' spellcheck='f' prepend='@desc me=&#10;' append='&#10;.'"#, variables: [:]),
+            .newEdit(.init(
+                title: "Description",
+                captureLineCount: 5,
+                captureSkipCount: 2,
+                checksSpelling: false,
+                prepend: "@desc me=\n",
+                append: "\n."
+            ))
+        )
+        XCTAssertEqual(
+            registry.parse("/newedit capture='many'", variables: [:]),
+            .display("Command error: Capture attribute is not a number")
+        )
+    }
+
     func testDelayCommandGrammarAndScheduler() async throws {
         let registry = CommandRegistry()
         XCTAssertEqual(registry.parse("/delay list", variables: [:]), .delay(.list))

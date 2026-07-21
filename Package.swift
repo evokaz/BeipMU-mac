@@ -11,6 +11,7 @@ let package = Package(
         .library(name: "BeipAutomation", targets: ["BeipAutomation"]),
         .library(name: "BeipUI", targets: ["BeipUI"]),
         .library(name: "BeipScriptRuntime", targets: ["BeipScriptRuntime"]),
+        .executable(name: "BeipWorkspaceBenchmark", targets: ["BeipWorkspaceBenchmark"]),
     ],
     targets: [
         .target(name: "BeipCore"),
@@ -43,10 +44,16 @@ let package = Package(
             path: "Tests/Support",
             linkerSettings: [.linkedFramework("Network"), .linkedFramework("Security")]
         ),
+        .executableTarget(
+            name: "BeipWorkspaceBenchmark",
+            dependencies: ["BeipCore"],
+            path: "Benchmarks/WorkspaceBenchmark"
+        ),
         .testTarget(name: "BeipCoreTests", dependencies: ["BeipCore"]),
         .testTarget(name: "BeipProtocolsTests", dependencies: ["BeipProtocols", "BeipCore", "BeipTestSupport"]),
         .testTarget(name: "BeipPersistenceTests", dependencies: ["BeipPersistence", "BeipCore"]),
         .testTarget(name: "BeipAutomationTests", dependencies: ["BeipAutomation", "BeipCore"]),
         .testTarget(name: "BeipScriptRuntimeTests", dependencies: ["BeipScriptRuntime"]),
+        .testTarget(name: "BeipUITests", dependencies: ["BeipUI"]),
     ]
 )

@@ -1,0 +1,207 @@
+import AppKit
+import XCTest
+
+@MainActor
+final class BeipMUXCUITests: XCTestCase {
+    func testMainWorkspaceAccessibilityKeyboardAndBaseline() throws {
+        let app = launchApplication()
+        defer { app.terminate() }
+        let window = app.windows["mainWindow"]
+        let output = window.descendants(matching: .textView)["MU star output"]
+        let input = window.descendants(matching: .textView)["Command input"]
+        XCTAssertTrue(output.exists)
+        XCTAssertTrue(input.exists)
+        XCTAssertTrue((output.value as? String)?.contains("Welcome to BeipMU") == true)
+        try assertScreenshotBaseline(named: "workspace-main", element: window)
+
+        input.click()
+        input.typeText("look")
+        input.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(waitUntil { (output.value as? String)?.contains("Not connected.") == true })
+        try assertScreenshotBaseline(named: "workspace-command-error", element: window)
+        input.typeKey(.upArrow, modifierFlags: [])
+        XCTAssertEqual(input.value as? String, "look")
+    }
+
+    func testSplitSidebarsPersistsAcrossRelaunchAndMatchesBaseline() throws {
+        let app = launchApplication()
+        defer { app.terminate() }
+        chooseWorkspaceMenuItem("Split Sidebars", in: app)
+        let window = app.windows["mainWindow"]
+        XCTAssertTrue(window.textViews["Character notes"].waitForExistence(timeout: 3))
+        XCTAssertTrue(window.textViews["Session diagnostics"].exists)
+        XCTAssertEqual(window.splitGroups.matching(identifier: "workspaceSplit.").count, 1)
+        XCTAssertEqual(window.splitGroups.matching(identifier: "workspaceSplit.second").count, 1)
+        try assertScreenshotBaseline(named: "workspace-split-sidebars", element: window)
+
+        app.terminate()
+        app.launchEnvironment["BEIPMU_UI_TEST_RESET"] = "0"
+        app.launch()
+        let restored = app.windows["mainWindow"]
+        XCTAssertTrue(restored.textViews["Character notes"].waitForExistence(timeout: 5))
+        XCTAssertTrue(restored.textViews["Session diagnostics"].exists)
+        XCTAssertEqual(restored.splitGroups.matching(identifier: "workspaceSplit.second").count, 1)
+    }
+
+    func testWindowsGoldenSessionSemanticsAndBaseline() throws {
+        let app = launchApplication(environment: ["BEIPMU_UI_GOLDEN_SESSION": "1"])
+        defer { app.terminate() }
+        let window = app.windows["mainWindow"]
+        let output = window.descendants(matching: .textView)["MU star output"]
+        XCTAssertTrue((output.value as? String)?.contains("Golden prompt> Golden room") == true)
+        XCTAssertTrue((output.value as? String)?.contains("Remote connection closed.") == true)
+        XCTAssertEqual(window.staticTexts["connectionState"].value as? String, "Disconnected")
+        XCTAssertEqual(window.buttons["sessionTaskButton"].title, "Untitled")
+        try assertScreenshotBaseline(named: "workspace-golden-session", element: window)
+    }
+
+    func testThemeDialogAccessibilityAndBaseline() throws {
+        let app = launchApplication()
+        defer { app.terminate() }
+        app.menuBars.menuBarItems["BeipMU"].click()
+        app.menuItems["Theme…"].click()
+        let sheet = app.sheets.firstMatch
+        XCTAssertTrue(sheet.waitForExistence(timeout: 3))
+        XCTAssertTrue(sheet.popUpButtons["themeMode"].exists)
+        XCTAssertEqual(sheet.colorWells.matching(identifier: "themeForeground").count, 1)
+        XCTAssertEqual(sheet.colorWells.matching(identifier: "themeBackground").count, 1)
+        XCTAssertEqual(sheet.colorWells.matching(identifier: "themeAccent").count, 1)
+        try assertScreenshotBaseline(named: "theme-dialog", element: sheet)
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(sheet.waitForNonExistence(timeout: 3))
+    }
+
+    func testStatisticsPanelAccessibilityAndBaseline() throws {
+        let app = launchApplication()
+        defer { app.terminate() }
+        app.menuBars.menuBarItems["Connection"].click()
+        app.menuItems["Statistics…"].click()
+        let panel = app.windows["statisticsWindow"]
+        XCTAssertTrue(panel.waitForExistence(timeout: 3))
+        XCTAssertEqual(panel.staticTexts["statisticsServer"].value as? String, "None")
+        XCTAssertEqual(panel.staticTexts["statisticsState"].value as? String, "Disconnected")
+        XCTAssertEqual(panel.staticTexts["statisticsConnections"].value as? String, "0")
+        XCTAssertEqual(panel.staticTexts["statisticsBytesSent"].value as? String, "0 bytes")
+        XCTAssertEqual(panel.staticTexts["statisticsBytesReceived"].value as? String, "0 bytes")
+        XCTAssertEqual(panel.staticTexts["statisticsOnlineTime"].value as? String, "00:00:00")
+        try assertScreenshotBaseline(named: "statistics-panel", element: panel)
+        app.typeKey("w", modifierFlags: .command)
+        XCTAssertTrue(panel.waitForNonExistence(timeout: 3))
+    }
+
+    private func launchApplication(environment: [String: String] = [:]) -> XCUIApplication {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-ApplePersistenceIgnoreState", "YES"]
+        app.launchEnvironment["BEIPMU_UI_TESTING"] = "1"
+        app.launchEnvironment["BEIPMU_UI_TEST_RESET"] = "1"
+        for (key, value) in environment { app.launchEnvironment[key] = value }
+        app.launch()
+        XCTAssertTrue(app.windows["mainWindow"].waitForExistence(timeout: 5))
+        return app
+    }
+
+    private func chooseWorkspaceMenuItem(_ title: String, in app: XCUIApplication) {
+        app.menuBars.menuBarItems["View"].click()
+        let parent = app.menuItems["Workspace Panes"]
+        XCTAssertTrue(parent.waitForExistence(timeout: 2))
+        parent.hover()
+        let item = app.menuItems[title]
+        XCTAssertTrue(item.waitForExistence(timeout: 2))
+        item.click()
+    }
+
+    private func assertScreenshotBaseline(
+        named name: String,
+        element: XCUIElement,
+        tolerance: Double = 0.08,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
+        let screenshot = element.screenshot()
+        let attachment = XCTAttachment(screenshot: screenshot)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+
+        let sourceDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let directory = sourceDirectory.appendingPathComponent("Baselines", isDirectory: true)
+        let baselineURL = directory.appendingPathComponent(name).appendingPathExtension("png")
+        let recordMarker = sourceDirectory.appendingPathComponent(".record-baselines")
+        if FileManager.default.fileExists(atPath: recordMarker.path) {
+            return
+        }
+
+        guard let baseline = try? Data(contentsOf: baselineURL) else {
+            XCTFail("Missing baseline \(baselineURL.path). Record with BEIPMU_RECORD_BASELINES=1 ./Scripts/test-ui.sh.", file: file, line: line)
+            return
+        }
+        let difference = try normalizedImageDifference(baseline, screenshot.pngRepresentation)
+        XCTAssertLessThanOrEqual(
+            difference,
+            tolerance,
+            "Screenshot difference \(difference) exceeded \(tolerance) for \(name)",
+            file: file,
+            line: line
+        )
+    }
+
+    private func normalizedImageDifference(_ lhs: Data, _ rhs: Data) throws -> Double {
+        let left = try normalizedRGBA(lhs)
+        let right = try normalizedRGBA(rhs)
+        precondition(left.count == right.count)
+        let total = zip(left, right).reduce(0.0) { partial, pair in
+            partial + abs(Double(pair.0) - Double(pair.1)) / 255
+        }
+        return total / Double(left.count)
+    }
+
+    private func normalizedRGBA(_ data: Data) throws -> [UInt8] {
+        guard let image = NSImage(data: data),
+              let representation = NSBitmapImageRep(
+                bitmapDataPlanes: nil,
+                pixelsWide: 160,
+                pixelsHigh: 120,
+                bitsPerSample: 8,
+                samplesPerPixel: 4,
+                hasAlpha: true,
+                isPlanar: false,
+                colorSpaceName: .deviceRGB,
+                bytesPerRow: 160 * 4,
+                bitsPerPixel: 32
+              ) else { throw BaselineError.invalidImage }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: representation)
+        image.draw(
+            in: NSRect(x: 0, y: 0, width: 160, height: 120),
+            from: .zero,
+            operation: .copy,
+            fraction: 1
+        )
+        NSGraphicsContext.restoreGraphicsState()
+        guard let bytes = representation.bitmapData else { throw BaselineError.invalidImage }
+        return Array(UnsafeBufferPointer(start: bytes, count: 160 * 120 * 4))
+    }
+
+    private func waitUntil(timeout: TimeInterval = 3, condition: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            if condition() { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        } while Date() < deadline
+        return condition()
+    }
+}
+
+private enum BaselineError: Error {
+    case invalidImage
+}
+
+@MainActor
+private extension XCUIElement {
+    func waitForNonExistence(timeout: TimeInterval) -> Bool {
+        let predicate = NSPredicate(format: "exists == false")
+        let expectation = XCTNSPredicateExpectation(predicate: predicate, object: self)
+        return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+    }
+}

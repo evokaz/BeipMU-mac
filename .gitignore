@@ -1,9 +1,12 @@
 .DS_Store
+.vscode/
 .build/
 DerivedData/
+DerivedData-*/
 build/
 dist/
 ReferenceBinaries/
 *.xcuserstate
 xcuserdata/
 __pycache__/
+UITests/.record-baselines

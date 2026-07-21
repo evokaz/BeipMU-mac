@@ -4,8 +4,18 @@ import Foundation
 
 public struct LegacyConfigurationDocument: Sendable {
     public indirect enum Node: Sendable {
-        case assignment(name: String, value: String, valueRange: Range<String.Index>)
-        case block(name: String?, children: [Node], insertionIndex: String.Index)
+        case assignment(
+            name: String,
+            value: String,
+            valueRange: Range<String.Index>,
+            sourceRange: Range<String.Index>
+        )
+        case block(
+            name: String?,
+            children: [Node],
+            insertionIndex: String.Index,
+            sourceRange: Range<String.Index>
+        )
         case bare(String)
     }
 
@@ -25,7 +35,7 @@ public struct LegacyConfigurationDocument: Sendable {
             guard let children = descend(Array(parents.prefix(split)), nodes: nodes) else { continue }
             let candidate = (Array(parents.dropFirst(split)) + [final]).joined(separator: ".")
             for node in children {
-                if case let .assignment(name, value, _) = node,
+                if case let .assignment(name, value, _, _) = node,
                    name.caseInsensitiveCompare(candidate) == .orderedSame {
                     return Self.unquote(value)
                 }
@@ -69,12 +79,41 @@ public struct LegacyConfigurationDocument: Sendable {
         nodes = try parser.parse()
     }
 
+    /// Removes one named entry from a legacy collection. Both full block form
+    /// (`World { ... }`) and dotted shorthand (`World.Host=...`) are handled.
+    /// Text outside the matching entry remains byte-for-byte unchanged.
+    @discardableResult
+    public mutating func removeCollectionEntry(named name: String, at path: [String]) throws -> Bool {
+        guard let children = descend(path, nodes: nodes) else { return false }
+        var ranges: [Range<String.Index>] = []
+        for node in children {
+            switch node {
+            case let .block(candidate?, _, _, range)
+                where candidate.caseInsensitiveCompare(name) == .orderedSame:
+                ranges.append(range)
+            case let .assignment(candidate, _, _, range):
+                guard let dot = candidate.firstIndex(of: ".") else { continue }
+                let owner = String(candidate[..<dot])
+                if owner.caseInsensitiveCompare(name) == .orderedSame { ranges.append(range) }
+            default:
+                break
+            }
+        }
+        guard !ranges.isEmpty else { return false }
+        for range in ranges.map(expandedRemovalRange).sorted(by: { $0.lowerBound > $1.lowerBound }) {
+            source.removeSubrange(range)
+        }
+        var parser = LegacyParser(source: source)
+        nodes = try parser.parse()
+        return true
+    }
+
     public func serialized() -> String { source }
 
     private func descend(_ path: [String], nodes: [Node]) -> [Node]? {
         guard let first = path.first else { return nodes }
         for node in nodes {
-            if case let .block(name?, children, _) = node,
+            if case let .block(name?, children, _, _) = node,
                name.caseInsensitiveCompare(first) == .orderedSame {
                 return descend(Array(path.dropFirst()), nodes: children)
             }
@@ -85,7 +124,7 @@ public struct LegacyConfigurationDocument: Sendable {
     private func blockInsertionIndex(at path: [String], nodes: [Node]) -> String.Index? {
         guard let first = path.first else { return nil }
         for node in nodes {
-            if case let .block(name?, children, insertionIndex) = node,
+            if case let .block(name?, children, insertionIndex, _) = node,
                name.caseInsensitiveCompare(first) == .orderedSame {
                 return path.count == 1
                     ? insertionIndex
@@ -102,7 +141,7 @@ public struct LegacyConfigurationDocument: Sendable {
             guard let children = descend(Array(parents.prefix(split)), nodes: nodes) else { continue }
             let candidate = (Array(parents.dropFirst(split)) + [final]).joined(separator: ".")
             for node in children {
-                if case let .assignment(name, _, range) = node,
+                if case let .assignment(name, _, range, _) = node,
                    name.caseInsensitiveCompare(candidate) == .orderedSame {
                     return range
                 }
@@ -114,10 +153,11 @@ public struct LegacyConfigurationDocument: Sendable {
     private mutating func ensureBlocks(at path: [String]) throws {
         for depth in 1...path.count where blockInsertionIndex(at: Array(path.prefix(depth)), nodes: nodes) == nil {
             let name = path[depth - 1]
+            let serializedName = Self.identifier(name)
             let parentPath = Array(path.prefix(depth - 1))
             if parentPath.isEmpty {
                 if !source.isEmpty, source.last != "\n" { source.append("\n") }
-                source.append("\(name)\n{\n}\n")
+                source.append("\(serializedName)\n{\n}\n")
             } else {
                 guard let insertion = blockInsertionIndex(at: parentPath, nodes: nodes) else {
                     throw LegacyConfigurationError.missingPath(parentPath.joined(separator: "."))
@@ -125,16 +165,37 @@ public struct LegacyConfigurationDocument: Sendable {
                 let lineStart = source[..<insertion].lastIndex(of: "\n").map { source.index(after: $0) } ?? source.startIndex
                 let closingIndent = source[lineStart..<insertion].prefix(while: { $0 == " " || $0 == "\t" })
                 let childIndent = String(closingIndent) + "  "
-                source.insert(contentsOf: "\(childIndent)\(name)\n\(childIndent){\n\(childIndent)}\n", at: insertion)
+                source.insert(
+                    contentsOf: "\(childIndent)\(serializedName)\n\(childIndent){\n\(childIndent)}\n",
+                    at: insertion
+                )
             }
             var parser = LegacyParser(source: source)
             nodes = try parser.parse()
         }
     }
 
+    private func expandedRemovalRange(_ range: Range<String.Index>) -> Range<String.Index> {
+        let lineStart = source[..<range.lowerBound].lastIndex(of: "\n").map(source.index(after:)) ?? source.startIndex
+        let nextNewline = source[range.upperBound...].firstIndex(of: "\n")
+        let lineEnd = nextNewline ?? source.endIndex
+        let prefix = source[lineStart..<range.lowerBound]
+        let suffix = source[range.upperBound..<lineEnd]
+        let onlyWhitespace = { (text: Substring) in text.allSatisfy { $0 == " " || $0 == "\t" || $0 == "\r" } }
+        guard onlyWhitespace(prefix), onlyWhitespace(suffix) else { return range }
+        let upper = nextNewline.map(source.index(after:)) ?? lineEnd
+        return lineStart..<upper
+    }
+
     private static func quote(_ value: String) -> String {
         "\"" + value.replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"") + "\""
+    }
+
+    private static func identifier(_ value: String) -> String {
+        value.contains(where: { $0.isWhitespace || $0 == "{" || $0 == "}" || $0 == "=" })
+            ? quote(value)
+            : value
     }
 
     private static func unquote(_ value: String) -> String {
@@ -156,6 +217,7 @@ private struct LegacyParser {
     private var tokens: [Token]
     private var index = 0
     private var lastClosingBraceStart: String.Index?
+    private var lastClosingBraceEnd: String.Index?
 
     init(source: String) {
         self.source = source
@@ -174,20 +236,34 @@ private struct LegacyParser {
             case .close:
                 guard expectClose else { throw LegacyConfigurationError.unexpectedClosingBrace }
                 lastClosingBraceStart = token.range.lowerBound
+                lastClosingBraceEnd = token.range.upperBound
                 index += 1
                 return result
             case .open:
+                let start = token.range.lowerBound
                 index += 1
                 let children = try parseNodes(expectClose: true)
-                result.append(.block(name: nil, children: children, insertionIndex: lastClosingBraceStart!))
-            case let .atom(name), let .string(name):
+                result.append(.block(
+                    name: nil,
+                    children: children,
+                    insertionIndex: lastClosingBraceStart!,
+                    sourceRange: start..<lastClosingBraceEnd!
+                ))
+            case let .atom(rawName), let .string(rawName):
+                let name = Self.identifier(from: token.kind, raw: rawName)
+                let nodeStart = token.range.lowerBound
                 index += 1
                 if consumeEqual() {
                     guard index < tokens.count else { throw LegacyConfigurationError.missingValue(name) }
                     let value = tokens[index]
                     switch value.kind {
                     case let .atom(raw), let .string(raw):
-                        result.append(.assignment(name: name, value: raw, valueRange: value.range))
+                        result.append(.assignment(
+                            name: name,
+                            value: raw,
+                            valueRange: value.range,
+                            sourceRange: nodeStart..<value.range.upperBound
+                        ))
                         index += 1
                     case .open:
                         // The legacy format uses braces both for blocks and for
@@ -213,13 +289,19 @@ private struct LegacyParser {
                         result.append(.assignment(
                             name: name,
                             value: String(source[range]),
-                            valueRange: range
+                            valueRange: range,
+                            sourceRange: nodeStart..<range.upperBound
                         ))
                     default: throw LegacyConfigurationError.missingValue(name)
                     }
                 } else if consumeOpen() {
                     let children = try parseNodes(expectClose: true)
-                    result.append(.block(name: name, children: children, insertionIndex: lastClosingBraceStart!))
+                    result.append(.block(
+                        name: name,
+                        children: children,
+                        insertionIndex: lastClosingBraceStart!,
+                        sourceRange: nodeStart..<lastClosingBraceEnd!
+                    ))
                 } else {
                     result.append(.bare(name))
                 }
@@ -241,6 +323,24 @@ private struct LegacyParser {
         guard index < tokens.count, case .open = tokens[index].kind else { return false }
         index += 1
         return true
+    }
+
+    private static func identifier(from kind: Token.Kind, raw: String) -> String {
+        guard case .string = kind, raw.count >= 2 else { return raw }
+        var result = ""
+        var escaped = false
+        for character in raw.dropFirst().dropLast() {
+            if escaped {
+                result.append(character)
+                escaped = false
+            } else if character == "\\" {
+                escaped = true
+            } else {
+                result.append(character)
+            }
+        }
+        if escaped { result.append("\\") }
+        return result
     }
 
     private static func lex(_ source: String) -> [Token] {
