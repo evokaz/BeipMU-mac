@@ -15,13 +15,17 @@ public struct ANSIParser: Sendable {
     }
 
     private var style = TextStyle()
+    private var inverse = false
     private let options: Options
 
     public init(options: Options = .init()) {
         self.options = options
     }
 
-    public mutating func reset() { style = TextStyle() }
+    public mutating func reset() {
+        style = TextStyle()
+        inverse = false
+    }
 
     public mutating func parse(_ input: String, source: RenderedLine.Source = .server) -> RenderedLine {
         if options.resetOnNewLine { reset() }
@@ -79,22 +83,35 @@ public struct ANSIParser: Sendable {
         while index < values.count {
             let value = values[index]
             switch value {
-            case 0: style = TextStyle()
+            case 0: reset()
             case 1: style.bold = true
             case 2: style.faint = true
             case 3: style.italic = true
             case 4: style.underline = true
             case 5: style.blink = .slow
             case 6: style.blink = .fast
-            case 7, 8: swap(&style.foreground, &style.background)
+            case 7:
+                if !inverse {
+                    swap(&style.foreground, &style.background)
+                    inverse = true
+                }
+            // Conceal is intentionally ignored when invisible text is
+            // prevented. TextStyle has no conceal attribute yet, so ignoring
+            // it is also safer than the former (and incorrect) color swap.
+            case 8: break
             case 9: style.strikeout = true
             case 22: style.bold = false; style.faint = false
             case 23: style.italic = false
             case 24: style.underline = false
             case 25: style.blink = .none
-            case 27, 28: swap(&style.foreground, &style.background)
+            case 27:
+                if inverse {
+                    swap(&style.foreground, &style.background)
+                    inverse = false
+                }
+            case 28: break
             case 29: style.strikeout = false
-            case 30...37: style.foreground = Self.palette[value - 30]
+            case 30...37: setColor(Self.palette[value - 30], foreground: true)
             case 38, 48:
                 if index + 2 < values.count, values[index + 1] == 5 {
                     setColor(translate256(values[index + 2]), foreground: value == 38)
@@ -108,11 +125,11 @@ public struct ANSIParser: Sendable {
                     setColor(color, foreground: value == 38)
                     index += 4
                 }
-            case 39: style.foreground = nil
-            case 40...47: style.background = Self.palette[value - 40]
-            case 49: style.background = nil
-            case 90...97: style.foreground = Self.palette[value - 90 + 8]
-            case 100...107: style.background = Self.palette[value - 100 + 8]
+            case 39: clearColor(foreground: true)
+            case 40...47: setColor(Self.palette[value - 40], foreground: false)
+            case 49: clearColor(foreground: false)
+            case 90...97: setColor(Self.palette[value - 90 + 8], foreground: true)
+            case 100...107: setColor(Self.palette[value - 100 + 8], foreground: false)
             default: break
             }
             index += 1
@@ -121,7 +138,11 @@ public struct ANSIParser: Sendable {
     }
 
     private mutating func setColor(_ color: RGBColor, foreground: Bool) {
-        if foreground { style.foreground = color } else { style.background = color }
+        if foreground != inverse { style.foreground = color } else { style.background = color }
+    }
+
+    private mutating func clearColor(foreground: Bool) {
+        if foreground != inverse { style.foreground = nil } else { style.background = nil }
     }
 
     public func translate256(_ value: Int) -> RGBColor {
@@ -153,4 +174,3 @@ public struct ANSIParser: Sendable {
         .init(red: 0, green: 255, blue: 255), .init(red: 255, green: 255, blue: 255),
     ]
 }
-

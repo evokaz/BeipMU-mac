@@ -57,4 +57,49 @@ final class ANSIParserTests: XCTestCase {
     func testCodePage437() {
         XCTAssertEqual(BeipTextDecoder.decode(Data([0x80, 0xDB]), encoding: .cp437), "Ç█")
     }
+
+    func testStylesBackgroundAnd256Color() {
+        var parser = ANSIParser()
+        let line = parser.parse(
+            "\u{1b}[1;3;4;9;48;5;22;38;5;196mstyled\u{1b}[22;23;24;29;49mplain"
+        )
+
+        XCTAssertEqual(line.text, "styledplain")
+        XCTAssertEqual(line.runs.count, 2)
+        XCTAssertEqual(line.runs[0].style.foreground, RGBColor(red: 255, green: 0, blue: 0))
+        XCTAssertEqual(line.runs[0].style.background, RGBColor(red: 0, green: 95, blue: 0))
+        XCTAssertTrue(line.runs[0].style.bold)
+        XCTAssertTrue(line.runs[0].style.italic)
+        XCTAssertTrue(line.runs[0].style.underline)
+        XCTAssertTrue(line.runs[0].style.strikeout)
+        XCTAssertEqual(line.runs[1].style.foreground, RGBColor(red: 255, green: 0, blue: 0))
+        XCTAssertNil(line.runs[1].style.background)
+        XCTAssertFalse(line.runs[1].style.bold)
+        XCTAssertFalse(line.runs[1].style.italic)
+        XCTAssertFalse(line.runs[1].style.underline)
+        XCTAssertFalse(line.runs[1].style.strikeout)
+    }
+
+    func testInverseIsIdempotentAndTracksColorsSetWhileActive() {
+        var parser = ANSIParser()
+        let line = parser.parse("\u{1b}[31;44;7;7mfirst\u{1b}[32msecond\u{1b}[27;27mthird")
+
+        XCTAssertEqual(line.text, "firstsecondthird")
+        XCTAssertEqual(line.runs.count, 3)
+        XCTAssertEqual(line.runs[0].style.foreground, RGBColor(red: 0, green: 0, blue: 238))
+        XCTAssertEqual(line.runs[0].style.background, RGBColor(red: 205, green: 0, blue: 0))
+        XCTAssertEqual(line.runs[1].style.foreground, RGBColor(red: 0, green: 0, blue: 238))
+        XCTAssertEqual(line.runs[1].style.background, RGBColor(red: 0, green: 205, blue: 0))
+        XCTAssertEqual(line.runs[2].style.foreground, RGBColor(red: 0, green: 205, blue: 0))
+        XCTAssertEqual(line.runs[2].style.background, RGBColor(red: 0, green: 0, blue: 238))
+    }
+
+    func testConcealDoesNotAccidentallyInvertColors() {
+        var parser = ANSIParser()
+        let line = parser.parse("\u{1b}[31;44;8mvisible\u{1b}[28mstill visible")
+
+        XCTAssertEqual(line.runs.count, 1)
+        XCTAssertEqual(line.runs[0].style.foreground, RGBColor(red: 205, green: 0, blue: 0))
+        XCTAssertEqual(line.runs[0].style.background, RGBColor(red: 0, green: 0, blue: 238))
+    }
 }
