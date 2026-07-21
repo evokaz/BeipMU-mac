@@ -43,6 +43,77 @@ final class TelnetParserTests: XCTestCase {
             Data([255, 250, 31, 0, 255, 255, 1, 255, 255, 255, 240])
         )
     }
+
+    func testCoreOptionNegotiationMatchesWindowsClient() {
+        var parser = TelnetParser()
+        let events = parser.consume(Data([
+            255, 251, 0,   // WILL BINARY -> DO BINARY
+            255, 251, 25,  // WILL EOR -> DO EOR
+            255, 251, 3,   // WILL SGA -> DONT SGA
+            255, 253, 0,   // DO BINARY -> WILL BINARY
+            255, 253, 24,  // DO TTYPE -> WILL TTYPE
+            255, 253, 99,  // unsupported DO -> WONT
+        ]))
+        let sends = events.compactMap { event -> Data? in
+            guard case let .send(data) = event else { return nil }
+            return data
+        }
+        XCTAssertEqual(sends, [
+            Data([255, 253, 0]),
+            Data([255, 253, 25]),
+            Data([255, 254, 3]),
+            Data([255, 251, 0]),
+            Data([255, 251, 24]),
+            Data([255, 252, 99]),
+        ])
+    }
+
+    func testTerminalTypeMTTSSequenceAndReset() {
+        var parser = TelnetParser()
+        parser.terminalType = "BeipMU Mac"
+        let request = Data([255, 250, 24, 1, 255, 240])
+
+        XCTAssertEqual(sentPayloads(parser.consume(request)), [Data([255, 250, 24, 0]) + Data("BeipMU Mac".utf8) + Data([255, 240])])
+        XCTAssertEqual(sentPayloads(parser.consume(request)), [Data([255, 250, 24, 0]) + Data("ANSI".utf8) + Data([255, 240])])
+        XCTAssertEqual(sentPayloads(parser.consume(request)), [Data([255, 250, 24, 0]) + Data("MTTS 269".utf8) + Data([255, 240])])
+        XCTAssertEqual(sentPayloads(parser.consume(request)), [Data([255, 250, 24, 0]) + Data("MTTS 269".utf8) + Data([255, 240])])
+
+        _ = parser.consume(Data([255, 254, 24]))
+        XCTAssertEqual(sentPayloads(parser.consume(request)), [Data([255, 250, 24, 0]) + Data("BeipMU Mac".utf8) + Data([255, 240])])
+    }
+
+    func testCharsetRequestIsInvariantAcrossChunkBoundaries() {
+        let request = Data([255, 250, 42, 1]) + Data(";US-ASCII;utf-8;ISO-8859-1".utf8) + Data([255, 240])
+        let expectedReply = Data([255, 250, 42, 2]) + Data("UTF-8".utf8) + Data([255, 240])
+
+        for split in 0...request.count {
+            var parser = TelnetParser()
+            let events = parser.consume(Data(request.prefix(split))) + parser.consume(Data(request.dropFirst(split)))
+            XCTAssertEqual(sentPayloads(events), [expectedReply], "split \(split)")
+            XCTAssertTrue(events.contains(.encoding(.utf8)), "split \(split)")
+        }
+    }
+
+    func testFragmentedGMCPDoesNotPolluteLineBuffer() {
+        var parser = TelnetParser()
+        let bytes = Data("before".utf8)
+            + Data([255, 250, 201])
+            + Data("Char.Vitals {\"hp\":7}".utf8)
+            + Data([255, 240])
+            + Data("after\n".utf8)
+        var events: [TelnetParser.Event] = []
+        for byte in bytes { events += parser.consume(Data([byte])) }
+
+        XCTAssertTrue(events.contains(.gmcp(.init(package: "Char.Vitals", payload: "{\"hp\":7}"))))
+        XCTAssertTrue(events.contains(.line(Data("beforeafter".utf8))))
+    }
+
+    private func sentPayloads(_ events: [TelnetParser.Event]) -> [Data] {
+        events.compactMap { event in
+            guard case let .send(data) = event else { return nil }
+            return data
+        }
+    }
 }
 
 final class ANSIParserTests: XCTestCase {
@@ -132,5 +203,39 @@ final class ANSIParserTests: XCTestCase {
         var literalParser = ANSIParser(options: .init(preventInvisible: false))
         let literal = literalParser.parse("\u{1b}[31;41mhidden")
         XCTAssertEqual(literal.runs[0].style.foreground, literal.runs[0].style.background)
+    }
+}
+
+final class MUDProtocolPipelineTests: XCTestCase {
+    func testFormattingResetDoesNotResetTelnetNegotiation() {
+        var pipeline = MUDProtocolPipeline()
+        _ = pipeline.consume(Data([255, 253, 31]))
+        _ = pipeline.consume(Data("\u{1b}[31mred\n".utf8))
+
+        pipeline.resetFormatting()
+
+        let outputs = pipeline.consume(Data("plain\n".utf8))
+        guard case let .line(line) = outputs.first else { return XCTFail("missing line") }
+        XCTAssertNil(line.runs.first?.style.foreground)
+        XCTAssertEqual(pipeline.windowSizeChanged(columns: 80, rows: 24), Data([255, 250, 31, 0, 80, 0, 24, 255, 240]))
+    }
+
+    func testManualWindowSizeDoesNotRequireNegotiation() {
+        var pipeline = MUDProtocolPipeline()
+        XCTAssertNil(pipeline.windowSizeChanged(columns: 100, rows: 40))
+        XCTAssertEqual(
+            pipeline.manualWindowSize(columns: 100, rows: 40),
+            Data([255, 250, 31, 0, 100, 0, 40, 255, 240])
+        )
+    }
+
+    func testTerminalTypeCanBeChangedThroughPipeline() {
+        var pipeline = MUDProtocolPipeline()
+        pipeline.setTerminalType("Beip Mac")
+        let outputs = pipeline.consume(Data([255, 250, 24, 1, 255, 240]))
+        XCTAssertEqual(
+            outputs,
+            [.transmit(Data([255, 250, 24, 0]) + Data("Beip Mac".utf8) + Data([255, 240]))]
+        )
     }
 }

@@ -17,6 +17,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSText
     private var session: SessionActor?
     private var sessionTask: Task<Void, Never>?
     private var currentServer: ServerProfile?
+    private var localEcho = true
+    private var terminalType = "Beip"
     var onClose: (() -> Void)?
 
     init() {
@@ -163,7 +165,9 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSText
         sessionTask?.cancel()
         if let session { Task { await session.disconnect() } }
         currentServer = server
-        let next = SessionActor(transport: NetworkTransport(), processor: MUDProtocolPipeline(encoding: server.encoding))
+        var processor = MUDProtocolPipeline(encoding: server.encoding)
+        processor.setTerminalType(terminalType)
+        let next = SessionActor(transport: NetworkTransport(), processor: processor)
         session = next
         output.clear()
         appendClient("Connecting to \(server.host):\(server.port)…")
@@ -217,6 +221,28 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSText
             Task { await session.send(value) }
         case let .display(value): appendClient(value)
         case .clear: output.clear()
+        case let .localEcho(enabled):
+            localEcho = enabled
+            appendClient("Local echo \(enabled ? "on" : "off").")
+        case .resetANSI:
+            guard let session else { appendError("Not connected."); return }
+            Task { await session.resetFormatting() }
+            appendClient("ANSI state reset.")
+        case .nawsAuto:
+            guard let session else { appendError("Not connected."); return }
+            let size = output.terminalSize
+            Task { await session.sendWindowSize(columns: size.columns, rows: size.rows) }
+            appendClient("NAWS sent: \(size.columns) × \(size.rows).")
+        case let .naws(columns, rows):
+            guard let session else { appendError("Not connected."); return }
+            Task { await session.sendWindowSize(columns: columns, rows: rows) }
+            appendClient("NAWS sent: \(columns) × \(rows).")
+        case let .terminalType(value):
+            appendClient("Current TType = \(terminalType)")
+            guard let value else { return }
+            terminalType = value
+            if let session { Task { await session.setTerminalType(value) } }
+            appendClient("New TType = \(value)")
         case let .setVariable(name, value): variables[name] = value; appendClient("Set %\(name)%")
         case let .unsetVariable(name): variables.removeValue(forKey: name); appendClient("Unset %\(name)%")
         case let .gmcp(message):
@@ -250,6 +276,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSText
         output.append(.init(text: text, runs: [.init(range: 0..<text.utf16.count, style: style)], source: .client))
     }
     private func appendLocalEcho(_ text: String) {
+        guard localEcho else { return }
         let style = TextStyle(foreground: .init(red: 0, green: 205, blue: 205))
         output.append(.init(text: text, runs: [.init(range: 0..<text.utf16.count, style: style)], source: .localEcho))
     }

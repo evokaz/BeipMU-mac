@@ -32,6 +32,7 @@ public struct TelnetParser: Sendable {
         static let binary: UInt8 = 0
         static let sga: UInt8 = 3
         static let terminalType: UInt8 = 24
+        static let endOfRecord: UInt8 = 25
         static let naws: UInt8 = 31
         static let charset: UInt8 = 42
         static let gmcp: UInt8 = 201
@@ -82,7 +83,7 @@ public struct TelnetParser: Sendable {
                 }
             case .will:
                 switch byte {
-                case Code.binary, Code.charset, Code.eor:
+                case Code.binary, Code.charset, Code.endOfRecord:
                     events.append(.send(command(Code.do, byte)))
                 case Code.sga:
                     events.append(.send(command(Code.dont, byte)))

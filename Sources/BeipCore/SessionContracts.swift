@@ -45,13 +45,21 @@ public enum ProtocolOutput: Sendable, Hashable {
 
 public protocol ByteStreamProcessor: Sendable {
     mutating func reset()
+    mutating func resetFormatting()
+    mutating func setTerminalType(_ value: String)
     mutating func consume(_ data: Data) -> [ProtocolOutput]
     mutating func encode(_ text: String) throws -> Data
     mutating func windowSizeChanged(columns: UInt16, rows: UInt16) -> Data?
+    mutating func manualWindowSize(columns: UInt16, rows: UInt16) -> Data?
 }
 
 public extension ByteStreamProcessor {
+    mutating func resetFormatting() {}
+    mutating func setTerminalType(_ value: String) {}
     mutating func windowSizeChanged(columns: UInt16, rows: UInt16) -> Data? { nil }
+    mutating func manualWindowSize(columns: UInt16, rows: UInt16) -> Data? {
+        windowSizeChanged(columns: columns, rows: rows)
+    }
 }
 
 public enum SessionEvent: Sendable, Hashable {
@@ -133,6 +141,20 @@ public actor SessionActor {
         } catch {
             eventContinuation?.yield(.error(error.localizedDescription))
         }
+    }
+
+    public func resetFormatting() {
+        processor.resetFormatting()
+    }
+
+    public func setTerminalType(_ value: String) {
+        processor.setTerminalType(value)
+    }
+
+    public func sendWindowSize(columns: UInt16, rows: UInt16) async {
+        guard columns > 0, rows > 0,
+              let data = processor.manualWindowSize(columns: columns, rows: rows) else { return }
+        await transmit(data)
     }
 
     public func updateWindowSize(columns: UInt16, rows: UInt16) async {

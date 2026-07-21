@@ -5,6 +5,11 @@ public enum CommandOutcome: Sendable, Equatable {
     case send(String)
     case display(String)
     case clear
+    case localEcho(Bool)
+    case resetANSI
+    case nawsAuto
+    case naws(UInt16, UInt16)
+    case terminalType(String?)
     case setVariable(String, String)
     case unsetVariable(String)
     case gmcp(GMCPMessage)
@@ -44,6 +49,23 @@ public struct CommandRegistry: Sendable {
         guard !command.isEmpty else { return .display("Use /help for a list of commands.") }
         switch command {
         case "clear": return .clear
+        case "echo":
+            guard let value = arguments.first else { return .localEcho(true) }
+            switch value.lowercased() {
+            case "on": return .localEcho(true)
+            case "off": return .localEcho(false)
+            default: return .display("Usage: /echo <on/off>")
+            }
+        case "ansireset": return .resetANSI
+        case "naws":
+            if arguments.count == 1, arguments[0].lowercased() == "auto" { return .nawsAuto }
+            if arguments.count == 2,
+               let columns = UInt16(arguments[0]), columns > 0,
+               let rows = UInt16(arguments[1]), rows > 0 {
+                return .naws(columns, rows)
+            }
+            return .display("Invalid usage, try /naws auto or /naws <width> <height>.")
+        case "ttype": return .terminalType(arguments.first)
         case "set":
             guard let equals = rawArguments.firstIndex(of: "=") else {
                 return .display("Syntax error, missing '='")

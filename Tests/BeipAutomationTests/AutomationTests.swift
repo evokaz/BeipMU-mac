@@ -44,4 +44,25 @@ final class AutomationTests: XCTestCase {
         XCTAssertEqual(registry.parse("/silent/set answer=42", variables: [:]), .setVariable("answer", "42"))
         XCTAssertTrue(CommandRegistry.knownCommands.contains("lizards"))
     }
+
+    func testLocalEchoAndANSIResetCommands() {
+        let registry = CommandRegistry()
+        XCTAssertEqual(registry.parse("/echo", variables: [:]), .localEcho(true))
+        XCTAssertEqual(registry.parse("/echo ON", variables: [:]), .localEcho(true))
+        XCTAssertEqual(registry.parse("/echo off", variables: [:]), .localEcho(false))
+        XCTAssertEqual(registry.parse("/echo maybe", variables: [:]), .display("Usage: /echo <on/off>"))
+        XCTAssertEqual(registry.parse("/ansireset", variables: [:]), .resetANSI)
+    }
+
+    func testNAWSAndTerminalTypeCommands() {
+        let registry = CommandRegistry()
+        XCTAssertEqual(registry.parse("/naws auto", variables: [:]), .nawsAuto)
+        XCTAssertEqual(registry.parse("/naws 132 43", variables: [:]), .naws(132, 43))
+        XCTAssertEqual(
+            registry.parse("/naws 0 43", variables: [:]),
+            .display("Invalid usage, try /naws auto or /naws <width> <height>.")
+        )
+        XCTAssertEqual(registry.parse("/ttype", variables: [:]), .terminalType(nil))
+        XCTAssertEqual(registry.parse("/ttype \"Beip Mac\"", variables: [:]), .terminalType("Beip Mac"))
+    }
 }

@@ -15,6 +15,14 @@ public struct MUDProtocolPipeline: ByteStreamProcessor {
         ansi.reset()
     }
 
+    public mutating func resetFormatting() {
+        ansi.reset()
+    }
+
+    public mutating func setTerminalType(_ value: String) {
+        telnet.terminalType = value
+    }
+
     public mutating func consume(_ data: Data) -> [ProtocolOutput] {
         telnet.consume(data).map { event in
             switch event {
@@ -47,5 +55,9 @@ public struct MUDProtocolPipeline: ByteStreamProcessor {
     public mutating func windowSizeChanged(columns: UInt16, rows: UInt16) -> Data? {
         guard telnet.negotiatedNAWS else { return nil }
         return telnet.naws(columns: columns, rows: rows)
+    }
+
+    public mutating func manualWindowSize(columns: UInt16, rows: UInt16) -> Data? {
+        telnet.naws(columns: columns, rows: rows)
     }
 }

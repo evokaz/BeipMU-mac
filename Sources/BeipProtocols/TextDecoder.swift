@@ -7,8 +7,7 @@ public enum BeipTextDecoder {
         case .utf8:
             return String(decoding: data, as: UTF8.self)
         case .cp1252:
-            return String(data: data, encoding: .windowsCP1252)
-                ?? String(decoding: data, as: UTF8.self)
+            return String(data.map(decodeCP1252))
         case .cp437:
             return String(data.map(decodeCP437))
         }
@@ -19,10 +18,19 @@ public enum BeipTextDecoder {
         case .utf8:
             return Data(text.utf8)
         case .cp1252:
-            guard let data = text.data(using: .windowsCP1252, allowLossyConversion: false) else {
-                throw EncodingError.unrepresentable(.cp1252)
+            var bytes = Data()
+            for scalar in text.unicodeScalars {
+                switch scalar.value {
+                case 0x00...0x7F, 0xA0...0xFF:
+                    bytes.append(UInt8(scalar.value))
+                default:
+                    guard let index = cp1252.firstIndex(of: scalar.value) else {
+                        throw EncodingError.unrepresentable(.cp1252)
+                    }
+                    bytes.append(UInt8(index + 0x80))
+                }
             }
-            return data
+            return bytes
         case .cp437:
             var bytes = Data()
             for scalar in text.unicodeScalars {
@@ -56,6 +64,22 @@ public enum BeipTextDecoder {
         return Character(scalar)
     }
 
+    private static func decodeCP1252(_ byte: UInt8) -> Character {
+        guard (0x80...0x9F).contains(byte),
+              let scalar = UnicodeScalar(cp1252[Int(byte) - 0x80])
+        else { return Character(UnicodeScalar(byte)) }
+        return Character(scalar)
+    }
+
+    // Windows-1252 bytes 0x80...0x9f. Windows preserves the five undefined
+    // byte positions as their corresponding C1 control characters.
+    private static let cp1252: [UInt32] = [
+        0x20AC,0x0081,0x201A,0x0192,0x201E,0x2026,0x2020,0x2021,
+        0x02C6,0x2030,0x0160,0x2039,0x0152,0x008D,0x017D,0x008F,
+        0x0090,0x2018,0x2019,0x201C,0x201D,0x2022,0x2013,0x2014,
+        0x02DC,0x2122,0x0161,0x203A,0x0153,0x009D,0x017E,0x0178,
+    ]
+
     // IBM code page 437, bytes 0x80...0xff.
     private static let cp437: [UInt32] = [
         0x00C7,0x00FC,0x00E9,0x00E2,0x00E4,0x00E0,0x00E5,0x00E7,
@@ -76,4 +100,3 @@ public enum BeipTextDecoder {
         0x00B0,0x2219,0x00B7,0x221A,0x207F,0x00B2,0x25A0,0x00A0,
     ]
 }
-
