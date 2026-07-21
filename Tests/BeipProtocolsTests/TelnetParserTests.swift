@@ -68,7 +68,7 @@ final class ANSIParserTests: XCTestCase {
         XCTAssertEqual(line.runs.count, 2)
         XCTAssertEqual(line.runs[0].style.foreground, RGBColor(red: 255, green: 0, blue: 0))
         XCTAssertEqual(line.runs[0].style.background, RGBColor(red: 0, green: 95, blue: 0))
-        XCTAssertTrue(line.runs[0].style.bold)
+        XCTAssertFalse(line.runs[0].style.bold)
         XCTAssertTrue(line.runs[0].style.italic)
         XCTAssertTrue(line.runs[0].style.underline)
         XCTAssertTrue(line.runs[0].style.strikeout)
@@ -101,5 +101,36 @@ final class ANSIParserTests: XCTestCase {
         XCTAssertEqual(line.runs.count, 1)
         XCTAssertEqual(line.runs[0].style.foreground, RGBColor(red: 205, green: 0, blue: 0))
         XCTAssertEqual(line.runs[0].style.background, RGBColor(red: 0, green: 0, blue: 238))
+    }
+
+    func testBoldUsesBrightPaletteUnlessFontBoldIsEnabled() {
+        var colorParser = ANSIParser()
+        let colorBold = colorParser.parse("\u{1b}[31;1mbright")
+        XCTAssertEqual(colorBold.runs[0].style.foreground, RGBColor(red: 255, green: 0, blue: 0))
+        XCTAssertFalse(colorBold.runs[0].style.bold)
+
+        var fontParser = ANSIParser(options: .init(useFontBold: true))
+        let fontBold = fontParser.parse("\u{1b}[31;1mheavy")
+        XCTAssertEqual(fontBold.runs[0].style.foreground, RGBColor(red: 205, green: 0, blue: 0))
+        XCTAssertTrue(fontBold.runs[0].style.bold)
+    }
+
+    func testFaintDarkensLogicalForegroundWhileInverseIsActive() {
+        var parser = ANSIParser()
+        let line = parser.parse("\u{1b}[31;44;7;2mfaint")
+
+        XCTAssertEqual(line.runs[0].style.foreground, RGBColor(red: 0, green: 0, blue: 238))
+        XCTAssertEqual(line.runs[0].style.background, RGBColor(red: 102, green: 0, blue: 0))
+    }
+
+    func testPreventInvisibleContrastsEqualExplicitColors() {
+        var protectedParser = ANSIParser()
+        let protected = protectedParser.parse("\u{1b}[31;41mreadable")
+        XCTAssertEqual(protected.runs[0].style.foreground, RGBColor(red: 50, green: 255, blue: 255))
+        XCTAssertEqual(protected.runs[0].style.background, RGBColor(red: 205, green: 0, blue: 0))
+
+        var literalParser = ANSIParser(options: .init(preventInvisible: false))
+        let literal = literalParser.parse("\u{1b}[31;41mhidden")
+        XCTAssertEqual(literal.runs[0].style.foreground, literal.runs[0].style.background)
     }
 }

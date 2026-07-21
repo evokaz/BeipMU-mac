@@ -16,6 +16,7 @@ public struct ANSIParser: Sendable {
 
     private var style = TextStyle()
     private var inverse = false
+    private var foregroundPaletteIndex: Int?
     private let options: Options
 
     public init(options: Options = .init()) {
@@ -25,6 +26,7 @@ public struct ANSIParser: Sendable {
     public mutating func reset() {
         style = TextStyle()
         inverse = false
+        foregroundPaletteIndex = nil
     }
 
     public mutating func parse(_ input: String, source: RenderedLine.Source = .server) -> RenderedLine {
@@ -48,7 +50,7 @@ public struct ANSIParser: Sendable {
         while scalarIndex < input.unicodeScalars.endIndex {
             let scalar = input.unicodeScalars[scalarIndex]
             guard scalar.value == 0x1b else {
-                append(String(scalar), style: style, result: &result, runs: &runs)
+                append(String(scalar), style: renderedStyle(), result: &result, runs: &runs)
                 scalarIndex = input.unicodeScalars.index(after: scalarIndex)
                 continue
             }
@@ -111,7 +113,7 @@ public struct ANSIParser: Sendable {
                 }
             case 28: break
             case 29: style.strikeout = false
-            case 30...37: setColor(Self.palette[value - 30], foreground: true)
+            case 30...37: setColor(Self.palette[value - 30], foreground: true, paletteIndex: value - 30)
             case 38, 48:
                 if index + 2 < values.count, values[index + 1] == 5 {
                     setColor(translate256(values[index + 2]), foreground: value == 38)
@@ -128,7 +130,7 @@ public struct ANSIParser: Sendable {
             case 39: clearColor(foreground: true)
             case 40...47: setColor(Self.palette[value - 40], foreground: false)
             case 49: clearColor(foreground: false)
-            case 90...97: setColor(Self.palette[value - 90 + 8], foreground: true)
+            case 90...97: setColor(Self.palette[value - 90 + 8], foreground: true, paletteIndex: value - 90 + 8)
             case 100...107: setColor(Self.palette[value - 100 + 8], foreground: false)
             default: break
             }
@@ -137,12 +139,58 @@ public struct ANSIParser: Sendable {
         values.removeAll(keepingCapacity: false)
     }
 
-    private mutating func setColor(_ color: RGBColor, foreground: Bool) {
+    private mutating func setColor(_ color: RGBColor, foreground: Bool, paletteIndex: Int? = nil) {
+        if foreground { foregroundPaletteIndex = paletteIndex }
         if foreground != inverse { style.foreground = color } else { style.background = color }
     }
 
     private mutating func clearColor(foreground: Bool) {
+        if foreground { foregroundPaletteIndex = nil }
         if foreground != inverse { style.foreground = nil } else { style.background = nil }
+    }
+
+    private func renderedStyle() -> TextStyle {
+        var rendered = style
+        let logicalForegroundIsBackground = inverse
+
+        if rendered.bold, !options.useFontBold,
+           let index = foregroundPaletteIndex, index < 8 {
+            if logicalForegroundIsBackground {
+                rendered.background = Self.palette[index + 8]
+            } else {
+                rendered.foreground = Self.palette[index + 8]
+            }
+        }
+
+        if rendered.faint {
+            if logicalForegroundIsBackground, let color = rendered.background {
+                rendered.background = Self.darkened(color)
+            } else if !logicalForegroundIsBackground, let color = rendered.foreground {
+                rendered.foreground = Self.darkened(color)
+            }
+        }
+
+        rendered.bold = options.useFontBold && rendered.bold
+        if options.preventInvisible,
+           let foreground = rendered.foreground,
+           foreground == rendered.background {
+            rendered.foreground = RGBColor(
+                red: ~foreground.red,
+                green: ~foreground.green,
+                blue: ~foreground.blue,
+                alpha: foreground.alpha
+            )
+        }
+        return rendered
+    }
+
+    private static func darkened(_ color: RGBColor) -> RGBColor {
+        RGBColor(
+            red: color.red / 2,
+            green: color.green / 2,
+            blue: color.blue / 2,
+            alpha: color.alpha
+        )
     }
 
     public func translate256(_ value: Int) -> RGBColor {
