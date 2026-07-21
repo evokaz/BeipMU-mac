@@ -20,6 +20,7 @@ public struct ServerProfile: Identifiable, Sendable, Hashable, Codable {
     public var mcp: Bool
     public var mcmp: Bool
     public var sendNAWSOnResize: Bool
+    public var limitTelnetCharset: Bool
 
     public init(
         id: UUID = UUID(),
@@ -34,7 +35,8 @@ public struct ServerProfile: Identifiable, Sendable, Hashable, Codable {
         prompts: Bool = false,
         mcp: Bool = false,
         mcmp: Bool = false,
-        sendNAWSOnResize: Bool = false
+        sendNAWSOnResize: Bool = false,
+        limitTelnetCharset: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -49,6 +51,7 @@ public struct ServerProfile: Identifiable, Sendable, Hashable, Codable {
         self.mcp = mcp
         self.mcmp = mcmp
         self.sendNAWSOnResize = sendNAWSOnResize
+        self.limitTelnetCharset = limitTelnetCharset
     }
 }
 
@@ -61,6 +64,7 @@ public struct CharacterProfile: Identifiable, Sendable, Hashable, Codable {
     public var idleTimeout: TimeInterval?
     public var idleText: String
     public var variables: [String: String]
+    public var puppets: [PuppetProfile]
 
     public init(
         id: UUID = UUID(),
@@ -70,7 +74,8 @@ public struct CharacterProfile: Identifiable, Sendable, Hashable, Codable {
         autoConnect: Bool = false,
         idleTimeout: TimeInterval? = nil,
         idleText: String = "",
-        variables: [String: String] = [:]
+        variables: [String: String] = [:],
+        puppets: [PuppetProfile] = []
     ) {
         self.id = id
         self.name = name
@@ -80,6 +85,7 @@ public struct CharacterProfile: Identifiable, Sendable, Hashable, Codable {
         self.idleTimeout = idleTimeout
         self.idleText = idleText
         self.variables = variables
+        self.puppets = puppets
     }
 }
 
@@ -90,6 +96,9 @@ public struct PuppetProfile: Identifiable, Sendable, Hashable, Codable {
     public var sendPrefix: String
     public var receivePrefixIsRegex: Bool
     public var hideReceivePrefix: Bool
+    public var autoConnect: Bool
+    public var connectWithPlayer: Bool
+    public var removeAccidentalPrefix: Bool
 
     public init(
         id: UUID = UUID(),
@@ -97,7 +106,10 @@ public struct PuppetProfile: Identifiable, Sendable, Hashable, Codable {
         receivePrefix: String = "",
         sendPrefix: String = "",
         receivePrefixIsRegex: Bool = false,
-        hideReceivePrefix: Bool = true
+        hideReceivePrefix: Bool = true,
+        autoConnect: Bool = true,
+        connectWithPlayer: Bool = false,
+        removeAccidentalPrefix: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -105,16 +117,83 @@ public struct PuppetProfile: Identifiable, Sendable, Hashable, Codable {
         self.sendPrefix = sendPrefix
         self.receivePrefixIsRegex = receivePrefixIsRegex
         self.hideReceivePrefix = hideReceivePrefix
+        self.autoConnect = autoConnect
+        self.connectWithPlayer = connectWithPlayer
+        self.removeAccidentalPrefix = removeAccidentalPrefix
+    }
+}
+
+public enum PuppetRouter {
+    public struct RoutedLine: Sendable, Equatable {
+        public var puppetID: UUID
+        public var text: String
+    }
+
+    public static func route(_ text: String, through puppets: [PuppetProfile]) -> RoutedLine? {
+        for puppet in puppets where !puppet.receivePrefix.isEmpty {
+            let range: Range<String.Index>?
+            if puppet.receivePrefixIsRegex {
+                range = text.range(of: puppet.receivePrefix, options: [.regularExpression, .anchored])
+            } else {
+                range = text.hasPrefix(puppet.receivePrefix)
+                    ? text.startIndex..<text.index(text.startIndex, offsetBy: puppet.receivePrefix.count)
+                    : nil
+            }
+            guard let range else { continue }
+            let routed = puppet.hideReceivePrefix ? String(text[range.upperBound...]) : text
+            return .init(puppetID: puppet.id, text: routed)
+        }
+        return nil
+    }
+
+    public static func outgoing(_ text: String, for puppet: PuppetProfile) -> String {
+        puppet.sendPrefix + text
     }
 }
 
 public struct ConnectionRequest: Sendable, Hashable {
     public var server: ServerProfile
     public var character: CharacterProfile?
+    public var policy: ConnectionPolicy
 
-    public init(server: ServerProfile, character: CharacterProfile? = nil) {
+    public init(
+        server: ServerProfile,
+        character: CharacterProfile? = nil,
+        policy: ConnectionPolicy = .init()
+    ) {
         self.server = server
         self.character = character
+        self.policy = policy
     }
 }
 
+public struct ConnectionPolicy: Sendable, Hashable, Codable {
+    public var connectTimeoutMilliseconds: Int
+    public var retryCount: Int
+    public var retryForever: Bool
+    public var keepAlive: Bool
+    public var noDelay: Bool
+
+    public init(
+        connectTimeoutMilliseconds: Int = 30_000,
+        retryCount: Int = 5,
+        retryForever: Bool = false,
+        keepAlive: Bool = true,
+        noDelay: Bool = true
+    ) {
+        self.connectTimeoutMilliseconds = max(1_000, connectTimeoutMilliseconds)
+        self.retryCount = max(1, retryCount)
+        self.retryForever = retryForever
+        self.keepAlive = keepAlive
+        self.noDelay = noDelay
+    }
+}
+
+public struct ConnectionStatistics: Sendable, Hashable, Codable {
+    public var bytesSent: UInt64 = 0
+    public var bytesReceived: UInt64 = 0
+    public var secondsConnected: TimeInterval = 0
+    public var connectionCount: UInt64 = 0
+
+    public init() {}
+}

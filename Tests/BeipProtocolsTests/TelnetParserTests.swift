@@ -1,8 +1,69 @@
 import BeipCore
 import BeipProtocols
+import Foundation
 import XCTest
 
+private struct WindowsSessionTrace: Decodable {
+    struct Event: Decodable { var direction: String; var hex: String }
+    var events: [Event]
+}
+
 final class TelnetParserTests: XCTestCase {
+    func testWindowsV331GoldenByteTraceProducesMatchingPromptLineAndNegotiation() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Golden/windows-v331-session.trace.json")
+        var data = try Data(contentsOf: url)
+        if data.starts(with: [0xEF, 0xBB, 0xBF]) { data.removeFirst(3) }
+        let trace = try JSONDecoder().decode(WindowsSessionTrace.self, from: data)
+        var pipeline = MUDProtocolPipeline()
+        var outputs: [ProtocolOutput] = []
+
+        for event in trace.events where event.direction == "server-to-client" {
+            outputs += pipeline.consume(try XCTUnwrap(Data(hex: event.hex)))
+        }
+
+        XCTAssertTrue(outputs.contains(.transmit(Data([255, 253, 25]))))
+        XCTAssertTrue(outputs.contains { output in
+            guard case let .prompt(line) = output else { return false }
+            return line.text == "Golden prompt> "
+        })
+        guard let room = outputs.compactMap({ output -> RenderedLine? in
+            guard case let .line(line) = output else { return nil }
+            return line
+        }).first else { return XCTFail("missing golden rendered line") }
+        XCTAssertEqual(room.text, "Golden prompt> Golden room")
+        XCTAssertEqual(room.runs.last?.style.foreground, RGBColor(red: 0, green: 205, blue: 0))
+    }
+
+    func testWindowsCompatibleTelnetDebugFormattingAndChunkState() {
+        var formatter = TelnetDebugFormatter()
+        XCTAssertEqual(
+            formatter.format(Data([255, 251])),
+            "<font color='#ff00ff'>IAC WILL "
+        )
+        XCTAssertEqual(
+            formatter.format(Data([201, 60, 38, 13, 10, 1])),
+            "<font color='#8080ff'>GMCP<font color='#008000'>(201) <font color='#ffffff'>&lt;&amp; <font color='#ff0000'>CR LF <font color='#008000'>1 "
+        )
+    }
+
+    func testWindowsCompatibleTelnetDebugSubnegotiationAndUnknownValues() {
+        var formatter = TelnetDebugFormatter()
+        XCTAssertEqual(
+            formatter.format(Data([255, 250, 24, 1, 255, 240, 255, 253, 222])),
+            "<font color='#ff00ff'>IAC SB <font color='#8080ff'>TTYPE<font color='#008000'>(24) 1 <font color='#ff00ff'>IAC SE IAC DO <font color='#8080ff'>(unk)<font color='#008000'>(222) "
+        )
+    }
+
+    func testNetworkDebugFormatterKeepsIndependentSendAndReceiveState() {
+        var formatter = NetworkDebugFormatter(showHex: true)
+        XCTAssertTrue(formatter.format(Data([255, 251]), received: true).hasPrefix("FF FB \r\n"))
+        XCTAssertTrue(formatter.format(Data([255, 253]), received: false).hasSuffix("IAC DO "))
+        XCTAssertTrue(formatter.format(Data([201]), received: true).hasSuffix("GMCP<font color='#008000'>(201) "))
+    }
+
     func testLinesAreInvariantAcrossChunkBoundaries() {
         let bytes = Data("one\r\ntwo\n".utf8)
         for split in 0...bytes.count {
@@ -24,7 +85,7 @@ final class TelnetParserTests: XCTestCase {
         guard case let .send(negotiation) = reply[0] else { return XCTFail("missing negotiation") }
         XCTAssertEqual(negotiation, Data([255, 253, 201]))
         guard case let .send(hello) = reply[1] else { return XCTFail("missing hello") }
-        XCTAssertTrue(String(decoding: hello, as: UTF8.self).contains("Core.Hello"))
+        XCTAssertTrue(hello.starts(with: Data([255, 250, 201]) + Data("Core.Hello {\"client\":\"Beip\", \"version\":\"331\"}".utf8)))
 
         let input = Data([255, 250, 201]) + Data("Core.Ping {\"x\":1}".utf8) + Data([255, 240])
         let events = parser.consume(input)
@@ -94,6 +155,17 @@ final class TelnetParserTests: XCTestCase {
         }
     }
 
+    func testCharsetLimitPreservesConfiguredLegacyEncoding() {
+        let request = Data([255, 250, 42, 1]) + Data(";US-ASCII;UTF-8".utf8) + Data([255, 240])
+        var limited = TelnetParser()
+        limited.charsetLimit = .cp437
+        XCTAssertTrue(sentPayloads(limited.consume(request)).isEmpty)
+
+        limited.charsetLimit = .utf8
+        let reply = sentPayloads(limited.consume(request))
+        XCTAssertEqual(reply, [Data([255, 250, 42, 2]) + Data("UTF-8".utf8) + Data([255, 240])])
+    }
+
     func testFragmentedGMCPDoesNotPolluteLineBuffer() {
         var parser = TelnetParser()
         let bytes = Data("before".utf8)
@@ -108,13 +180,13 @@ final class TelnetParserTests: XCTestCase {
         XCTAssertTrue(events.contains(.line(Data("beforeafter".utf8))))
     }
 
-    func testPromptIsRemovedFromFollowingLineAcrossEveryChunkBoundary() {
+    func testPromptRemainsInFollowingLineAcrossEveryChunkBoundaryLikeWindows() {
         let bytes = Data("Name: ".utf8) + Data([255, 249]) + Data("Welcome\r\n".utf8)
         for split in 0...bytes.count {
             var parser = TelnetParser()
             let events = parser.consume(Data(bytes.prefix(split))) + parser.consume(Data(bytes.dropFirst(split)))
             XCTAssertTrue(events.contains(.prompt(Data("Name: ".utf8))), "split \(split)")
-            XCTAssertTrue(events.contains(.line(Data("Welcome".utf8))), "split \(split)")
+            XCTAssertTrue(events.contains(.line(Data("Name: Welcome".utf8))), "split \(split)")
         }
     }
 
@@ -132,6 +204,20 @@ final class TelnetParserTests: XCTestCase {
         events.compactMap { event in
             guard case let .send(data) = event else { return nil }
             return data
+        }
+    }
+}
+
+private extension Data {
+    init?(hex: String) {
+        guard hex.count.isMultiple(of: 2) else { return nil }
+        self.init()
+        var index = hex.startIndex
+        while index < hex.endIndex {
+            let next = hex.index(index, offsetBy: 2)
+            guard let byte = UInt8(hex[index..<next], radix: 16) else { return nil }
+            append(byte)
+            index = next
         }
     }
 }
@@ -185,13 +271,24 @@ final class ANSIParserTests: XCTestCase {
         XCTAssertEqual(line.runs[2].style.background, RGBColor(red: 0, green: 0, blue: 238))
     }
 
-    func testConcealDoesNotAccidentallyInvertColors() {
+    func testConcealUsesLegacyInverseBehaviorAnd28RestoresColors() {
         var parser = ANSIParser()
         let line = parser.parse("\u{1b}[31;44;8mvisible\u{1b}[28mstill visible")
 
-        XCTAssertEqual(line.runs.count, 1)
+        XCTAssertEqual(line.runs.count, 2)
+        XCTAssertEqual(line.runs[0].style.foreground, RGBColor(red: 0, green: 0, blue: 238))
+        XCTAssertEqual(line.runs[0].style.background, RGBColor(red: 205, green: 0, blue: 0))
+        XCTAssertEqual(line.runs[1].style.foreground, RGBColor(red: 205, green: 0, blue: 0))
+        XCTAssertEqual(line.runs[1].style.background, RGBColor(red: 0, green: 0, blue: 238))
+    }
+
+    func testIndexedBaseColorsUseLegacyFixedPalette() {
+        var parser = ANSIParser()
+        let line = parser.parse("\u{1b}[31mdirect\u{1b}[38;5;1mindexed")
+
+        XCTAssertEqual(line.runs.count, 2)
         XCTAssertEqual(line.runs[0].style.foreground, RGBColor(red: 205, green: 0, blue: 0))
-        XCTAssertEqual(line.runs[0].style.background, RGBColor(red: 0, green: 0, blue: 238))
+        XCTAssertEqual(line.runs[1].style.foreground, RGBColor(red: 128, green: 0, blue: 0))
     }
 
     func testBoldUsesBrightPaletteUnlessFontBoldIsEnabled() {
@@ -227,6 +324,45 @@ final class ANSIParserTests: XCTestCase {
 }
 
 final class MUDProtocolPipelineTests: XCTestCase {
+    func testPuebloNegotiationEntitiesLinksSendTagsAndImages() {
+        var pipeline = MUDProtocolPipeline(encoding: .utf8, pueblo: true)
+        let handshake = pipeline.consume(Data("This world is Pueblo 2.50 Enhanced</xch_mudtext>\n".utf8))
+        XCTAssertTrue(handshake.contains(.transmit(Data("PUEBLOCLIENT 2.01\r\n".utf8))))
+
+        let input = "<PUEBLO><A XCH_CMD='look'>Room &amp; Hall</A> <send href='examine|touch' hint='Examine|Touch'>object</send> <IMG SRC='https://example.test/map.png' ALT='Map'>\n"
+        let outputs = pipeline.consume(Data(input.utf8))
+        guard case let .line(line) = outputs.last else { return XCTFail("missing Pueblo line") }
+        XCTAssertEqual(line.text, "Room & Hall object 🖼️")
+        XCTAssertEqual(line.assets.first?.source.absoluteString, "https://example.test/map.png")
+        XCTAssertEqual(line.assets.first?.altText, "Map")
+        XCTAssertTrue(line.runs.contains { $0.style.link == .send("look", hints: []) }, "\(line.runs)")
+        XCTAssertTrue(line.runs.contains { $0.style.link == .send("examine", hints: ["Examine", "Touch"]) })
+        XCTAssertTrue(line.runs.contains { $0.style.link == .url("https://example.test/map.png") })
+    }
+
+    func testPuebloNumericEntitiesAndMalformedMarkupRemainSafe() {
+        var pipeline = MUDProtocolPipeline(encoding: .utf8, pueblo: true, puebloActive: true)
+        let outputs = pipeline.consume(Data("&#65; &#x1F43E; &unknown; <send href='look'>open\n".utf8))
+        guard case let .line(line) = outputs.first else { return XCTFail("missing line") }
+        XCTAssertEqual(line.text, "A 🐾 &unknown; open")
+        XCTAssertTrue(line.runs.contains { $0.style.link == .send("look", hints: []) }, "\(line.runs)")
+    }
+
+    func testPuebloStandardStyleTagsOverlayANSIAndBRMatchesWindowsLineFraming() {
+        var pipeline = MUDProtocolPipeline(encoding: .utf8, pueblo: true, puebloActive: true)
+        let outputs = pipeline.consume(Data("\u{1b}[44mplain <b>bold <font color='#123456'><i>both</i></font></b><br>end\n".utf8))
+        guard case let .line(line) = outputs.first else { return XCTFail("missing line") }
+        XCTAssertEqual(line.text, "plain bold bothend")
+        let bothOffset = "plain bold ".utf16.count
+        guard let bothRun = line.runs.first(where: { $0.range.contains(bothOffset) }) else {
+            return XCTFail("missing nested style run")
+        }
+        XCTAssertEqual(bothRun.style.foreground, RGBColor(red: 0x12, green: 0x34, blue: 0x56))
+        XCTAssertEqual(bothRun.style.background, RGBColor(red: 0, green: 0, blue: 238))
+        XCTAssertTrue(bothRun.style.bold)
+        XCTAssertTrue(bothRun.style.italic)
+    }
+
     func testFormattingResetDoesNotResetTelnetNegotiation() {
         var pipeline = MUDProtocolPipeline()
         _ = pipeline.consume(Data([255, 253, 31]))

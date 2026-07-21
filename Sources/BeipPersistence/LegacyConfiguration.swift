@@ -5,7 +5,7 @@ import Foundation
 public struct LegacyConfigurationDocument: Sendable {
     public indirect enum Node: Sendable {
         case assignment(name: String, value: String, valueRange: Range<String.Index>)
-        case block(name: String?, children: [Node])
+        case block(name: String?, children: [Node], insertionIndex: String.Index)
         case bare(String)
     }
 
@@ -20,11 +20,15 @@ public struct LegacyConfigurationDocument: Sendable {
 
     public func value(at path: [String]) -> String? {
         guard let final = path.last else { return nil }
-        let parents = path.dropLast()
-        guard let children = descend(Array(parents), nodes: nodes) else { return nil }
-        for node in children {
-            if case let .assignment(name, value, _) = node, name.caseInsensitiveCompare(final) == .orderedSame {
-                return Self.unquote(value)
+        let parents = Array(path.dropLast())
+        for split in stride(from: parents.count, through: 0, by: -1) {
+            guard let children = descend(Array(parents.prefix(split)), nodes: nodes) else { continue }
+            let candidate = (Array(parents.dropFirst(split)) + [final]).joined(separator: ".")
+            for node in children {
+                if case let .assignment(name, value, _) = node,
+                   name.caseInsensitiveCompare(candidate) == .orderedSame {
+                    return Self.unquote(value)
+                }
             }
         }
         return nil
@@ -40,12 +44,37 @@ public struct LegacyConfigurationDocument: Sendable {
         nodes = try parser.parse()
     }
 
+    public mutating func upsertValue(_ value: String, at path: [String], quoted: Bool = true) throws {
+        if assignmentRange(at: path, nodes: nodes) != nil {
+            try setValue(value, at: path, quoted: quoted)
+            return
+        }
+        guard let name = path.last else { throw LegacyConfigurationError.missingPath("") }
+        let replacement = quoted ? Self.quote(value) : value
+        let parents = Array(path.dropLast())
+        if parents.isEmpty {
+            if !source.isEmpty, source.last != "\n" { source.append("\n") }
+            source.append("\(name)=\(replacement)\n")
+        } else {
+            if blockInsertionIndex(at: parents, nodes: nodes) == nil { try ensureBlocks(at: parents) }
+            guard let insertion = blockInsertionIndex(at: parents, nodes: nodes) else {
+                throw LegacyConfigurationError.missingPath(parents.joined(separator: "."))
+            }
+            let lineStart = source[..<insertion].lastIndex(of: "\n").map { source.index(after: $0) } ?? source.startIndex
+            let closingIndent = source[lineStart..<insertion].prefix(while: { $0 == " " || $0 == "\t" })
+            let childIndent = String(closingIndent) + "  "
+            source.insert(contentsOf: "\(childIndent)\(name)=\(replacement)\n", at: insertion)
+        }
+        var parser = LegacyParser(source: source)
+        nodes = try parser.parse()
+    }
+
     public func serialized() -> String { source }
 
     private func descend(_ path: [String], nodes: [Node]) -> [Node]? {
         guard let first = path.first else { return nodes }
         for node in nodes {
-            if case let .block(name?, children) = node,
+            if case let .block(name?, children, _) = node,
                name.caseInsensitiveCompare(first) == .orderedSame {
                 return descend(Array(path.dropFirst()), nodes: children)
             }
@@ -53,17 +82,54 @@ public struct LegacyConfigurationDocument: Sendable {
         return nil
     }
 
-    private func assignmentRange(at path: [String], nodes: [Node]) -> Range<String.Index>? {
-        guard let final = path.last,
-              let children = descend(Array(path.dropLast()), nodes: nodes)
-        else { return nil }
-        for node in children {
-            if case let .assignment(name, _, range) = node,
-               name.caseInsensitiveCompare(final) == .orderedSame {
-                return range
+    private func blockInsertionIndex(at path: [String], nodes: [Node]) -> String.Index? {
+        guard let first = path.first else { return nil }
+        for node in nodes {
+            if case let .block(name?, children, insertionIndex) = node,
+               name.caseInsensitiveCompare(first) == .orderedSame {
+                return path.count == 1
+                    ? insertionIndex
+                    : blockInsertionIndex(at: Array(path.dropFirst()), nodes: children)
             }
         }
         return nil
+    }
+
+    private func assignmentRange(at path: [String], nodes: [Node]) -> Range<String.Index>? {
+        guard let final = path.last else { return nil }
+        let parents = Array(path.dropLast())
+        for split in stride(from: parents.count, through: 0, by: -1) {
+            guard let children = descend(Array(parents.prefix(split)), nodes: nodes) else { continue }
+            let candidate = (Array(parents.dropFirst(split)) + [final]).joined(separator: ".")
+            for node in children {
+                if case let .assignment(name, _, range) = node,
+                   name.caseInsensitiveCompare(candidate) == .orderedSame {
+                    return range
+                }
+            }
+        }
+        return nil
+    }
+
+    private mutating func ensureBlocks(at path: [String]) throws {
+        for depth in 1...path.count where blockInsertionIndex(at: Array(path.prefix(depth)), nodes: nodes) == nil {
+            let name = path[depth - 1]
+            let parentPath = Array(path.prefix(depth - 1))
+            if parentPath.isEmpty {
+                if !source.isEmpty, source.last != "\n" { source.append("\n") }
+                source.append("\(name)\n{\n}\n")
+            } else {
+                guard let insertion = blockInsertionIndex(at: parentPath, nodes: nodes) else {
+                    throw LegacyConfigurationError.missingPath(parentPath.joined(separator: "."))
+                }
+                let lineStart = source[..<insertion].lastIndex(of: "\n").map { source.index(after: $0) } ?? source.startIndex
+                let closingIndent = source[lineStart..<insertion].prefix(while: { $0 == " " || $0 == "\t" })
+                let childIndent = String(closingIndent) + "  "
+                source.insert(contentsOf: "\(childIndent)\(name)\n\(childIndent){\n\(childIndent)}\n", at: insertion)
+            }
+            var parser = LegacyParser(source: source)
+            nodes = try parser.parse()
+        }
     }
 
     private static func quote(_ value: String) -> String {
@@ -89,6 +155,7 @@ private struct LegacyParser {
     let source: String
     private var tokens: [Token]
     private var index = 0
+    private var lastClosingBraceStart: String.Index?
 
     init(source: String) {
         self.source = source
@@ -106,11 +173,13 @@ private struct LegacyParser {
             switch token.kind {
             case .close:
                 guard expectClose else { throw LegacyConfigurationError.unexpectedClosingBrace }
+                lastClosingBraceStart = token.range.lowerBound
                 index += 1
                 return result
             case .open:
                 index += 1
-                result.append(.block(name: nil, children: try parseNodes(expectClose: true)))
+                let children = try parseNodes(expectClose: true)
+                result.append(.block(name: nil, children: children, insertionIndex: lastClosingBraceStart!))
             case let .atom(name), let .string(name):
                 index += 1
                 if consumeEqual() {
@@ -120,10 +189,37 @@ private struct LegacyParser {
                     case let .atom(raw), let .string(raw):
                         result.append(.assignment(name: name, value: raw, valueRange: value.range))
                         index += 1
+                    case .open:
+                        // The legacy format uses braces both for blocks and for
+                        // scalar tuple values (for example ClientSize={80,24}).
+                        // After an equals sign a brace is always a value.
+                        let start = value.range.lowerBound
+                        var depth = 0
+                        var end = value.range.upperBound
+                        repeat {
+                            guard index < tokens.count else {
+                                throw LegacyConfigurationError.missingClosingBrace
+                            }
+                            let component = tokens[index]
+                            switch component.kind {
+                            case .open: depth += 1
+                            case .close: depth -= 1
+                            default: break
+                            }
+                            end = component.range.upperBound
+                            index += 1
+                        } while depth > 0
+                        let range = start..<end
+                        result.append(.assignment(
+                            name: name,
+                            value: String(source[range]),
+                            valueRange: range
+                        ))
                     default: throw LegacyConfigurationError.missingValue(name)
                     }
                 } else if consumeOpen() {
-                    result.append(.block(name: name, children: try parseNodes(expectClose: true)))
+                    let children = try parseNodes(expectClose: true)
+                    result.append(.block(name: name, children: children, insertionIndex: lastClosingBraceStart!))
                 } else {
                     result.append(.bare(name))
                 }
@@ -197,6 +293,11 @@ private struct LegacyParser {
 }
 
 public actor LegacyConfigurationStore {
+    public struct Recovery: Sendable {
+        public var document: LegacyConfigurationDocument
+        public var recoveredFrom: URL?
+    }
+
     public let url: URL
     private var fingerprint: String?
 
@@ -209,6 +310,23 @@ public actor LegacyConfigurationStore {
         }
         fingerprint = Self.fingerprint(data)
         return try LegacyConfigurationDocument(source: source)
+    }
+
+    /// Loads the primary configuration, falling back to the newest readable
+    /// timestamped backup without modifying either file.
+    public func loadRecoveringFromBackup() throws -> Recovery {
+        do { return Recovery(document: try load(), recoveredFrom: nil) }
+        catch {
+            let primaryData = try? Data(contentsOf: url)
+            for backup in backupCandidates() {
+                guard let data = try? Data(contentsOf: backup),
+                      let source = String(data: data, encoding: .utf8),
+                      let document = try? LegacyConfigurationDocument(source: source) else { continue }
+                fingerprint = primaryData.map(Self.fingerprint)
+                return Recovery(document: document, recoveredFrom: backup)
+            }
+            throw error
+        }
     }
 
     public func save(_ document: LegacyConfigurationDocument) throws {
@@ -229,6 +347,24 @@ public actor LegacyConfigurationStore {
 
     private static func fingerprint(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func backupCandidates() -> [URL] {
+        let directory = url.deletingLastPathComponent()
+        let stem = url.deletingPathExtension().lastPathComponent + ".backup-"
+        let values = (try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        return values.filter {
+            $0.lastPathComponent.hasPrefix(stem) && $0.pathExtension.lowercased() == "txt"
+        }.sorted { lhs, rhs in
+            let leftDate = try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+            let rightDate = try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+            if leftDate != rightDate { return (leftDate ?? .distantPast) > (rightDate ?? .distantPast) }
+            return lhs.lastPathComponent > rhs.lastPathComponent
+        }
     }
 
     private static func timestamp() -> String {
@@ -257,4 +393,3 @@ public enum LegacyConfigurationError: LocalizedError {
         }
     }
 }
-

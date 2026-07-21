@@ -12,6 +12,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSText
     private let activityLabel = NSTextField(labelWithString: "")
     private let tabButton = NSButton(title: "New Tab", target: nil, action: nil)
     private let commandRegistry = CommandRegistry()
+    private let delayScheduler = DelayScheduler()
     private let scriptService = ScriptServiceClient()
     private var variables: [String: String] = [:]
     private var session: SessionActor?
@@ -19,6 +20,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSText
     private var currentServer: ServerProfile?
     private var localEcho = true
     private var terminalType = "Beip"
+    private var gmcpDumpEnabled = false
+    private var hasPendingPrompt = false
     var onClose: (() -> Void)?
 
     init() {
@@ -165,9 +168,13 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSText
         sessionTask?.cancel()
         if let session { Task { await session.disconnect() } }
         currentServer = server
-        var processor = MUDProtocolPipeline(encoding: server.encoding)
+        var processor = MUDProtocolPipeline(
+            encoding: server.encoding,
+            pueblo: server.pueblo,
+            limitTelnetCharset: server.limitTelnetCharset
+        )
         processor.setTerminalType(terminalType)
-        let next = SessionActor(transport: NetworkTransport(), processor: processor)
+        let next = SessionActor(transport: NetworkTransport(), processor: processor, localEcho: localEcho)
         session = next
         output.clear()
         appendClient("Connecting to \(server.host):\(server.port)…")
@@ -196,8 +203,13 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSText
             case .disconnecting: stateLabel.stringValue = "Disconnecting…"; stateLabel.textColor = .systemOrange
             case let .failed(message): stateLabel.stringValue = "Failed"; stateLabel.textColor = .systemRed; appendError(message)
             }
-        case let .renderedLine(line): output.append(line)
-        case let .prompt(line): output.append(line, terminator: "")
+        case let .renderedLine(line):
+            if hasPendingPrompt { output.removeLastLine(); hasPendingPrompt = false }
+            output.append(line)
+        case let .prompt(line):
+            if hasPendingPrompt { output.removeLastLine() }
+            output.append(line, terminator: "")
+            hasPendingPrompt = true
         case let .gmcp(message): activityLabel.stringValue = "GMCP: \(message.package)"
         case let .mcp(message): activityLabel.stringValue = "MCP: \(message)"
         case let .encoding(encoding): appendClient("Charset negotiated: \(encoding.rawValue)")
@@ -211,10 +223,13 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSText
         let text = sender.stringValue
         guard !text.isEmpty else { return }
         sender.stringValue = ""
+        processInput(text)
+    }
+
+    private func processInput(_ text: String) {
         switch commandRegistry.parse(text, variables: variables) {
         case .notACommand:
             guard let session else { appendError("Not connected."); return }
-            appendLocalEcho(text)
             Task { await session.send(text) }
         case let .send(value):
             guard let session else { appendError("Not connected."); return }
@@ -223,6 +238,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSText
         case .clear: output.clear()
         case let .localEcho(enabled):
             localEcho = enabled
+            if let session { Task { await session.configureLocalEcho(enabled) } }
             appendClient("Local echo \(enabled ? "on" : "off").")
         case .resetANSI:
             guard let session else { appendError("Not connected."); return }
@@ -248,6 +264,117 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSText
         case let .gmcp(message):
             guard let session else { appendError("Not connected."); return }
             Task { await session.sendRaw(Self.gmcpFrame(message)) }
+        case let .gmcpDump(enabled):
+            gmcpDumpEnabled = enabled
+            appendClient("GMCP dump \(enabled ? "enabled" : "disabled").")
+        case let .disconnect(all):
+            let controllers = all ? Self.openControllers : [self]
+            for controller in controllers { controller.disconnect() }
+        case let .reconnect(all):
+            let controllers = all ? Self.openControllers : [self]
+            for controller in controllers {
+                guard let session = controller.session else { controller.appendError("No previous connection to reconnect."); continue }
+                Task { await session.reconnect() }
+            }
+        case let .connect(address, character):
+            guard character == nil else {
+                appendError("Named character lookup requires a loaded Config.txt profile.")
+                return
+            }
+            guard let endpoint = Self.endpoint(address) else {
+                appendError("Missing port; address must be host:port.")
+                return
+            }
+            startSession(.init(name: address, host: endpoint.host, port: endpoint.port))
+        case let .repeatCommand(count, command):
+            for _ in 0..<count { processInput(command) }
+        case let .delay(action):
+            switch action {
+            case .list:
+                Task {
+                    let entries = await delayScheduler.entries()
+                    if entries.isEmpty { appendClient("No pending delay actions.") }
+                    for entry in entries {
+                        appendClient("Delay ID \(entry.id): \(entry.command) in \(entry.seconds)s\(entry.repeating ? " (repeating)" : "")")
+                    }
+                }
+            case .killAll:
+                Task { await delayScheduler.killAll(); appendClient("All pending timers erased.") }
+            case let .kill(id):
+                Task {
+                    let killed = await delayScheduler.kill(id)
+                    appendClient(killed ? "Timer killed." : "Timer ID not found.")
+                }
+            case let .schedule(id, repeating, seconds, command):
+                Task {
+                    let assigned = await delayScheduler.schedule(
+                        id: id,
+                        repeating: repeating,
+                        seconds: seconds,
+                        command: command
+                    ) { [weak self] command in
+                        await MainActor.run { self?.processInput(command) }
+                    }
+                    appendClient("Starting timer with ID: \(assigned) in \(seconds)s")
+                }
+            }
+        case let .receive(value):
+            guard let session else { appendError("Not connected."); return }
+            Task { await session.receive(value) }
+        case let .receiveGMCP(message):
+            guard let session else { appendError("Not connected."); return }
+            Task { await session.receiveGMCP(message) }
+        case let .ping(value):
+            guard let session else { appendError("Not connected."); return }
+            Task { await session.ping(value) }
+        case let .setInput(value):
+            guard input.stringValue.isEmpty else { return }
+            input.stringValue = value
+            input.currentEditor()?.selectedRange = NSRange(location: 0, length: value.utf16.count)
+        case let .idle(minutes, command):
+            guard let session else { appendError("Must be connected to work."); return }
+            if let minutes, let command {
+                Task { await session.configureIdle(interval: TimeInterval(minutes) * 60, text: command) }
+                appendClient("Idle timer activated: \(minutes) minute(s), sends \(command)")
+            } else {
+                Task { await session.configureIdle(interval: nil, text: nil) }
+                appendClient("Idle timer removed.")
+            }
+        case .statistics:
+            guard let session else { appendError("Not connected."); return }
+            Task {
+                let stats = await session.statistics()
+                appendClient("Connections: \(stats.connectionCount)  Sent: \(stats.bytesSent) bytes  Received: \(stats.bytesReceived) bytes  Online: \(Int(stats.secondsConnected))s")
+            }
+        case .connectionInfo:
+            guard let server = currentServer else { appendError("No connection information available."); return }
+            appendClient("\(server.host):\(server.port) — \(server.usesTLS ? (server.verifiesCertificate ? "TLS, verified" : "TLS, unverified") : "plain TCP")")
+        case .close: window?.performClose(nil)
+        case .exit: NSApplication.shared.terminate(nil)
+        case .newWindow, .newTab:
+            NSApplication.shared.sendAction(#selector(ApplicationDelegate.newWindow(_:)), to: nil, from: nil)
+        case .silence:
+            appendClient("Stopped local sound playback.")
+        case .removeLast: output.removeLastLine()
+        case let .wall(value):
+            for controller in Self.openControllers {
+                guard let session = controller.session else { continue }
+                Task { await session.send(value) }
+            }
+        case let .openDialog(dialog, _):
+            switch dialog {
+            case "worlds": showConnectDialog()
+            case "about": NSApplication.shared.orderFrontStandardAboutPanel(nil)
+            default: appendClient("The \(dialog) editor belongs to a later workspace milestone.")
+            }
+        case .listServers:
+            if let server = currentServer { appendClient("\(server.name) — \(server.host):\(server.port)") }
+            else { appendClient("No server profiles loaded.") }
+        case .listCharacters: appendClient("No character profiles loaded in this window.")
+        case .listPuppets: appendClient("No puppet profiles loaded in this window.")
+        case let .connectPuppet(name): appendError("Puppet profile not found: \(name)")
+        case .stopLogs: appendClient("No active logs.")
+        case let .startLog(filename, _): appendClient("Logging command accepted for \(filename); logging is completed in Milestone 4.")
         case let .script(source):
             Task {
                 let result = await scriptService.evaluate(source)
@@ -259,10 +386,32 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSText
                 if let type { appendClient("Scripting help requested for \(type). See Documentation/ScriptingAPI.md in the Windows reference.") }
                 else { appendClient("Scripting types: " + (await ScriptRuntime().helpTypes()).joined(separator: ", ")) }
             }
+        case let .openCommandHelp(topic):
+            var components = URLComponents(string: "https://github.com/BeipDev/BeipMU/blob/master/Documentation/CommandLine.md")
+            components?.fragment = topic
+            if let url = components?.url { NSWorkspace.shared.open(url) }
         case .resetScript:
             Task { await scriptService.reset(); appendClient("Scripting runtime reset.") }
+        case let .invoke(name, _, _):
+            appendClient("/\(name) is registered; its target surface is completed in a later milestone.")
         case let .unimplemented(command): appendError("/\(command) is recognized but not implemented in this milestone.")
         }
+    }
+
+    private static var openControllers: [ClientWindowController] {
+        NSApplication.shared.windows.compactMap { $0.windowController as? ClientWindowController }
+    }
+
+    private static func endpoint(_ address: String) -> (host: String, port: UInt16)? {
+        if address.hasPrefix("["), let close = address.firstIndex(of: "]") {
+            let host = String(address[address.index(after: address.startIndex)..<close])
+            let suffix = address[address.index(after: close)...]
+            guard suffix.first == ":", let port = UInt16(suffix.dropFirst()) else { return nil }
+            return (host, port)
+        }
+        guard let colon = address.lastIndex(of: ":"),
+              let port = UInt16(address[address.index(after: colon)...]) else { return nil }
+        return (String(address[..<colon]), port)
     }
 
     private static func gmcpFrame(_ message: GMCPMessage) -> Data {
@@ -274,10 +423,5 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSText
     private func appendError(_ text: String) {
         let style = TextStyle(foreground: .init(red: 255, green: 80, blue: 80))
         output.append(.init(text: text, runs: [.init(range: 0..<text.utf16.count, style: style)], source: .client))
-    }
-    private func appendLocalEcho(_ text: String) {
-        guard localEcho else { return }
-        let style = TextStyle(foreground: .init(red: 0, green: 205, blue: 205))
-        output.append(.init(text: text, runs: [.init(range: 0..<text.utf16.count, style: style)], source: .localEcho))
     }
 }

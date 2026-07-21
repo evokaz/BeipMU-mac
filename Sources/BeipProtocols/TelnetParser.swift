@@ -44,6 +44,7 @@ public struct TelnetParser: Sendable {
     private var terminalTypeSequence = 0
     public private(set) var negotiatedNAWS = false
     public var terminalType = "Beip"
+    public var charsetLimit: TextEncoding?
 
     public init() {}
 
@@ -72,7 +73,6 @@ public struct TelnetParser: Sendable {
                 case Code.ga, Code.eor:
                     if !buffer.isEmpty {
                         events.append(.prompt(buffer))
-                        buffer.removeAll(keepingCapacity: true)
                     }
                     state = .normal
                 case Code.dont: state = .dont
@@ -152,7 +152,7 @@ public struct TelnetParser: Sendable {
                     let offered = sideBuffer.dropFirst().split(separator: separator).map {
                         String(decoding: $0, as: UTF8.self).uppercased()
                     }
-                    if offered.contains("UTF-8") {
+                    if offered.contains("UTF-8"), charsetLimit == nil || charsetLimit == .utf8 {
                         events.append(.send(subnegotiation(Code.charset, Data([2]) + Data("UTF-8".utf8))))
                         events.append(.encoding(.utf8))
                     }
@@ -209,7 +209,7 @@ public struct TelnetParser: Sendable {
     }
 
     private func gmcpHello() -> Data {
-        subnegotiation(Code.gmcp, Data("Core.Hello {\"client\":\"Beip\",\"version\":\"331\"}".utf8))
+        subnegotiation(Code.gmcp, Data("Core.Hello {\"client\":\"Beip\", \"version\":\"331\"}".utf8))
         + subnegotiation(Code.gmcp, Data("Core.Supports.Set [ \"WebView 1\", \"Beip.Stats 1\", \"Beip.Tilemap 1\", \"Beip.Id 1\", \"Client.Media 1\" ]".utf8))
     }
 }

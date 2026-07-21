@@ -33,6 +33,17 @@ final class OutputTextView {
 
     func clear() { textView.textStorage?.setAttributedString(NSAttributedString()) }
 
+    func removeLastLine() {
+        guard let storage = textView.textStorage, storage.length > 0 else { return }
+        let value = storage.string as NSString
+        var end = value.length
+        if end > 0, value.character(at: end - 1) == 10 { end -= 1 }
+        let search = NSRange(location: 0, length: end)
+        let newline = value.range(of: "\n", options: .backwards, range: search)
+        let start = newline.location == NSNotFound ? 0 : newline.location + 1
+        storage.deleteCharacters(in: NSRange(location: start, length: storage.length - start))
+    }
+
     var terminalSize: (columns: UInt16, rows: UInt16) {
         let font = textView.font ?? .monospacedSystemFont(ofSize: 13, weight: .regular)
         let cellWidth = max(1, ("M" as NSString).size(withAttributes: [.font: font]).width)

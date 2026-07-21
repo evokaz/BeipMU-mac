@@ -6,6 +6,10 @@ import Security
 public actor NetworkTransport: SessionTransport {
     private var connection: NWConnection?
     private var continuation: AsyncStream<TransportEvent>.Continuation?
+    private var activeRequest: ConnectionRequest?
+    private var attempt = 0
+    private var connectionTimeoutTask: Task<Void, Never>?
+    private var reachedReady = false
     private let queue = DispatchQueue(label: "org.beipmu.transport", qos: .userInitiated)
 
     public init() {}
@@ -18,18 +22,34 @@ public actor NetworkTransport: SessionTransport {
 
     public func connect(to request: ConnectionRequest) async throws {
         await disconnect()
+        activeRequest = request
+        attempt = 0
+        startAttempt(request)
+    }
+
+    private func startAttempt(_ request: ConnectionRequest) {
         guard let port = NWEndpoint.Port(rawValue: request.server.port) else {
-            throw TransportError.invalidPort(request.server.port)
+            continuation?.yield(.state(.failed(TransportError.invalidPort(request.server.port).localizedDescription)))
+            return
         }
 
+        attempt += 1
+        reachedReady = false
         continuation?.yield(.state(.resolving))
-        let parameters = makeParameters(for: request.server)
+        let parameters = makeParameters(for: request)
         let newConnection = NWConnection(
             host: NWEndpoint.Host(request.server.host),
             port: port,
             using: parameters
         )
         connection = newConnection
+        connectionTimeoutTask?.cancel()
+        connectionTimeoutTask = Task { [weak self, weak newConnection] in
+            do { try await Task.sleep(for: .milliseconds(request.policy.connectTimeoutMilliseconds)) }
+            catch { return }
+            guard let newConnection else { return }
+            await self?.connectionTimedOut(newConnection)
+        }
         newConnection.stateUpdateHandler = { [weak self] state in
             Task { await self?.handle(state, from: newConnection) }
         }
@@ -50,6 +70,9 @@ public actor NetworkTransport: SessionTransport {
     }
 
     public func disconnect() async {
+        connectionTimeoutTask?.cancel()
+        connectionTimeoutTask = nil
+        activeRequest = nil
         guard let connection else { return }
         continuation?.yield(.state(.disconnecting))
         connection.stateUpdateHandler = nil
@@ -58,10 +81,12 @@ public actor NetworkTransport: SessionTransport {
         continuation?.yield(.state(.disconnected))
     }
 
-    private func makeParameters(for server: ServerProfile) -> NWParameters {
+    private func makeParameters(for request: ConnectionRequest) -> NWParameters {
+        let server = request.server
         let tcp = NWProtocolTCP.Options()
-        tcp.noDelay = true
-        tcp.enableKeepalive = true
+        tcp.noDelay = request.policy.noDelay
+        tcp.enableKeepalive = request.policy.keepAlive
+        tcp.connectionTimeout = max(1, request.policy.connectTimeoutMilliseconds / 1_000)
 
         let parameters: NWParameters
         if server.usesTLS {
@@ -75,9 +100,9 @@ public actor NetworkTransport: SessionTransport {
         } else {
             parameters = NWParameters(tls: nil, tcp: tcp)
         }
-        // Network.framework does not expose its IP version selector through the
-        // public Swift options object. Explicit A-record resolution is tracked
-        // separately in the parity matrix; the default resolver is used here.
+        if server.forceIPv4 {
+            parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(.any), port: .any)
+        }
         return parameters
     }
 
@@ -86,7 +111,7 @@ public actor NetworkTransport: SessionTransport {
             guard let self, let connection else { return }
             Task {
                 if let data, !data.isEmpty { await self.emitReceived(data, from: connection) }
-                if let error { await self.finish(connection, with: .failed(error.localizedDescription)) }
+                if let error { await self.fail(connection, message: error.localizedDescription) }
                 else if complete { await self.finish(connection, with: .disconnected) }
                 else { await self.receiveAgain(on: connection) }
             }
@@ -102,8 +127,13 @@ public actor NetworkTransport: SessionTransport {
     private func handle(_ state: NWConnection.State, from source: NWConnection) {
         guard connection === source else { return }
         switch state {
-        case .ready: continuation?.yield(.state(.connected))
-        case let .failed(error): finish(source, with: .failed(error.localizedDescription))
+        case .ready:
+            connectionTimeoutTask?.cancel()
+            connectionTimeoutTask = nil
+            reachedReady = true
+            continuation?.yield(.state(.connected))
+        case let .failed(error):
+            fail(source, message: error.localizedDescription)
         case .cancelled: finish(source, with: .disconnected)
         case .preparing: continuation?.yield(.state(.connecting))
         case .waiting: continuation?.yield(.state(.connecting))
@@ -117,7 +147,42 @@ public actor NetworkTransport: SessionTransport {
         source.stateUpdateHandler = nil
         source.cancel()
         connection = nil
+        connectionTimeoutTask?.cancel()
+        connectionTimeoutTask = nil
         continuation?.yield(.state(state))
+    }
+
+    private func fail(_ source: NWConnection, message: String) {
+        guard connection === source else { return }
+        let shouldRetry = !reachedReady && canRetry
+        finish(source, with: .failed(message))
+        if shouldRetry { scheduleRetry() }
+    }
+
+    private func connectionTimedOut(_ source: NWConnection) {
+        guard connection === source, !reachedReady else { return }
+        let shouldRetry = canRetry
+        finish(source, with: .failed("Connection timed out."))
+        if shouldRetry { scheduleRetry() }
+    }
+
+    private var canRetry: Bool {
+        guard let request = activeRequest else { return false }
+        return request.policy.retryForever || attempt < request.policy.retryCount
+    }
+
+    private func scheduleRetry() {
+        guard let request = activeRequest else { return }
+        let delay = request.policy.connectTimeoutMilliseconds
+        let expectedAttempt = attempt
+        queue.asyncAfter(deadline: .now() + .milliseconds(delay)) { [weak self] in
+            Task { await self?.retry(request, afterAttempt: expectedAttempt) }
+        }
+    }
+
+    private func retry(_ request: ConnectionRequest, afterAttempt expectedAttempt: Int) {
+        guard activeRequest == request, attempt == expectedAttempt, connection == nil else { return }
+        startAttempt(request)
     }
 
     public enum TransportError: LocalizedError {

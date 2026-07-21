@@ -7,6 +7,66 @@ import Security
 import XCTest
 
 final class NetworkTransportTests: XCTestCase {
+    func testDNSHostnameResolutionWithForcedIPv4Connects() async throws {
+        let server = try FakeTCPServer()
+        let port = try await server.start()
+        defer { server.stop() }
+        let transport = NetworkTransport()
+        let stream = await transport.events()
+        let connected = expectation(description: "DNS-resolved IPv4 connection")
+        let task = Task {
+            for await event in stream {
+                if event == .state(.connected) { connected.fulfill(); return }
+            }
+        }
+        defer { task.cancel() }
+
+        try await transport.connect(to: .init(server: .init(
+            name: "DNS fixture",
+            host: "localhost",
+            port: port,
+            forceIPv4: true
+        )))
+        _ = try await server.nextConnection()
+        await fulfillment(of: [connected], timeout: 3)
+        await transport.disconnect()
+    }
+
+    func testFailedInitialConnectionRetriesAccordingToPolicy() async throws {
+        let temporaryServer = try FakeTCPServer()
+        let closedPort = try await temporaryServer.start()
+        temporaryServer.stop()
+        // NWListener cancellation is asynchronous. Wait for the ephemeral port
+        // to leave LISTEN so this remains an initial-connect failure even when
+        // the full suite puts the Network framework queues under load.
+        try await Task.sleep(for: .milliseconds(100))
+
+        let transport = NetworkTransport()
+        let stream = await transport.events()
+        let secondAttempt = expectation(description: "second connection attempt")
+        let recorder = TransportEventRecorder()
+        let task = Task {
+            var resolvingCount = 0
+            for await event in stream {
+                await recorder.append(event)
+                if case .state(.resolving) = event {
+                    resolvingCount += 1
+                    if resolvingCount == 2 { secondAttempt.fulfill(); return }
+                }
+            }
+        }
+        defer { task.cancel() }
+
+        try await transport.connect(to: .init(
+            server: .init(name: "retry", host: "127.0.0.1", port: closedPort, forceIPv4: true),
+            policy: .init(connectTimeoutMilliseconds: 1_000, retryCount: 2)
+        ))
+        await fulfillment(of: [secondAttempt], timeout: 4)
+        let events = await recorder.events()
+        XCTAssertGreaterThanOrEqual(events.filter { $0 == .state(.resolving) }.count, 2, "\(events)")
+        await transport.disconnect()
+    }
+
     func testProtocolMatrixScriptCanEmitAllMilestoneServerStimuli() async throws {
         let fixtureURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -220,6 +280,69 @@ final class NetworkTransportTests: XCTestCase {
         XCTAssertLessThan(resolving, connecting)
         XCTAssertLessThan(connecting, didConnect)
         XCTAssertLessThan(didConnect, didDisconnect)
+
+        let statistics = await session.statistics()
+        XCTAssertEqual(statistics.connectionCount, 1)
+        XCTAssertGreaterThanOrEqual(statistics.bytesReceived, UInt64(18))
+        XCTAssertGreaterThanOrEqual(statistics.bytesSent, UInt64(27))
+    }
+
+    func testCharacterIdleActionRepeatsWhileConnected() async throws {
+        let server = try FakeTCPServer()
+        let port = try await server.start()
+        defer { server.stop() }
+        let session = SessionActor(transport: NetworkTransport(), processor: MUDProtocolPipeline())
+        let character = CharacterProfile(name: "Idle", idleTimeout: 0.02, idleText: "IDLE")
+
+        await session.connect(.init(
+            server: .init(name: "idle", host: "127.0.0.1", port: port),
+            character: character,
+            policy: .init(connectTimeoutMilliseconds: 1_000, retryCount: 1, keepAlive: false, noDelay: false)
+        ))
+        let peer = try await server.nextConnection()
+        let payload = try await peer.receive(atLeast: 6)
+        XCTAssertEqual(payload, Data("IDLE\r\n".utf8))
+        await session.disconnect()
+    }
+
+    func testHeadlessSessionLocalEchoCanBeToggled() async throws {
+        let server = try FakeTCPServer()
+        let port = try await server.start()
+        defer { server.stop() }
+        let session = SessionActor(
+            transport: NetworkTransport(),
+            processor: MUDProtocolPipeline(),
+            localEcho: true
+        )
+        let stream = await session.events()
+        let recorder = SessionEventRecorder()
+        let echoed = expectation(description: "headless local echo")
+        let task = Task {
+            for await event in stream {
+                await recorder.append(event)
+                if case let .renderedLine(line) = event, line.source == .localEcho { echoed.fulfill() }
+            }
+        }
+        defer { task.cancel() }
+
+        await session.connect(.init(server: .init(name: "echo", host: "127.0.0.1", port: port)))
+        let peer = try await server.nextConnection()
+        await session.send("look")
+        let lookPayload = try await peer.receive(atLeast: 6)
+        XCTAssertEqual(lookPayload, Data("look\r\n".utf8))
+        await fulfillment(of: [echoed], timeout: 3)
+        let lines = await recorder.renderedLines()
+        XCTAssertEqual(lines.last?.text, "look")
+        XCTAssertEqual(lines.last?.source, .localEcho)
+
+        await session.configureLocalEcho(false)
+        await session.send("quiet")
+        let quietPayload = try await peer.receive(atLeast: 7)
+        XCTAssertEqual(quietPayload, Data("quiet\r\n".utf8))
+        try await Task.sleep(for: .milliseconds(20))
+        let finalLines = await recorder.renderedLines()
+        XCTAssertEqual(finalLines.filter { $0.source == .localEcho }.count, 1)
+        await session.disconnect()
     }
 }
 

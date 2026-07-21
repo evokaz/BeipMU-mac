@@ -20,6 +20,14 @@ IMPLEMENTED_COMMANDS = {
     "naws", "printenv", "resetscript", "roll", "script", "set", "shelp",
     "ttype", "unset",
 }
+PARTIAL_COMMANDS = {
+    "chars", "close", "connect", "connectioninfo", "delay", "disconnect", "exit", "idle",
+    "log", "logall", "logtop", "new", "newtab", "opendialog", "ping", "puppet",
+    "puppets", "receive", "receivegmcp", "reconnect", "removelast", "repeat",
+    "setinput", "silence", "slist", "stats", "stoplogs", "wall", "world",
+}
+IMPLEMENTED_PROTOCOLS = {"ANSI", "BINARY", "CHARSET", "EOR", "GMCP", "MTTS", "NAWS", "Pueblo", "TTYPE", "Telnet"}
+PARTIAL_PROTOCOLS = set()
 PLATFORM_EXCEPTIONS = {"Window_Properties.HWND"}
 
 
@@ -34,7 +42,9 @@ def command_items() -> list[dict]:
     items = []
     for position, (index, match) in enumerate(matches):
         name = match.group(1)
-        status = "compile-time-excluded" if name == "mucknet" else ("implemented" if name in IMPLEMENTED_COMMANDS else "recognized")
+        status = "compile-time-excluded" if name == "mucknet" else (
+            "implemented" if name in IMPLEMENTED_COMMANDS else "partial" if name in PARTIAL_COMMANDS else "recognized"
+        )
         end = matches[position + 1][0] if position + 1 < len(matches) else min(len(lines), index + 80)
         branch = " ".join(line.split("//", 1)[0].strip() for line in lines[index:end])
         items.append(item("command", f"/{name}", "Commands.cpp", index + 1, normalize(branch), status))
@@ -122,7 +132,13 @@ def declared_surface_items() -> list[dict]:
     result = []
     for category, names in surfaces.items():
         for name in names:
-            result.append(item(category, name, "UPSTREAM_INVENTORY.md", 1, f"Observable {category} surface: {name}", "planned"))
+            status = "planned"
+            if category == "protocol":
+                status = "implemented" if name in IMPLEMENTED_PROTOCOLS else "partial" if name in PARTIAL_PROTOCOLS else "planned"
+            entry = item(category, name, "UPSTREAM_INVENTORY.md", 1, f"Observable {category} surface: {name}", status)
+            if category == "protocol" and name in {"Telnet", "BINARY", "EOR"}:
+                entry["differentialFixture"] = "TelnetParserTests; Tests/Golden/windows-v331-session.trace.json"
+            result.append(entry)
     return result
 
 
@@ -130,6 +146,8 @@ def item(category: str, identifier: str, source: str, line: int, behavior: str, 
     fixture = "pending"
     if status == "implemented":
         fixture = "unit-or-integration-test; Windows differential pending"
+    elif status == "partial":
+        fixture = "partial unit-or-integration coverage; Windows differential pending"
     elif status == "platform-exception":
         fixture = "ScriptRuntimeTests"
     return {
@@ -173,6 +191,7 @@ def document() -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--write", action="store_true")
     args = parser.parse_args()
     rendered = json.dumps(document(), indent=2, ensure_ascii=False) + "\n"
     if args.check:
@@ -181,6 +200,10 @@ def main() -> int:
             print("Documentation/PARITY_ITEMS.json is stale; regenerate it.", file=sys.stderr)
             return 1
         print(f"verified {document()['itemCount']} parity items")
+        return 0
+    if args.write:
+        OUTPUT.write_text(rendered, encoding="utf-8")
+        print(f"wrote {document()['itemCount']} parity items to {OUTPUT.relative_to(REPOSITORY)}")
         return 0
     sys.stdout.write(rendered)
     return 0

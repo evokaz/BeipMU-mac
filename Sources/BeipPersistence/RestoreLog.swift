@@ -1,3 +1,4 @@
+import BeipCore
 import Foundation
 
 public struct RestoreLogRecord: Sendable, Equatable {
@@ -14,6 +15,12 @@ public struct RestoreLogRecord: Sendable, Equatable {
 }
 
 public enum RestoreLogCodec {
+    public struct RepairResult: Sendable, Equatable {
+        public var logs: [[RestoreLogRecord]]
+        public var repairedData: Data
+        public var repairedBufferIndices: [Int]
+    }
+
     /// Encodes one fixed-size ring buffer for each log. Records that cannot fit in a
     /// buffer are omitted, matching the Windows client's restore-log writer.
     public static func write(_ logs: [[RestoreLogRecord]], bufferSize: Int) throws -> Data {
@@ -33,6 +40,31 @@ public enum RestoreLogCodec {
         return try stride(from: 0, to: data.count, by: bufferSize).map { offset in
             try readBuffer(Data(data[offset..<(offset + bufferSize)]))
         }
+    }
+
+    /// Salvages the valid prefix of each corrupt ring buffer and rebuilds only
+    /// affected buffers. This mirrors the Windows client's clear/truncate
+    /// recovery behavior while leaving healthy buffers byte-for-byte intact.
+    public static func repair(_ data: Data, bufferSize: Int) throws -> RepairResult {
+        guard bufferSize >= 20, data.count.isMultiple(of: bufferSize) else {
+            throw RestoreLogError.invalidFileSize
+        }
+        var logs: [[RestoreLogRecord]] = []
+        var repairedData = Data()
+        var repairedIndices: [Int] = []
+        for (index, offset) in stride(from: 0, to: data.count, by: bufferSize).enumerated() {
+            let buffer = Data(data[offset..<(offset + bufferSize)])
+            if let records = try? readBuffer(buffer) {
+                logs.append(records)
+                repairedData.append(buffer)
+                continue
+            }
+            let records = salvageBuffer(buffer)
+            logs.append(records)
+            repairedData.append(try writeBuffer(records, bufferSize: bufferSize))
+            repairedIndices.append(index)
+        }
+        return .init(logs: logs, repairedData: repairedData, repairedBufferIndices: repairedIndices)
     }
 
     private static func writeBuffer(_ records: [RestoreLogRecord], bufferSize: Int) throws -> Data {
@@ -118,6 +150,32 @@ public enum RestoreLogCodec {
         return records
     }
 
+    private static func salvageBuffer(_ buffer: Data) -> [RestoreLogRecord] {
+        let capacity = buffer.count - 8
+        let start = Int(readUInt32(buffer, at: 0))
+        let count = Int(readUInt32(buffer, at: 4))
+        guard start < capacity, count <= capacity else { return [] }
+        let ring = Data(buffer.dropFirst(8))
+        var logical = Data()
+        for index in 0..<count { logical.append(ring[(start + index) % capacity]) }
+
+        var records: [RestoreLogRecord] = []
+        var cursor = 0
+        while cursor + 12 <= logical.count {
+            guard let kind = RestoreLogRecord.Kind(rawValue: logical[cursor]) else { break }
+            let size = Int(logical[cursor + 1]) | Int(logical[cursor + 2]) << 8 | Int(logical[cursor + 3]) << 16
+            let payloadStart = cursor + 12
+            guard payloadStart + size <= logical.count else { break }
+            records.append(.init(
+                kind: kind,
+                windowsFileTime: readUInt64(logical, at: cursor + 4),
+                payload: Data(logical[payloadStart..<(payloadStart + size)])
+            ))
+            cursor = payloadStart + size
+        }
+        return records
+    }
+
     private static func readUInt32(_ data: Data, at offset: Int) -> UInt32 {
         (0..<4).reduce(0) { $0 | UInt32(data[offset + $1]) << UInt32(8 * $1) }
     }
@@ -152,5 +210,94 @@ public enum RestoreLogStore {
     public static func save(_ logs: [[RestoreLogRecord]], to url: URL, bufferSize: Int) throws {
         let data = try RestoreLogCodec.write(logs, bufferSize: bufferSize)
         try data.write(to: url, options: .atomic)
+    }
+
+    @discardableResult
+    public static func loadRepairing(from url: URL, bufferSize: Int) throws -> RestoreLogCodec.RepairResult {
+        let result = try RestoreLogCodec.repair(Data(contentsOf: url), bufferSize: bufferSize)
+        if !result.repairedBufferIndices.isEmpty {
+            try result.repairedData.write(to: url, options: .atomic)
+        }
+        return result
+    }
+}
+
+public struct RestorePlaybackResult: Sendable, Equatable {
+    public var events: [SessionEvent]
+    public var sentHistory: [String]
+
+    public init(events: [SessionEvent] = [], sentHistory: [String] = []) {
+        self.events = events
+        self.sentHistory = sentHistory
+    }
+}
+
+/// Replays the post-Telnet line records stored by the Windows client through a
+/// normal session processor. Start records reset parser state; protocol replies
+/// produced while replaying are intentionally discarded.
+public enum RestoreLogPlayback {
+    public static func replay(
+        _ records: [RestoreLogRecord],
+        through processor: inout some ByteStreamProcessor,
+        localEcho: Bool = true,
+        decodeSent: (Data) -> String = { String(decoding: $0, as: UTF8.self) }
+    ) -> RestorePlaybackResult {
+        var result = RestorePlaybackResult()
+        for record in records {
+            let timestamp = date(fromWindowsFileTime: record.windowsFileTime)
+            switch record.kind {
+            case .start:
+                processor.reset()
+            case .received:
+                // Restore.dat stores complete lines after Telnet framing, without
+                // their newline terminator. Supplying one flushes the shared line
+                // processor while retaining ANSI/Pueblo state across records.
+                for output in processor.consume(record.payload + Data([10])) {
+                    append(output, timestamp: timestamp, to: &result.events)
+                }
+            case .receivedGMCP:
+                let value = String(decoding: record.payload, as: UTF8.self)
+                let split = value.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: false)
+                result.events.append(.gmcp(.init(
+                    package: split.first.map(String.init) ?? "",
+                    payload: split.count > 1 ? String(split[1]) : ""
+                )))
+            case .sent:
+                let text = decodeSent(record.payload)
+                result.sentHistory.append(text)
+                if localEcho {
+                    result.events.append(.renderedLine(.init(
+                        text: text,
+                        timestamp: timestamp,
+                        source: .replay
+                    )))
+                }
+            }
+        }
+        return result
+    }
+
+    private static func append(_ output: ProtocolOutput, timestamp: Date, to events: inout [SessionEvent]) {
+        switch output {
+        case let .line(line):
+            var line = line
+            line.timestamp = timestamp
+            line.source = .replay
+            events.append(.renderedLine(line))
+        case let .prompt(line):
+            var line = line
+            line.timestamp = timestamp
+            line.source = .replay
+            events.append(.prompt(line))
+        case let .gmcp(message): events.append(.gmcp(message))
+        case let .mcp(message): events.append(.mcp(message))
+        case let .diagnostic(message): events.append(.log(message))
+        case .transmit, .encoding, .requestNAWS: break
+        }
+    }
+
+    private static func date(fromWindowsFileTime value: UInt64) -> Date {
+        let secondsSince1601 = Double(value) / 10_000_000
+        return Date(timeIntervalSince1970: secondsSince1601 - 11_644_473_600)
     }
 }

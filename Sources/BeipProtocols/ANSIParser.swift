@@ -92,26 +92,21 @@ public struct ANSIParser: Sendable {
             case 4: style.underline = true
             case 5: style.blink = .slow
             case 6: style.blink = .fast
-            case 7:
+            case 7, 8:
                 if !inverse {
                     swap(&style.foreground, &style.background)
                     inverse = true
                 }
-            // Conceal is intentionally ignored when invisible text is
-            // prevented. TextStyle has no conceal attribute yet, so ignoring
-            // it is also safer than the former (and incorrect) color swap.
-            case 8: break
             case 9: style.strikeout = true
             case 22: style.bold = false; style.faint = false
             case 23: style.italic = false
             case 24: style.underline = false
             case 25: style.blink = .none
-            case 27:
+            case 27, 28:
                 if inverse {
                     swap(&style.foreground, &style.background)
                     inverse = false
                 }
-            case 28: break
             case 29: style.strikeout = false
             case 30...37: setColor(Self.palette[value - 30], foreground: true, paletteIndex: value - 30)
             case 38, 48:
@@ -194,7 +189,7 @@ public struct ANSIParser: Sendable {
     }
 
     public func translate256(_ value: Int) -> RGBColor {
-        if (0..<16).contains(value) { return Self.palette[value] }
+        if (0..<16).contains(value) { return Self.extendedPalette[value] }
         if (16...231).contains(value) {
             let adjusted = value - 16
             let levels: [UInt8] = [0, 95, 135, 175, 215, 255]
@@ -219,6 +214,20 @@ public struct ANSIParser: Sendable {
         .init(red: 127, green: 127, blue: 127), .init(red: 255, green: 0, blue: 0),
         .init(red: 0, green: 255, blue: 0), .init(red: 255, green: 255, blue: 0),
         .init(red: 92, green: 92, blue: 255), .init(red: 255, green: 0, blue: 255),
+        .init(red: 0, green: 255, blue: 255), .init(red: 255, green: 255, blue: 255),
+    ]
+
+    // BeipMU's configurable ANSI palette is used for SGR 30...37/90...97,
+    // while the first sixteen entries in the fixed 256-color table retain
+    // the legacy Windows defaults from AnsiParser.cpp.
+    private static let extendedPalette: [RGBColor] = [
+        .init(red: 0, green: 0, blue: 0), .init(red: 128, green: 0, blue: 0),
+        .init(red: 0, green: 128, blue: 0), .init(red: 128, green: 128, blue: 0),
+        .init(red: 0, green: 0, blue: 128), .init(red: 128, green: 0, blue: 128),
+        .init(red: 0, green: 128, blue: 128), .init(red: 192, green: 192, blue: 192),
+        .init(red: 128, green: 128, blue: 128), .init(red: 255, green: 0, blue: 0),
+        .init(red: 0, green: 255, blue: 0), .init(red: 255, green: 255, blue: 0),
+        .init(red: 0, green: 0, blue: 255), .init(red: 255, green: 0, blue: 255),
         .init(red: 0, green: 255, blue: 255), .init(red: 255, green: 255, blue: 255),
     ]
 }
