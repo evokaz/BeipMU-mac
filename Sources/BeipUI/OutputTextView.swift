@@ -33,6 +33,18 @@ final class OutputTextView {
 
     func clear() { textView.textStorage?.setAttributedString(NSAttributedString()) }
 
+    var terminalSize: (columns: UInt16, rows: UInt16) {
+        let font = textView.font ?? .monospacedSystemFont(ofSize: 13, weight: .regular)
+        let cellWidth = max(1, ("M" as NSString).size(withAttributes: [.font: font]).width)
+        let cellHeight = max(1, textView.layoutManager?.defaultLineHeight(for: font) ?? font.pointSize)
+        let contentSize = scrollView.contentSize
+        let horizontalInsets = textView.textContainerInset.width * 2
+        let verticalInsets = textView.textContainerInset.height * 2
+        let columns = max(1, min(Int(UInt16.max), Int((contentSize.width - horizontalInsets) / cellWidth)))
+        let rows = max(1, min(Int(UInt16.max), Int((contentSize.height - verticalInsets) / cellHeight)))
+        return (UInt16(columns), UInt16(rows))
+    }
+
     func append(_ line: RenderedLine, terminator: String = "\n") {
         let value = NSMutableAttributedString(string: line.text + terminator, attributes: [
             .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),

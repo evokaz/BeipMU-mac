@@ -170,10 +170,11 @@ public struct TelnetParser: Sendable {
     }
 
     public func naws(columns: UInt16, rows: UInt16) -> Data {
-        subnegotiation(Code.naws, Data([
+        let dimensions = Data([
             UInt8(columns >> 8), UInt8(columns & 0xff),
             UInt8(rows >> 8), UInt8(rows & 0xff),
-        ]))
+        ])
+        return subnegotiation(Code.naws, escapingIAC(in: dimensions))
     }
 
     private func command(_ command: UInt8, _ option: UInt8) -> Data {
@@ -184,9 +185,15 @@ public struct TelnetParser: Sendable {
         Data([Code.iac, Code.sb, option]) + payload + Data([Code.iac, Code.se])
     }
 
+    private func escapingIAC(in data: Data) -> Data {
+        data.reduce(into: Data()) { escaped, byte in
+            escaped.append(byte)
+            if byte == Code.iac { escaped.append(byte) }
+        }
+    }
+
     private func gmcpHello() -> Data {
         subnegotiation(Code.gmcp, Data("Core.Hello {\"client\":\"Beip\",\"version\":\"331\"}".utf8))
         + subnegotiation(Code.gmcp, Data("Core.Supports.Set [ \"WebView 1\", \"Beip.Stats 1\", \"Beip.Tilemap 1\", \"Beip.Id 1\", \"Client.Media 1\" ]".utf8))
     }
 }
-

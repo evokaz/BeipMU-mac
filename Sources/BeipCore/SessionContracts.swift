@@ -47,6 +47,11 @@ public protocol ByteStreamProcessor: Sendable {
     mutating func reset()
     mutating func consume(_ data: Data) -> [ProtocolOutput]
     mutating func encode(_ text: String) throws -> Data
+    mutating func windowSizeChanged(columns: UInt16, rows: UInt16) -> Data?
+}
+
+public extension ByteStreamProcessor {
+    mutating func windowSizeChanged(columns: UInt16, rows: UInt16) -> Data? { nil }
 }
 
 public enum SessionEvent: Sendable, Hashable {
@@ -69,6 +74,9 @@ public actor SessionActor {
     private var eventContinuation: AsyncStream<SessionEvent>.Continuation?
     private var transportTask: Task<Void, Never>?
     private var request: ConnectionRequest?
+    private var windowColumns: UInt16 = 80
+    private var windowRows: UInt16 = 24
+    private var isConnected = false
 
     public init(transport: any SessionTransport, processor: any ByteStreamProcessor) {
         self.transport = transport
@@ -86,6 +94,7 @@ public actor SessionActor {
 
     public func connect(_ request: ConnectionRequest) async {
         self.request = request
+        isConnected = false
         processor.reset()
         let stream = await transport.events()
         transportTask?.cancel()
@@ -105,6 +114,7 @@ public actor SessionActor {
     }
 
     public func disconnect() async {
+        isConnected = false
         await transport.disconnect()
     }
 
@@ -125,9 +135,24 @@ public actor SessionActor {
         }
     }
 
+    public func updateWindowSize(columns: UInt16, rows: UInt16) async {
+        guard columns > 0, rows > 0 else { return }
+        windowColumns = columns
+        windowRows = rows
+        guard isConnected,
+              request?.server.sendNAWSOnResize == true,
+              let data = processor.windowSizeChanged(columns: columns, rows: rows) else { return }
+        await transmit(data)
+    }
+
     private func handle(_ event: TransportEvent) async {
         switch event {
         case let .state(state):
+            switch state {
+            case .connected: isConnected = true
+            case .disconnected, .failed: isConnected = false
+            case .resolving, .connecting, .disconnecting: break
+            }
             eventContinuation?.yield(.state(state))
             if case .connected = state, let character = request?.character, !character.connectText.isEmpty {
                 await send(expandConnectText(character.connectText, character: character))
@@ -145,8 +170,7 @@ public actor SessionActor {
     private func handle(_ output: ProtocolOutput) async {
         switch output {
         case let .transmit(data):
-            do { try await transport.send(data) }
-            catch { eventContinuation?.yield(.error(error.localizedDescription)) }
+            await transmit(data)
         case let .line(line):
             eventContinuation?.yield(.renderedLine(line))
             eventContinuation?.yield(.activity(important: false))
@@ -154,9 +178,17 @@ public actor SessionActor {
         case let .gmcp(message): eventContinuation?.yield(.gmcp(message))
         case let .mcp(message): eventContinuation?.yield(.mcp(message))
         case let .encoding(encoding): eventContinuation?.yield(.encoding(encoding))
-        case .requestNAWS: break
+        case .requestNAWS:
+            if let data = processor.windowSizeChanged(columns: windowColumns, rows: windowRows) {
+                await transmit(data)
+            }
         case let .diagnostic(message): eventContinuation?.yield(.log(message))
         }
+    }
+
+    private func transmit(_ data: Data) async {
+        do { try await transport.send(data) }
+        catch { eventContinuation?.yield(.error(error.localizedDescription)) }
     }
 
     private func expandConnectText(_ text: String, character: CharacterProfile) -> String {
@@ -165,4 +197,3 @@ public actor SessionActor {
             .replacingOccurrences(of: "%PASSWORD%", with: character.password)
     }
 }
-

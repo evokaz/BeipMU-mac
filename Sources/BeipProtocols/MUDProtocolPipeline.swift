@@ -43,5 +43,9 @@ public struct MUDProtocolPipeline: ByteStreamProcessor {
         }
         return escaped
     }
-}
 
+    public mutating func windowSizeChanged(columns: UInt16, rows: UInt16) -> Data? {
+        guard telnet.negotiatedNAWS else { return nil }
+        return telnet.naws(columns: columns, rows: rows)
+    }
+}

@@ -31,7 +31,7 @@ public actor NetworkTransport: SessionTransport {
         )
         connection = newConnection
         newConnection.stateUpdateHandler = { [weak self] state in
-            Task { await self?.handle(state) }
+            Task { await self?.handle(state, from: newConnection) }
         }
         newConnection.start(queue: queue)
         continuation?.yield(.state(.connecting))
@@ -85,29 +85,39 @@ public actor NetworkTransport: SessionTransport {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self, weak connection] data, _, complete, error in
             guard let self, let connection else { return }
             Task {
-                if let data, !data.isEmpty { await self.emitReceived(data) }
-                if let error { await self.emitFailure(error.localizedDescription) }
-                else if complete { await self.emitDisconnected() }
+                if let data, !data.isEmpty { await self.emitReceived(data, from: connection) }
+                if let error { await self.finish(connection, with: .failed(error.localizedDescription)) }
+                else if complete { await self.finish(connection, with: .disconnected) }
                 else { await self.receiveAgain(on: connection) }
             }
         }
     }
 
     private func receiveAgain(on connection: NWConnection) { receive(on: connection) }
-    private func emitReceived(_ data: Data) { continuation?.yield(.received(data)) }
-    private func emitFailure(_ message: String) { continuation?.yield(.state(.failed(message))) }
-    private func emitDisconnected() { continuation?.yield(.state(.disconnected)) }
+    private func emitReceived(_ data: Data, from source: NWConnection) {
+        guard connection === source else { return }
+        continuation?.yield(.received(data))
+    }
 
-    private func handle(_ state: NWConnection.State) {
+    private func handle(_ state: NWConnection.State, from source: NWConnection) {
+        guard connection === source else { return }
         switch state {
         case .ready: continuation?.yield(.state(.connected))
-        case let .failed(error): continuation?.yield(.state(.failed(error.localizedDescription)))
-        case .cancelled: continuation?.yield(.state(.disconnected))
+        case let .failed(error): finish(source, with: .failed(error.localizedDescription))
+        case .cancelled: finish(source, with: .disconnected)
         case .preparing: continuation?.yield(.state(.connecting))
         case .waiting: continuation?.yield(.state(.connecting))
         case .setup: break
         @unknown default: break
         }
+    }
+
+    private func finish(_ source: NWConnection, with state: ConnectionState) {
+        guard connection === source else { return }
+        source.stateUpdateHandler = nil
+        source.cancel()
+        connection = nil
+        continuation?.yield(.state(state))
     }
 
     public enum TransportError: LocalizedError {

@@ -38,6 +38,10 @@ final class TelnetParserTests: XCTestCase {
         let events = parser.consume(Data([255, 253, 31]))
         XCTAssertTrue(events.contains(.requestNAWS))
         XCTAssertEqual(parser.naws(columns: 80, rows: 24), Data([255, 250, 31, 0, 80, 0, 24, 255, 240]))
+        XCTAssertEqual(
+            parser.naws(columns: 255, rows: 511),
+            Data([255, 250, 31, 0, 255, 255, 1, 255, 255, 255, 240])
+        )
     }
 }
 

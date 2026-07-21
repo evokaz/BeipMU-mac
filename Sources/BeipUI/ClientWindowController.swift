@@ -42,6 +42,12 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSText
         onClose?()
     }
 
+    func windowDidResize(_ notification: Notification) {
+        guard let session else { return }
+        let size = output.terminalSize
+        Task { await session.updateWindowSize(columns: size.columns, rows: size.rows) }
+    }
+
     func showConnectDialog() {
         let alert = NSAlert()
         alert.messageText = "Connect to a MU*"
@@ -55,17 +61,20 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSText
         tls.state = currentServer?.usesTLS == true ? .on : .off
         let verify = NSButton(checkboxWithTitle: "Verify TLS certificate", target: nil, action: nil)
         verify.state = currentServer?.verifiesCertificate == true ? .on : .off
+        let resizeNAWS = NSButton(checkboxWithTitle: "Send window size updates", target: nil, action: nil)
+        resizeNAWS.state = currentServer?.sendNAWSOnResize == true ? .on : .off
 
         let grid = NSGridView(views: [
             [NSTextField(labelWithString: "Host:"), host],
             [NSTextField(labelWithString: "Port:"), port],
             [NSView(), tls],
             [NSView(), verify],
+            [NSView(), resizeNAWS],
         ])
         grid.column(at: 0).xPlacement = .trailing
         grid.column(at: 1).width = 260
         grid.rowSpacing = 8
-        grid.frame = NSRect(x: 0, y: 0, width: 350, height: 110)
+        grid.frame = NSRect(x: 0, y: 0, width: 350, height: 138)
         alert.accessoryView = grid
 
         let complete: (NSApplication.ModalResponse) -> Void = { [weak self] response in
@@ -78,7 +87,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSText
                 host: host.stringValue,
                 port: rawPort,
                 usesTLS: tls.state == .on,
-                verifiesCertificate: verify.state == .on
+                verifiesCertificate: verify.state == .on,
+                sendNAWSOnResize: resizeNAWS.state == .on
             )
             self.startSession(profile)
         }
@@ -164,7 +174,11 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSText
                 self?.handle(event)
             }
         }
-        Task { await next.connect(.init(server: server)) }
+        let size = output.terminalSize
+        Task {
+            await next.updateWindowSize(columns: size.columns, rows: size.rows)
+            await next.connect(.init(server: server))
+        }
     }
 
     private func handle(_ event: SessionEvent) {
