@@ -2,9 +2,79 @@
 import BeipCore
 import BeipProtocols
 import Foundation
+import Security
 import XCTest
 
 final class NetworkTransportTests: XCTestCase {
+    func testTLSWithCertificateVerificationEnabledRejectsSelfSignedServer() async throws {
+        let server = try FakeTCPServer(tlsIdentity: try testTLSIdentity())
+        let port = try await server.start()
+        defer { server.stop() }
+
+        let transport = NetworkTransport()
+        let stream = await transport.events()
+        let rejected = expectation(description: "self-signed TLS rejected")
+        let eventTask = Task {
+            for await event in stream {
+                if case .state(.failed) = event {
+                    rejected.fulfill()
+                    return
+                }
+            }
+        }
+        defer { eventTask.cancel() }
+
+        try await transport.connect(to: .init(server: .init(
+            name: "TLS verification fixture",
+            host: "127.0.0.1",
+            port: port,
+            usesTLS: true,
+            verifiesCertificate: true
+        )))
+        _ = try await server.nextConnection()
+        await fulfillment(of: [rejected], timeout: 3)
+    }
+
+    func testTLSWithCertificateVerificationDisabledExchangesData() async throws {
+        let server = try FakeTCPServer(tlsIdentity: try testTLSIdentity())
+        let port = try await server.start()
+        defer { server.stop() }
+
+        let transport = NetworkTransport()
+        let stream = await transport.events()
+        let connected = expectation(description: "TLS connected")
+        let received = expectation(description: "TLS payload received")
+        let recorder = TransportEventRecorder()
+        let eventTask = Task {
+            for await event in stream {
+                await recorder.append(event)
+                if case .state(.connected) = event { connected.fulfill() }
+                if case .received = event { received.fulfill() }
+            }
+        }
+        defer { eventTask.cancel() }
+
+        try await transport.connect(to: .init(server: .init(
+            name: "TLS fixture",
+            host: "127.0.0.1",
+            port: port,
+            usesTLS: true,
+            verifiesCertificate: false
+        )))
+        let peer = try await server.nextConnection()
+        await fulfillment(of: [connected], timeout: 3)
+
+        try await peer.send(Data("secure server".utf8))
+        await fulfillment(of: [received], timeout: 3)
+        let events = await recorder.events()
+        XCTAssertTrue(events.contains(.received(Data("secure server".utf8))))
+
+        try await transport.send(Data("secure client".utf8))
+        let clientPayload = try await peer.receive(atLeast: 13)
+        XCTAssertEqual(clientPayload, Data("secure client".utf8))
+        await transport.disconnect()
+    }
+
     func testLiveSessionNegotiatesNAWSAndExchangesText() async throws {
         let server = try FakeTCPServer()
         let port = try await server.start()
@@ -76,6 +146,13 @@ final class NetworkTransportTests: XCTestCase {
     }
 }
 
+private actor TransportEventRecorder {
+    private var recorded: [TransportEvent] = []
+
+    func append(_ event: TransportEvent) { recorded.append(event) }
+    func events() -> [TransportEvent] { recorded }
+}
+
 private actor SessionEventRecorder {
     private var events: [SessionEvent] = []
 
@@ -105,8 +182,16 @@ private final class FakeTCPServer: @unchecked Sendable {
     private var pendingConnections: [FakeServerConnection] = []
     private var allConnections: [FakeServerConnection] = []
 
-    init() throws {
-        listener = try NWListener(using: .tcp, on: .any)
+    init(tlsIdentity: sec_identity_t? = nil) throws {
+        let parameters: NWParameters
+        if let tlsIdentity {
+            let tls = NWProtocolTLS.Options()
+            sec_protocol_options_set_local_identity(tls.securityProtocolOptions, tlsIdentity)
+            parameters = NWParameters(tls: tls, tcp: NWProtocolTCP.Options())
+        } else {
+            parameters = .tcp
+        }
+        listener = try NWListener(using: parameters, on: .any)
         listener.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
             switch state {
@@ -195,6 +280,25 @@ private final class FakeTCPServer: @unchecked Sendable {
     }
 }
 
+private func testTLSIdentity() throws -> sec_identity_t {
+    let fixture = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Fixtures/tls-identity.p12.base64")
+    let encoded = try String(contentsOf: fixture, encoding: .utf8)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let data = Data(base64Encoded: encoded) else { throw FakeServerError.invalidTLSIdentity }
+
+    var imported: CFArray?
+    let options = [kSecImportExportPassphrase as String: "beipmu-tests"] as CFDictionary
+    guard SecPKCS12Import(data as CFData, options, &imported) == errSecSuccess,
+          let item = (imported as? [[String: Any]])?.first,
+          let identity = item[kSecImportItemIdentity as String] as! SecIdentity?,
+          let protocolIdentity = sec_identity_create(identity)
+    else { throw FakeServerError.invalidTLSIdentity }
+    return protocolIdentity
+}
+
 private final class FakeServerConnection: @unchecked Sendable {
     private let connection: NWConnection
     private let queue: DispatchQueue
@@ -281,6 +385,7 @@ private final class ContinuationGate<Value: Sendable>: @unchecked Sendable {
 private enum FakeServerError: LocalizedError {
     case closed
     case emptyRead
+    case invalidTLSIdentity
     case missingPort
     case timeout(String)
 
@@ -288,6 +393,7 @@ private enum FakeServerError: LocalizedError {
         switch self {
         case .closed: "The fake server connection closed."
         case .emptyRead: "The fake server received an empty, incomplete read."
+        case .invalidTLSIdentity: "The fake server TLS identity is invalid."
         case .missingPort: "The fake server listener did not expose its assigned port."
         case let .timeout(operation): "Timed out waiting for \(operation)."
         }
