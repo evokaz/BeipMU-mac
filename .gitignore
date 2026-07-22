@@ -4,6 +4,7 @@
 DerivedData/
 DerivedData-*/
 build/
+Build/
 dist/
 ReferenceBinaries/
 *.xcuserstate
