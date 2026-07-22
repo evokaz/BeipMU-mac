@@ -15,6 +15,77 @@ final class AutomationTests: XCTestCase {
         XCTAssertEqual(result.matchedAliases, [alias.id])
     }
 
+    func testAliasReplacesEveryOccurrenceWithoutDiscardingUnmatchedText() throws {
+        let alias = Alias(
+            match: .init(text: "cat"),
+            replacement: "dog"
+        )
+        let result = try AliasEngine.process(
+            "cat and cat",
+            groups: [.init(aliases: [alias])],
+            variables: [:]
+        )
+        XCTAssertEqual(result.text, "dog and dog")
+        XCTAssertEqual(result.matchedAliases, [alias.id])
+        XCTAssertEqual(result.trace.map(\.matchCount), [2])
+        XCTAssertEqual(result.trace.first?.output, "dog and dog")
+    }
+
+    func testKeyboardMacrosUseWindowsScopePrecedenceAndNestedFolders() {
+        let global = KeyboardMacroGroup(macros: [
+            .init(macro: "global", key: "Control+Alt+N"),
+        ])
+        let server = KeyboardMacroGroup(macros: [
+            .init(macro: "server", key: "Control+Alt+N"),
+        ])
+        let character = KeyboardMacroGroup(macros: [
+            .init(macro: "", key: "", folder: true, children: [
+                .init(macro: "character", key: "Control+Alt+N", typeIntoInput: true),
+            ]),
+        ])
+
+        let match = KeyboardMacroEngine.macro(for: "Control+Alt+N", groups: [character, server, global])
+        XCTAssertEqual(match?.macro, "character")
+        XCTAssertTrue(match?.typeIntoInput == true)
+        XCTAssertNil(KeyboardMacroEngine.macro(for: "Control+N", groups: [character, server, global]))
+    }
+
+    func testAliasHierarchyRunsFoldersAlwaysAndChildrenOnlyAfterParentMatch() throws {
+        let nested = Alias(match: .init(text: "north"), replacement: "N")
+        let folder = Alias(
+            match: .init(text: ""),
+            replacement: "",
+            folder: true,
+            children: [nested]
+        )
+        let gated = Alias(
+            match: .init(text: "go"),
+            replacement: "north",
+            children: [nested]
+        )
+
+        let folderResult = try AliasEngine.process(
+            "north",
+            groups: [.init(aliases: [folder])],
+            variables: [:]
+        )
+        XCTAssertEqual(folderResult.text, "N")
+
+        let noMatchResult = try AliasEngine.process(
+            "north",
+            groups: [.init(aliases: [gated])],
+            variables: [:]
+        )
+        XCTAssertEqual(noMatchResult.text, "north")
+
+        let matchResult = try AliasEngine.process(
+            "go",
+            groups: [.init(aliases: [gated])],
+            variables: [:]
+        )
+        XCTAssertEqual(matchResult.text, "N")
+    }
+
     func testTriggerCooldown() async throws {
         let trigger = Trigger(match: .init(text: "alert"), cooldown: 5, actions: [.activity(important: true)])
         let engine = TriggerEngine()
@@ -23,6 +94,326 @@ final class AutomationTests: XCTestCase {
         let second = try await engine.process(.init(text: "alert"), triggers: [trigger], variables: [:], now: now.addingTimeInterval(1))
         XCTAssertEqual(first, [.activity(important: true)])
         XCTAssertTrue(second.isEmpty)
+    }
+
+    func testTriggerTraceRecordsMatchDecisions() async throws {
+        let miss = Trigger(description: "Miss", match: .init(text: "quiet"))
+        let hit = Trigger(description: "Hit", match: .init(text: "alert"), actions: [.activity(important: true)])
+        let engine = TriggerEngine()
+
+        _ = try await engine.process(.init(text: "alert"), triggers: [miss, hit], variables: [:])
+        let trace = await engine.lastTrace()
+
+        XCTAssertEqual(trace.map(\.description), ["Miss", "Hit"])
+        XCTAssertEqual(trace.map(\.matchCount), [0, 1])
+    }
+
+    func testAwayPresentTriggersFollowWindowActivityAndOncePerAwayState() async throws {
+        let away = Trigger(
+            match: .init(text: "alert"),
+            awayPresent: true,
+            awayPresentOnce: true,
+            away: true,
+            actions: [.activity(important: true)]
+        )
+        let present = Trigger(
+            match: .init(text: "alert"),
+            awayPresent: true,
+            away: false,
+            actions: [.send("present", captureIndex: 1, expandVariables: false)]
+        )
+        let engine = TriggerEngine()
+
+        let firstAway = try await engine.process(.init(text: "alert"), triggers: [away, present], variables: [:], isAway: true)
+        let secondAway = try await engine.process(.init(text: "alert"), triggers: [away, present], variables: [:], isAway: true)
+        let active = try await engine.process(.init(text: "alert"), triggers: [away, present], variables: [:], isAway: false)
+        let awayAgain = try await engine.process(.init(text: "alert"), triggers: [away, present], variables: [:], isAway: true)
+
+        XCTAssertEqual(firstAway, [.activity(important: true)])
+        XCTAssertTrue(secondAway.isEmpty)
+        XCTAssertEqual(active, [.send("present")])
+        XCTAssertEqual(awayAgain, [.activity(important: true)])
+    }
+
+    func testTriggerGroupsHonorActiveStateAndSendExpandsConfiguredTemplate() async throws {
+        let skipped = Trigger(match: .init(text: "alert"), actions: [.send("skip", captureIndex: 1, expandVariables: false)])
+        let active = Trigger(
+            match: .init(text: "([A-Z]+)", isRegularExpression: true),
+            actions: [.send("say $1 to %target%", captureIndex: 1, expandVariables: true)]
+        )
+        let engine = TriggerEngine()
+        let effects = try await engine.process(
+            .init(text: "HELLO"),
+            groups: [
+                .init(active: false, triggers: [skipped]),
+                .init(active: true, triggers: [active]),
+            ],
+            variables: ["target": "Ada"]
+        )
+        XCTAssertEqual(effects, [.send("say HELLO to Ada")])
+    }
+
+    func testTriggerVisualActionsTargetRegexCaptureGroupsAndSendOnClickRange() async throws {
+        let patch = TextStylePatch(bold: true)
+        let trigger = Trigger(
+            match: .init(text: "(HP): (\\d+)", isRegularExpression: true),
+            actions: [
+                .color(foreground: .white, background: nil, wholeLine: false),
+                .appearance(patch, wholeLine: false),
+                .send("score $2", captureIndex: 2, expandVariables: true, sendOnClick: true),
+            ]
+        )
+
+        let effects = try await TriggerEngine().process(
+            .init(text: "HP: 42"),
+            triggers: [trigger],
+            variables: [:]
+        )
+
+        XCTAssertEqual(effects, [
+            .style(range: NSRange(location: 0, length: 2), foreground: .white, background: nil),
+            .style(range: NSRange(location: 4, length: 2), foreground: .white, background: nil),
+            .appearance(range: NSRange(location: 0, length: 2), patch: patch),
+            .appearance(range: NSRange(location: 4, length: 2), patch: patch),
+            .link(range: NSRange(location: 4, length: 2), send: "score 42"),
+        ])
+    }
+
+    func testCaptureExpansionSupportsGroup99() throws {
+        let pattern = String(repeating: "(a)", count: 99)
+        let input = String(repeating: "a", count: 99)
+        let capture = try XCTUnwrap(MatchDefinition(text: pattern, isRegularExpression: true).matches(in: input).first)
+
+        XCTAssertEqual(capture.values.count, 100)
+        XCTAssertEqual(Expansion.apply("$99", capture: capture, variables: [:]), "a")
+    }
+
+    func testTriggerHashDefaultFontAndParagraphOptionsProduceExecutableEffects() async throws {
+        let paragraph = ParagraphPatch(
+            backgroundHash: true,
+            borderWidth: 3,
+            borderStyle: .round,
+            strokeWidth: 2,
+            strokeHash: true,
+            strokeStyle: .bottom,
+            horizontalRule: true
+        )
+        let trigger = Trigger(
+            match: .init(text: "(Hero)", isRegularExpression: true),
+            actions: [
+                .colorHash(foreground: true, background: true, wholeLine: false),
+                .colorDefault(foreground: true, background: true, wholeLine: false),
+                .font(face: "Menlo", size: 16, useDefault: false, wholeLine: false),
+                .paragraph(paragraph),
+            ]
+        )
+
+        let effects = try await TriggerEngine().process(.init(text: "Hero"), triggers: [trigger], variables: [:])
+
+        guard case let .style(range, foreground, background) = effects[0] else { return XCTFail("missing hash colors") }
+        XCTAssertEqual(range, NSRange(location: 0, length: 4))
+        XCTAssertNotNil(foreground)
+        XCTAssertNotNil(background)
+        XCTAssertEqual(effects[1], .resetColors(range: range, foreground: true, background: true))
+        XCTAssertEqual(effects[2], .font(range: range, face: "Menlo", size: 16))
+        guard case let .paragraph(expanded) = effects[3] else { return XCTFail("missing paragraph") }
+        XCTAssertNotNil(expanded.background)
+        XCTAssertNotNil(expanded.strokeColor)
+        XCTAssertEqual(expanded.borderStyle, .round)
+        XCTAssertEqual(expanded.strokeStyle, .bottom)
+        XCTAssertEqual(expanded.horizontalRule, true)
+    }
+
+    func testTriggerStopProcessingPreventsLaterGroups() async throws {
+        let stop = Trigger(
+            match: .init(text: "alert"),
+            stopProcessing: true,
+            actions: [.send("first", captureIndex: 1, expandVariables: false)]
+        )
+        let later = Trigger(
+            match: .init(text: "alert"),
+            actions: [.send("second", captureIndex: 1, expandVariables: false)]
+        )
+        let effects = try await TriggerEngine().process(
+            .init(text: "alert"),
+            groups: [.init(triggers: [stop]), .init(triggers: [later])],
+            variables: [:]
+        )
+        XCTAssertEqual(effects, [.send("first")])
+    }
+
+    func testDisabledTriggerActsAsContainerAndInactiveChildrenStayDisabled() async throws {
+        let child = Trigger(match: .init(text: "alert"), actions: [.send("child", captureIndex: 1, expandVariables: false)])
+        let enabledContainer = Trigger(match: .init(text: "never"), disabled: true, children: [child])
+        let inactiveContainer = Trigger(match: .init(text: "never"), disabled: true, children: [child], childrenActive: false)
+
+        let enabled = try await TriggerEngine().process(.init(text: "alert"), triggers: [enabledContainer], variables: [:])
+        let inactive = try await TriggerEngine().process(.init(text: "alert"), triggers: [inactiveContainer], variables: [:])
+
+        XCTAssertEqual(enabled, [.send("child")])
+        XCTAssertTrue(inactive.isEmpty)
+    }
+
+    func testFilterMutatesTextSeenByLaterTriggersAndScriptCallbackLine() async throws {
+        let filter = Trigger(match: .init(text: "old"), actions: [.replace("new", expandVariables: false)])
+        let later = Trigger(match: .init(text: "new"), actions: [.script("afterFilter")])
+
+        let effects = try await TriggerEngine().process(
+            .init(text: "old value"),
+            triggers: [filter, later],
+            variables: [:]
+        )
+
+        XCTAssertEqual(effects.first, .replace(range: NSRange(location: 0, length: 3), with: "new"))
+        guard case let .script(function, _, line) = effects.last else { return XCTFail("later trigger did not see filtered text") }
+        XCTAssertEqual(function, "afterFilter")
+        XCTAssertEqual(line.text, "new value")
+    }
+
+    func testTriggerAppearanceParagraphAndAvatarEffectsExpandCaptures() async throws {
+        let patch = TextStylePatch(bold: true, underline: true)
+        let paragraph = ParagraphPatch(alignment: .center, leftIndent: 12)
+        let trigger = Trigger(
+            match: .init(text: "(Hero)", isRegularExpression: true),
+            actions: [
+                .appearance(patch, wholeLine: false),
+                .paragraph(paragraph),
+                .avatar("https://example.test/$1.png"),
+            ]
+        )
+        let effects = try await TriggerEngine().process(
+            .init(text: "Hero"),
+            triggers: [trigger],
+            variables: [:]
+        )
+        XCTAssertEqual(effects, [
+            .appearance(range: NSRange(location: 0, length: 4), patch: patch),
+            .paragraph(paragraph),
+            .avatar("https://example.test/Hero.png"),
+        ])
+    }
+
+    func testMultilineTriggerArmsChildrenForTheConfiguredNumberOfFollowingLines() async throws {
+        let child = Trigger(match: .init(text: "next"), actions: [.send("captured", captureIndex: 1, expandVariables: false)])
+        let parent = Trigger(
+            match: .init(text: "begin"),
+            multiline: .init(lineLimit: 1),
+            children: [child]
+        )
+        let engine = TriggerEngine()
+        let now = Date()
+
+        let activation = try await engine.process(.init(text: "begin next"), triggers: [parent], variables: [:], now: now)
+        let captured = try await engine.process(.init(text: "next"), triggers: [parent], variables: [:], now: now.addingTimeInterval(1))
+        let expired = try await engine.process(.init(text: "next"), triggers: [parent], variables: [:], now: now.addingTimeInterval(2))
+
+        XCTAssertTrue(activation.isEmpty, "Multiline children start with the following line, not the activating line.")
+        XCTAssertEqual(captured, [.send("captured")])
+        XCTAssertTrue(expired.isEmpty)
+    }
+
+    func testMultilineTriggerExpiresAtItsConfiguredTimeLimit() async throws {
+        let child = Trigger(match: .init(text: "next"), actions: [.activity(important: false)])
+        let parent = Trigger(
+            match: .init(text: "begin"),
+            multiline: .init(timeLimit: 2),
+            children: [child]
+        )
+        let engine = TriggerEngine()
+        let now = Date()
+
+        _ = try await engine.process(.init(text: "begin"), triggers: [parent], variables: [:], now: now)
+        let expired = try await engine.process(.init(text: "next"), triggers: [parent], variables: [:], now: now.addingTimeInterval(3))
+
+        XCTAssertTrue(expired.isEmpty)
+    }
+
+    func testMultilineTriggerCanRemainArmedAfterProcessingReturns() async throws {
+        let child = Trigger(match: .init(text: "next"), actions: [.activity(important: false)])
+        let parent = Trigger(
+            match: .init(text: "begin"),
+            multiline: .init(lineLimit: 2),
+            children: [child]
+        )
+
+        let effects = try await TriggerEngine().process(.init(text: "begin"), triggers: [parent], variables: [:])
+
+        XCTAssertTrue(effects.isEmpty)
+    }
+
+    func testScopedTriggerProcessingDoesNotRunPreviouslyArmedMultilineTrees() async throws {
+        let unrelatedChild = Trigger(match: .init(text: "line"), actions: [.send("unrelated", captureIndex: 1, expandVariables: false)])
+        let unrelatedParent = Trigger(
+            match: .init(text: "begin"),
+            multiline: .init(lineLimit: 2),
+            children: [unrelatedChild]
+        )
+        let spawnChild = Trigger(match: .init(text: "line"), actions: [.send("spawn", captureIndex: 1, expandVariables: false)])
+        let engine = TriggerEngine()
+        let now = Date()
+
+        _ = try await engine.process(.init(text: "begin"), triggers: [unrelatedParent], variables: [:], now: now)
+        let effects = try await engine.processOnly(.init(text: "line"), triggers: [spawnChild], variables: [:], now: now.addingTimeInterval(1))
+
+        XCTAssertEqual(effects, [.send("spawn")])
+    }
+
+    func testTriggerStatsExpandCapturesAndPreserveWindowsIntegerAddSemantics() async throws {
+        let stat = TriggerStatAction(
+            title: "Vitals",
+            name: "HP",
+            prefix: "01",
+            value: "$1",
+            kind: .integer,
+            addsToExistingInteger: true,
+            color: .init(red: 255, green: 0, blue: 0)
+        )
+        let trigger = Trigger(
+            match: .init(text: "HP ([0-9]+)", isRegularExpression: true),
+            actions: [.stat(stat)]
+        )
+        let engine = TriggerEngine()
+        var store = TriggerStatisticStore()
+
+        let first = try await engine.process(.init(text: "HP 40"), triggers: [trigger], variables: [:])
+        let second = try await engine.process(.init(text: "HP 2"), triggers: [trigger], variables: [:])
+        for effect in first + second {
+            if case let .stat(update) = effect { store.apply(update) }
+        }
+
+        XCTAssertEqual(store.ordered, [
+            .init(
+                name: "HP",
+                prefix: "01",
+                value: .integer(42),
+                color: .init(red: 255, green: 0, blue: 0)
+            )
+        ])
+    }
+
+    func testSpawnTriggerExpandsCaptureAndPreservesCaptureOptions() async throws {
+        let action = TriggerSpawnAction(
+            title: "Combat $1",
+            captureUntil: "^END $1$",
+            clear: true,
+            gagLog: true,
+            copy: false
+        )
+        let child = Trigger(match: .init(text: "child"), actions: [.activity(important: true)])
+        let trigger = Trigger(
+            match: .init(text: "BEGIN ([A-Z]+)", isRegularExpression: true),
+            actions: [.spawn(action)],
+            children: [child]
+        )
+
+        let effects = try await TriggerEngine().process(.init(text: "BEGIN ROOM"), triggers: [trigger], variables: [:])
+
+        guard effects.count == 1, case let .spawn(expanded, line, children) = effects[0] else {
+            return XCTFail("missing spawn effect")
+        }
+        XCTAssertEqual(expanded, .init(title: "Combat ROOM", captureUntil: "^END ROOM$", clear: true, gagLog: true))
+        XCTAssertEqual(line.text, "BEGIN ROOM")
+        XCTAssertEqual(children, [child])
     }
 
     func testCommandQuotingAndVariables() {
@@ -41,6 +432,10 @@ final class AutomationTests: XCTestCase {
         XCTAssertEqual(registry.parse("/?", variables: [:]), registry.parse("/help", variables: [:]))
         XCTAssertEqual(registry.parse("/silent/set answer=42", variables: [:]), .setVariable("answer", "42"))
         XCTAssertEqual(registry.parse("/help delay", variables: [:]), .openCommandHelp("delay"))
+        XCTAssertEqual(registry.parse("/capturecancel", variables: [:]), .cancelCapture)
+        XCTAssertEqual(registry.parse("/debugaliases", variables: [:]), .debugAutomation(.aliases))
+        XCTAssertEqual(registry.parse("/debugtriggers", variables: [:]), .debugAutomation(.triggers))
+        XCTAssertEqual(registry.parse("/debugtimers", variables: [:]), .debugAutomation(.timers))
         guard case let .display(help) = registry.parse("/help", variables: [:]) else {
             return XCTFail("missing command help")
         }
@@ -101,6 +496,7 @@ final class AutomationTests: XCTestCase {
         XCTAssertEqual(registry.parse("/log file.txt", variables: [:]), .startLog(filename: "file.txt", history: .none))
         XCTAssertEqual(registry.parse("/logall all.html", variables: [:]), .startLog(filename: "all.html", history: .all))
         XCTAssertEqual(registry.parse("/stoplogs", variables: [:]), .stopLogs)
+        XCTAssertEqual(registry.parse("/autolog", variables: [:]), .startAutoLog)
     }
 
     func testSecondaryInputAndEditWindowCommandsHaveTypedOutcomes() {
@@ -159,6 +555,30 @@ final class AutomationTests: XCTestCase {
         XCTAssertTrue(finalEntries.isEmpty)
     }
 
+    func testReplacingTimerIDCannotEraseItsReplacementAfterOldActionCompletes() async throws {
+        let scheduler = DelayScheduler()
+        let oldStarted = expectation(description: "old timer action started")
+        let releaseOld = expectation(description: "release old timer action")
+        let replacementFired = expectation(description: "replacement timer fired")
+        let oldReleaseGate = AsyncGate()
+
+        _ = await scheduler.schedule(id: "shared", repeating: false, seconds: 0, command: "old") { _ in
+            oldStarted.fulfill()
+            await oldReleaseGate.wait()
+            releaseOld.fulfill()
+        }
+        await fulfillment(of: [oldStarted], timeout: 1)
+        _ = await scheduler.schedule(id: "shared", repeating: false, seconds: 0.05, command: "new") { command in
+            XCTAssertEqual(command, "new")
+            replacementFired.fulfill()
+        }
+        await oldReleaseGate.open()
+        await fulfillment(of: [releaseOld, replacementFired], timeout: 1)
+        try await Task.sleep(for: .milliseconds(10))
+        let entries = await scheduler.entries()
+        XCTAssertTrue(entries.isEmpty)
+    }
+
     func testEveryRegisteredCommandProducesACommandOutcome() {
         let registry = CommandRegistry()
         for command in CommandRegistry.knownCommands {
@@ -199,5 +619,21 @@ final class AutomationTests: XCTestCase {
         // these release-visible aliases share their implementation.
         expected.formUnion(["@", "world"])
         XCTAssertEqual(CommandRegistry.knownCommands, expected)
+    }
+}
+
+private actor AsyncGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var isOpen = false
+
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func open() {
+        isOpen = true
+        continuation?.resume()
+        continuation = nil
     }
 }

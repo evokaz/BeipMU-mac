@@ -39,19 +39,36 @@ public struct MatchDefinition: Sendable, Hashable, Codable {
         let expression = try NSRegularExpression(pattern: pattern, options: options)
         let full = NSRange(value.startIndex..<value.endIndex, in: value)
         return expression.matches(in: value, range: full).map { result in
+            let ranges = (0..<result.numberOfRanges).map { result.range(at: $0) }
             let values = (0..<result.numberOfRanges).map { index -> String? in
-                let range = result.range(at: index)
+                let range = ranges[index]
                 guard range.location != NSNotFound, let swiftRange = Range(range, in: value) else { return nil }
                 return String(value[swiftRange])
             }
-            return MatchCapture(values: values, range: result.range)
+            return MatchCapture(values: values, ranges: ranges)
         }
     }
 }
 
 public struct MatchCapture: Sendable, Hashable {
     public var values: [String?]
-    public var range: NSRange
+    /// UTF-16 ranges for the complete match followed by every regular-expression
+    /// capture. Unmatched optional captures retain `NSNotFound` so their indices
+    /// continue to agree with replacement variables through `$99`.
+    public var ranges: [NSRange]
+
+    public var range: NSRange {
+        ranges.first ?? NSRange(location: NSNotFound, length: 0)
+    }
+
+    public init(values: [String?], ranges: [NSRange]) {
+        self.values = values
+        self.ranges = ranges
+    }
+
+    public init(values: [String?], range: NSRange) {
+        self.init(values: values, ranges: [range])
+    }
 
     public subscript(_ index: Int) -> String? {
         values.indices.contains(index) ? values[index] : nil
@@ -75,4 +92,3 @@ public enum Expansion {
         return result
     }
 }
-

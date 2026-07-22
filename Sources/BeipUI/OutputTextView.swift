@@ -317,8 +317,11 @@ final class OutputTextView: NSObject {
             var traits: NSFontTraitMask = []
             if run.style.bold { traits.insert(.boldFontMask) }
             if run.style.italic { traits.insert(.italicFontMask) }
+            let size = CGFloat(run.style.fontSize ?? 13)
+            let baseFont = run.style.fontFace.flatMap { NSFont(name: $0, size: size) }
+                ?? NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
             attributes[.font] = NSFontManager.shared.convert(
-                NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
+                baseFont,
                 toHaveTrait: traits
             )
             if run.style.underline { attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue }
@@ -358,7 +361,8 @@ final class OutputTextView: NSObject {
             id: line.id,
             attributedText: value,
             contentRange: contentRange,
-            assets: line.assets.map { ($0, textOffset + $0.characterOffset) }
+            assets: line.assets.map { ($0, textOffset + $0.characterOffset) },
+            paragraph: line.paragraph
         )
     }
 

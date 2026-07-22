@@ -9,6 +9,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         var attributedText: NSAttributedString
         var contentRange: NSRange
         var assets: [(asset: InlineAsset, displayOffset: Int)]
+        var paragraph: ParagraphStyle = .init()
     }
 
     private struct Position: Equatable {
@@ -248,9 +249,52 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
                 height: CGFloat(height)
             )
             drawMarker(for: value, in: rect)
+            drawParagraphDecoration(value.paragraph, in: rect)
             let attributed = attributedTextForDrawing(value, itemIndex: index)
             drawCoreText(attributed, in: rect, context: context)
             drawAssets(value.assets, attributedText: attributed, in: rect)
+        }
+    }
+
+    private func drawParagraphDecoration(_ paragraph: ParagraphStyle, in rect: NSRect) {
+        let color = paragraph.strokeColor.map {
+            NSColor(
+                calibratedRed: CGFloat($0.red) / 255,
+                green: CGFloat($0.green) / 255,
+                blue: CGFloat($0.blue) / 255,
+                alpha: CGFloat($0.alpha) / 255
+            )
+        } ?? NSColor.separatorColor
+        color.setStroke()
+        if paragraph.borderWidth > 0 {
+            let inset = paragraph.borderWidth / 2
+            let pathRect = rect.insetBy(dx: inset, dy: inset)
+            let radius = paragraph.borderStyle == .round ? min(8, pathRect.height / 3) : 0
+            let path = NSBezierPath(roundedRect: pathRect, xRadius: radius, yRadius: radius)
+            path.lineWidth = paragraph.borderWidth
+            path.stroke()
+        }
+        if paragraph.strokeWidth > 0 {
+            let path = NSBezierPath()
+            path.lineWidth = paragraph.strokeWidth
+            switch paragraph.strokeStyle {
+            case .outline:
+                path.appendRect(rect.insetBy(dx: paragraph.strokeWidth / 2, dy: paragraph.strokeWidth / 2))
+            case .top:
+                path.move(to: .init(x: rect.minX, y: rect.minY))
+                path.line(to: .init(x: rect.maxX, y: rect.minY))
+            case .bottom:
+                path.move(to: .init(x: rect.minX, y: rect.maxY))
+                path.line(to: .init(x: rect.maxX, y: rect.maxY))
+            }
+            path.stroke()
+        }
+        if paragraph.horizontalRule {
+            let path = NSBezierPath()
+            path.move(to: .init(x: rect.minX, y: rect.midY))
+            path.line(to: .init(x: rect.maxX, y: rect.midY))
+            path.lineWidth = max(1, paragraph.strokeWidth)
+            path.stroke()
         }
     }
 

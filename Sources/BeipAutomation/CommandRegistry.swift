@@ -66,11 +66,14 @@ public enum CommandOutcome: Sendable, Equatable {
     case connectPuppet(String)
     case stopLogs
     case startLog(filename: String, history: LogHistory)
+    case startAutoLog
     case delay(DelayAction)
     case script(String)
     case scriptHelp(String?)
     case openCommandHelp(String)
     case resetScript
+    case cancelCapture
+    case debugAutomation(DebugAutomationKind)
     case invoke(name: String, arguments: [String], rawArguments: String)
     case unimplemented(String)
     case notACommand
@@ -84,6 +87,12 @@ public enum CommandOutcome: Sendable, Equatable {
         case killAll
         case kill(String)
         case schedule(id: String?, repeating: Bool, seconds: Double, command: String)
+    }
+
+    public enum DebugAutomationKind: String, Sendable, Hashable {
+        case aliases
+        case triggers
+        case timers
     }
 }
 
@@ -190,6 +199,7 @@ public struct CommandRegistry: Sendable {
             guard arguments.count == 1 else { return .display("Need a puppet name to connect a puppet") }
             return .connectPuppet(arguments[0])
         case "stoplogs": return .stopLogs
+        case "autolog": return .startAutoLog
         case "log", "logall", "logtop":
             guard arguments.count == 1 else {
                 switch command {
@@ -243,6 +253,10 @@ public struct CommandRegistry: Sendable {
             return .script(String(rawArguments))
         case "shelp": return .scriptHelp(arguments.first)
         case "resetscript": return .resetScript
+        case "capturecancel": return .cancelCapture
+        case "debugaliases": return .debugAutomation(.aliases)
+        case "debugtriggers": return .debugAutomation(.triggers)
+        case "debugtimers": return .debugAutomation(.timers)
         case "roll": return roll(arguments.first)
         case "help", "?":
             if arguments.count == 1 { return .openCommandHelp(arguments[0]) }

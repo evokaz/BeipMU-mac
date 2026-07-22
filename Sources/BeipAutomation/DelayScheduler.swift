@@ -10,6 +10,7 @@ public actor DelayScheduler {
 
     private struct Scheduled {
         var entry: Entry
+        var token: UUID
         var task: Task<Void, Never>
     }
 
@@ -32,16 +33,17 @@ public actor DelayScheduler {
         nextID += 1
         scheduled[id]?.task.cancel()
         let entry = Entry(id: id, command: command, seconds: seconds, repeating: repeating)
+        let token = UUID()
         let duration = Duration.milliseconds(Int64(max(0, seconds) * 1_000))
         let task = Task { [weak self] in
             repeat {
                 do { try await Task.sleep(for: duration) } catch { return }
                 guard !Task.isCancelled else { return }
                 await action(command)
-                if !repeating { await self?.removeCompleted(id) }
+                if !repeating { await self?.removeCompleted(id, token: token) }
             } while repeating && !Task.isCancelled
         }
-        scheduled[id] = .init(entry: entry, task: task)
+        scheduled[id] = .init(entry: entry, token: token, task: task)
         return id
     }
 
@@ -59,5 +61,8 @@ public actor DelayScheduler {
         scheduled.removeAll()
     }
 
-    private func removeCompleted(_ id: String) { scheduled.removeValue(forKey: id) }
+    private func removeCompleted(_ id: String, token: UUID) {
+        guard scheduled[id]?.token == token else { return }
+        scheduled.removeValue(forKey: id)
+    }
 }

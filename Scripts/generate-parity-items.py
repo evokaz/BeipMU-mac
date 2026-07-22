@@ -16,19 +16,47 @@ BASELINE = json.loads((REPOSITORY / "UPSTREAM_BASELINE.json").read_text())
 OUTPUT = REPOSITORY / "Documentation" / "PARITY_ITEMS.json"
 
 IMPLEMENTED_COMMANDS = {
-    "?", "ansireset", "clear", "echo", "gmcp", "help", "lizards", "makali",
-    "naws", "printenv", "resetscript", "roll", "script", "set", "shelp",
-    "ttype", "unset",
+    "?", "ansireset", "autolog", "capturecancel", "clear", "debugaliases",
+    "debugtimers", "debugtriggers", "delay", "echo", "gmcp", "help", "idle",
+    "lizards", "log", "logall", "logtop", "makali", "naws", "printenv",
+    "receive", "repeat", "resetscript", "roll", "script", "set", "setinput",
+    "shelp", "stoplogs", "ttype", "unset",
 }
 PARTIAL_COMMANDS = {
-    "chars", "close", "connect", "connectioninfo", "delay", "disconnect", "exit", "idle",
-    "log", "logall", "logtop", "new", "newtab", "opendialog", "ping", "puppet",
-    "puppets", "receive", "receivegmcp", "reconnect", "removelast", "repeat",
-    "setinput", "silence", "slist", "stats", "stoplogs", "wall", "world",
+    "chars", "close", "connect", "connectioninfo", "disconnect", "exit",
+    "new", "newtab", "opendialog", "ping", "puppet",
+    "puppets", "receivegmcp", "reconnect", "removelast",
+    "silence", "slist", "stats", "wall", "world",
 }
 IMPLEMENTED_PROTOCOLS = {"ANSI", "BINARY", "CHARSET", "EOR", "GMCP", "MTTS", "NAWS", "Pueblo", "TTYPE", "Telnet"}
 PARTIAL_PROTOCOLS = set()
-PLATFORM_EXCEPTIONS = {"Window_Properties.HWND"}
+PLATFORM_EXCEPTIONS = {"App.ActiveXObject", "Window_Properties.HWND"}
+IMPLEMENTED_SETTING_OWNERS = {
+    "Alias", "Aliases", "KeyboardMacro", "KeyboardMacros2", "Logging", "Stat_Int", "Stat_Range",
+    "Trigger", "Trigger_Activate", "Trigger_Avatar", "Trigger_Color", "Trigger_Filter",
+    "Trigger_Gag", "Trigger_Paragraph", "Trigger_Script", "Trigger_Send", "Trigger_Sound",
+    "Trigger_Spawn", "Trigger_Speech", "Trigger_Stat", "Trigger_Style", "Trigger_Toast", "Triggers",
+}
+IMPLEMENTED_SETTING_IDENTIFIERS = {
+    "Character.Aliases", "Character.KeyboardMacros2", "Character.Triggers",
+    "Connections.Aliases", "Connections.KeyboardMacros2", "Connections.Logging", "Connections.Triggers",
+    "Global.ScriptStartup", "Server.Aliases", "Server.KeyboardMacros2", "Server.Triggers",
+}
+IMPLEMENTED_SCRIPT_MEMBERS = {
+    "App.Aliases", "App.BuildNumber", "App.ConfigPath", "App.NewTrigger", "App.OutputDebugHTML",
+    "App.OutputDebugText", "App.PlaySound", "App.StopSounds", "App.Triggers", "App.Version",
+    "App.Windows", "App.Worlds", "ArrayUInt.Count", "ArrayUInt.Item", "Beip.App", "Beip.Window",
+    "Connection.Display", "Connection.IsConnected", "Connection.IsLogging", "Connection.Receive",
+    "Connection.Send", "Connection.Transmit", "Connection.Window_Main", "TextWindowLine.HTMLString",
+    "TextWindowLine.Length", "TextWindowLine.String", "Window_Input.Get", "Window_Input.GetSelEnd",
+    "Window_Input.GetSelStart", "Window_Input.Length", "Window_Input.Set", "Window_Input.SetSel",
+    "Window_Main.Activity", "Window_Main.AddImportantActivity", "Window_Main.Close",
+    "Window_Main.Connection", "Window_Main.DeleteVariable", "Window_Main.GetVariable",
+    "Window_Main.History", "Window_Main.Input", "Window_Main.Output", "Window_Main.Run",
+    "Window_Main.RunFile", "Window_Main.SetVariable", "Window_Main.Title", "Window_Main.UserData",
+    "Window_Properties.Title", "Window_Text.Add", "Window_Text.Create", "Window_Text.Paused",
+    "Window_Text.Write", "Window_Text.WriteHTML", "Windows.Count", "Windows.Item",
+}
 
 
 def source_lines(name: str) -> list[str]:
@@ -81,7 +109,11 @@ def setting_items() -> list[dict]:
             if match and match.group(1) not in ignored and not code.lstrip().startswith(("#", "}")):
                 owner = stack[-1][0]
                 field = match.group(2)
-                result.append(item("setting", f"{owner}.{field}", "Root.prp", line_number, code.strip(), "preserved"))
+                identifier = f"{owner}.{field}"
+                status = "implemented" if owner in IMPLEMENTED_SETTING_OWNERS or identifier in IMPLEMENTED_SETTING_IDENTIFIERS else "preserved"
+                if owner == "Trigger_Extension":
+                    status = "platform-exception"
+                result.append(item("setting", identifier, "Root.prp", line_number, code.strip(), status))
 
         depth += code.count("{") - code.count("}")
         while stack and depth <= stack[-1][1]:
@@ -117,7 +149,9 @@ def script_items() -> list[dict]:
         match = member_pattern.search(statement)
         if match:
             identifier = f"{interface}.{match.group(1)}"
-            status = "platform-exception" if identifier in PLATFORM_EXCEPTIONS else "host-proxy-pending"
+            status = "platform-exception" if identifier in PLATFORM_EXCEPTIONS else (
+                "implemented" if identifier in IMPLEMENTED_SCRIPT_MEMBERS else "host-proxy-pending"
+            )
             result.append(item("script-member", identifier, "OM.idl", statement_line, normalize(statement), status))
         statement = ""
     return unique(result)
@@ -135,7 +169,13 @@ def declared_surface_items() -> list[dict]:
             status = "planned"
             if category == "protocol":
                 status = "implemented" if name in IMPLEMENTED_PROTOCOLS else "partial" if name in PARTIAL_PROTOCOLS else "planned"
+            elif category == "trigger-action":
+                status = "implemented"
+            elif category == "window-dialog" and name in {"Aliases", "Triggers", "Macros"}:
+                status = "partial"
             entry = item(category, name, "UPSTREAM_INVENTORY.md", 1, f"Observable {category} surface: {name}", status)
+            if category == "trigger-action":
+                entry["differentialFixture"] = "AutomationTests; LegacyConfigTests; pinned v331 Connection.cpp/Root.prp semantics"
             if category == "protocol" and name in {"Telnet", "BINARY", "EOR"}:
                 entry["differentialFixture"] = "TelnetParserTests; Tests/Golden/windows-v331-session.trace.json"
             result.append(entry)

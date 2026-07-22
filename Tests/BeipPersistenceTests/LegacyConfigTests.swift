@@ -1,4 +1,5 @@
 import BeipCore
+import BeipAutomation
 import BeipPersistence
 import Foundation
 import XCTest
@@ -125,10 +126,226 @@ final class LegacyConfigTests: XCTestCase {
         XCTAssertTrue(projection.servers[0].characters.first?.autoConnect == true)
     }
 
+    func testProjectionLoadsHierarchicalAliasesAndOrderedTriggers() async throws {
+        let source = """
+        Version=331
+        Connections {
+          Aliases {
+            Active=true
+            Echo=false
+            ProcessCommands=true
+            AfterCount=1
+            { FindString { MatchText="g" StartsWith=true } Replace="go" }
+            { Folder=true Aliases { { FindString { MatchText="go" } Replace="north" } } }
+          }
+          Triggers {
+            Active=true
+            { FindString { MatchText="HP: ([0-9]+)" RegularExpression=true }
+              Color { UseForeColor=true Fore="#FF0000" WholeLine=true }
+              Style { SetBold=true Bold=true WholeLine=true }
+              Paragraph { UseAlignment=true Alignment=1 UseIndent_Left=true Indent_Left=10 }
+              Avatar { URL="https://example.test/$1.png" }
+              Send { Active=true Send="score $1" ExpandVariables=true }
+              Gag { Active=true Log=true }
+            }
+          }
+          Shortcuts {
+            World {
+              Host="example.test:8888"
+              Aliases { { FindString { MatchText="north" } Replace="n" } }
+              Characters {
+                Hero {
+                  Aliases { { FindString { MatchText="n" } Replace="north" } }
+                }
+              }
+            }
+          }
+        }
+        """
+        let projection = try LegacyConfigurationProjection(
+            document: .init(source: source)
+        )
+        let server = try XCTUnwrap(projection.servers.first)
+        let hero = try XCTUnwrap(server.characters.first)
+        let automation = projection.automationGroups(for: server.profile, character: hero)
+
+        XCTAssertEqual(automation.aliases.count, 4)
+        XCTAssertFalse(projection.automation.aliases.echo)
+        XCTAssertTrue(projection.automation.aliases.processCommands)
+        let parsedTrigger = try XCTUnwrap(projection.automation.triggers.triggers.first)
+        XCTAssertTrue(parsedTrigger.actions.contains(.color(
+            foreground: .init(red: 255, green: 0, blue: 0),
+            background: nil,
+            wholeLine: true
+        )))
+        XCTAssertTrue(parsedTrigger.actions.contains(.appearance(.init(bold: true), wholeLine: true)))
+        XCTAssertTrue(parsedTrigger.actions.contains(.paragraph(.init(alignment: .center, leftIndent: 10))))
+        XCTAssertTrue(parsedTrigger.actions.contains(.avatar("https://example.test/$1.png")))
+        let aliases = try AliasEngine.process("g", groups: automation.aliases, variables: [:])
+        XCTAssertEqual(aliases.text, "north")
+
+        let effects = try await TriggerEngine().process(
+            .init(text: "HP: 42"),
+            groups: automation.triggers,
+            variables: [:]
+        )
+        XCTAssertEqual(effects, [
+            .style(
+                range: NSRange(location: 0, length: 6),
+                foreground: .init(red: 255, green: 0, blue: 0),
+                background: nil
+            ),
+            .appearance(range: NSRange(location: 0, length: 6), patch: .init(bold: true)),
+            .paragraph(.init(alignment: .center, leftIndent: 10)),
+            .gagDisplay,
+            .gagLog,
+            .send("score 42"),
+            .avatar("https://example.test/42.png"),
+        ])
+    }
+
+    func testProjectionLoadsKeyboardMacrosAtEveryConnectionScope() throws {
+        let source = """
+        Version=331
+        Connections {
+          KeyboardMacros2 { Active=true { Macro="global" key=Control+G } }
+          Shortcuts {
+            World {
+              Host="example.test:8888"
+              KeyboardMacros2 { { Macro="server" key=Control+G } }
+              Characters {
+                Hero { KeyboardMacros2 { { Folder=true KeyboardMacros2 { { Macro="character" key=Control+G Type=true } } } } }
+              }
+            }
+          }
+        }
+        """
+        let projection = try LegacyConfigurationProjection(document: .init(source: source))
+        let server = try XCTUnwrap(projection.servers.first)
+        let character = try XCTUnwrap(server.characters.first)
+        let macro = KeyboardMacroEngine.macro(
+            for: "Control+G",
+            groups: projection.macroGroups(for: server.profile, character: character)
+        )
+
+        XCTAssertEqual(macro?.macro, "character")
+        XCTAssertTrue(macro?.typeIntoInput == true)
+    }
+
+    func testProjectionLoadsExtendedV331TriggerOptions() throws {
+        let source = """
+        Version=331
+        Connections {
+          Triggers { Active=true
+            { FindString { MatchText="(Hero)" RegularExpression=true }
+              Color { FontFace="Menlo" FontSize=16 ForeHash=true BackDefault=true }
+              Paragraph { UseBorder=true Border=3 UseBorderStyle=true BorderStyle=1 UseStroke=true StrokeWidth=2 StrokeHash=true StrokeStyle=2 UseHorizontalRule=true }
+              Activate { Active=true ImportantActivity=true NoActivity=true }
+              Spawn { Active=true Title="$1" TabGroup="Combat-%group%" CaptureUntil="END" }
+              Send { Active=true Send="look $1" CaptureIndex=1 SendOnClick=true ExpandVariables=true }
+              Filter { Active=true HTML=true Replace="<b>$1</b>" }
+            }
+          }
+        }
+        """
+        let projection = try LegacyConfigurationProjection(document: .init(source: source))
+        let actions = try XCTUnwrap(projection.automation.triggers.triggers.first).actions
+
+        XCTAssertTrue(actions.contains(.colorHash(foreground: true, background: false, wholeLine: false)))
+        XCTAssertTrue(actions.contains(.colorDefault(foreground: false, background: true, wholeLine: false)))
+        XCTAssertTrue(actions.contains(.font(face: "Menlo", size: 16, useDefault: false, wholeLine: false)))
+        XCTAssertTrue(actions.contains(.activateWindow))
+        XCTAssertTrue(actions.contains(.activity(important: true)))
+        XCTAssertTrue(actions.contains(.suppressActivity))
+        XCTAssertTrue(actions.contains(.send("look $1", captureIndex: 1, expandVariables: true, sendOnClick: true)))
+        XCTAssertTrue(actions.contains(.replaceHTML("<b>$1</b>", expandVariables: false)))
+        let spawn = actions.compactMap { action -> TriggerSpawnAction? in
+            if case let .spawn(value) = action { return value }
+            return nil
+        }.first
+        XCTAssertEqual(spawn?.tabGroup, "Combat-%group%")
+        let paragraph = actions.compactMap { action -> ParagraphPatch? in
+            if case let .paragraph(value) = action { return value }
+            return nil
+        }.first
+        XCTAssertEqual(paragraph?.borderWidth, 3)
+        XCTAssertEqual(paragraph?.borderStyle, .round)
+        XCTAssertEqual(paragraph?.strokeStyle, .bottom)
+        XCTAssertEqual(paragraph?.horizontalRule, true)
+    }
+
+    func testProjectionLoadsWindowsLoggingDefaultsAndCharacterAutolog() throws {
+        let source = """
+        Version=331
+        Connections {
+          Logging.DefaultLogFileName="Logs/%server%-%character%.html"
+          Logging.Path="~/Shared Logs"
+          Logging.FileDateFormat="yyyy-MM-dd"
+          Logging.LogSent=true
+          Logging.SentPrefix="S>"
+          Logging.LogTyped=true
+          Logging.TypedPrefix="T>"
+          Logging.TimeFormat=14
+          Logging.Wrap=true
+          Logging.WrapChars=72
+          Logging.HangingIndent=true
+          Logging.HangingIndentChars=4
+          Logging.DoubleSpace=true
+          Shortcuts {
+            World { Host="example.test:8888" Characters { Hero { LogFileName="Hero.html" LogFileNameTimeFormat=2 } } }
+          }
+        }
+        """
+        let projection = try LegacyConfigurationProjection(document: .init(source: source))
+        let server = try XCTUnwrap(projection.servers.first)
+        let character = try XCTUnwrap(server.characters.first)
+
+        XCTAssertEqual(projection.logging.defaultLogFilename, "Logs/%server%-%character%.html")
+        XCTAssertEqual(projection.loggingPath, "~/Shared Logs")
+        XCTAssertTrue(projection.logging.logsSentText)
+        XCTAssertTrue(projection.logging.logsTypedText)
+        XCTAssertTrue(projection.logging.includesTime)
+        XCTAssertTrue(projection.logging.includesDate)
+        XCTAssertTrue(projection.logging.uses24HourTime)
+        XCTAssertEqual(projection.logging.wrapWidth, 72)
+        XCTAssertEqual(projection.logging.hangingIndent, 4)
+        XCTAssertTrue(projection.logging.doubleSpaces)
+        XCTAssertEqual(
+            projection.automaticLog(for: server.profile, character: character)?.filename,
+            "Hero.html"
+        )
+        XCTAssertTrue(projection.automaticLog(for: server.profile, character: character)?.appendsDate == true)
+    }
+
+    func testMilestone4SourcePinnedAutomationFixtureProjectsEndToEnd() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/milestone4-automation-config.txt")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        let projection = try LegacyConfigurationProjection(document: .init(source: source))
+        let server = try XCTUnwrap(projection.servers.first)
+        let character = try XCTUnwrap(server.characters.first)
+        let groups = projection.automationGroups(for: server.profile, character: character)
+        let macros = projection.macroGroups(for: server.profile, character: character)
+
+        XCTAssertEqual(try AliasEngine.process("n", groups: groups.aliases, variables: [:]).text, "north")
+        XCTAssertEqual(macros.first?.macros.first?.macro, "inventory")
+        XCTAssertEqual(projection.loggingPath, "~/Shared Logs")
+        XCTAssertEqual(projection.logging.wrapWidth, 72)
+        XCTAssertEqual(projection.automaticLog(for: server.profile, character: character)?.filename, "Hero.html")
+        let actions = try XCTUnwrap(projection.automation.triggers.triggers.first).actions
+        XCTAssertTrue(actions.contains(.colorHash(foreground: true, background: false, wholeLine: false)))
+        XCTAssertTrue(actions.contains(.send("look $1", captureIndex: 1, expandVariables: true, sendOnClick: true)))
+        XCTAssertTrue(actions.contains(.replaceHTML("<b>$1</b>", expandVariables: false)))
+        XCTAssertTrue(actions.contains { if case .stat = $0 { return true }; return false })
+    }
+
     func testTypedProjectionUsesWindowsDefaultsAndPortableSettings() throws {
         let source = """
         Version=331
         TCP_KeepAlive=false
+        ScriptStartup="scripts/start.js"
         Connections {
           ConnectTimeout=12000
           ConnectRetry=3
@@ -176,6 +393,7 @@ final class LegacyConfigTests: XCTestCase {
         XCTAssertTrue(projection.settings.retryForever)
         XCTAssertFalse(projection.settings.tcpKeepAlive)
         XCTAssertTrue(projection.settings.tcpNoDelay)
+        XCTAssertEqual(projection.scripting.startupPath, "scripts/start.js")
         let server = try XCTUnwrap(projection.servers.first)
         XCTAssertEqual(server.profile.host, "::1")
         XCTAssertEqual(server.profile.port, 7777)
@@ -197,6 +415,123 @@ final class LegacyConfigTests: XCTestCase {
         XCTAssertEqual(projection.connectionPolicy.connectTimeoutMilliseconds, 12_000)
         XCTAssertEqual(projection.connectionPolicy.retryCount, 3)
         XCTAssertFalse(projection.connectionPolicy.keepAlive)
+    }
+
+    func testProjectionReadsMultilineTriggerLimits() throws {
+        let source = """
+        Version=331
+        Connections {
+          Triggers {
+            { FindString { MatchText="begin" }
+              Multiline=true
+              Multiline_Limit=2
+              Multiline_Time=5
+              AwayPresent=true
+              AwayPresentOnce=true
+              Away=true
+              Triggers { { FindString { MatchText="next" } } }
+            }
+          }
+        }
+        """
+        let projection = try LegacyConfigurationProjection(document: .init(source: source))
+        let trigger = try XCTUnwrap(projection.automation.triggers.triggers.first)
+
+        XCTAssertEqual(trigger.multiline, .init(lineLimit: 2, timeLimit: 5))
+        XCTAssertTrue(trigger.awayPresent)
+        XCTAssertTrue(trigger.awayPresentOnce)
+        XCTAssertTrue(trigger.away)
+        XCTAssertEqual(trigger.children.first?.match.text, "next")
+    }
+
+    func testProjectionReadsTriggerStatAction() throws {
+        let source = """
+        Version=331
+        Connections {
+          Triggers {
+            { FindString { MatchText="HP ([0-9]+)" RegularExpression=true }
+              Stat {
+                Title="Vitals"
+                Prefix="01"
+                Name="HP"
+                Value="$1"
+                UseColor=true
+                Color=RGB(255,0,0)
+                NameAlignment=2
+                UseFont=true
+                Font { Name="Menlo" Size=14 Bold=true }
+                Type=0
+                Int { Add=true }
+              }
+            }
+          }
+        }
+        """
+        let projection = try LegacyConfigurationProjection(document: .init(source: source))
+        let trigger = try XCTUnwrap(projection.automation.triggers.triggers.first)
+
+        XCTAssertEqual(trigger.actions, [.stat(.init(
+            title: "Vitals",
+            name: "HP",
+            prefix: "01",
+            value: "$1",
+            kind: .integer,
+            addsToExistingInteger: true,
+            color: .init(red: 255, green: 0, blue: 0),
+            nameAlignment: .right,
+            font: .init(name: "Menlo", size: 14, bold: true)
+        ))])
+    }
+
+    func testScriptingStartupPathWritesBackLosslessly() throws {
+        let source = """
+        Version=331
+        ScriptStartup="old.js"
+        Connections { Shortcuts { } }
+        Future="keep"
+        """
+        let document = try LegacyConfigurationDocument(source: source)
+        var projection = try LegacyConfigurationProjection(document: document)
+        projection.scripting.startupPath = "scripts/startup.js"
+
+        let updated = try projection.applying(to: document)
+
+        XCTAssertEqual(updated.value(at: ["ScriptStartup"]), "scripts/startup.js")
+        XCTAssertEqual(updated.value(at: ["Future"]), "keep")
+    }
+
+    func testProjectionReadsSpawnCaptureOptions() throws {
+        let source = """
+        Version=331
+        Connections {
+          Triggers {
+            { FindString { MatchText="BEGIN" }
+              Spawn {
+                Active=true
+                Title="Combat"
+                CaptureUntil="^END$"
+                OnlyChildrenDuringCapture=true
+                Clear=true
+                ShowTab=true
+                GagLog=true
+                Copy=false
+              }
+            }
+          }
+        }
+        """
+        let projection = try LegacyConfigurationProjection(document: .init(source: source))
+        let trigger = try XCTUnwrap(projection.automation.triggers.triggers.first)
+
+        XCTAssertEqual(trigger.actions, [.spawn(.init(
+            title: "Combat",
+            captureUntil: "^END$",
+            onlyChildrenDuringCapture: true,
+            clear: true,
+            showTab: true,
+            gagLog: true,
+            copy: false
+        ))])
     }
 
     func testTypedProjectionRefusesNewerWindowsConfigurationVersions() throws {
@@ -408,6 +743,84 @@ final class LegacyConfigTests: XCTestCase {
         }
         XCTAssertEqual(workspace.servers.first { $0.profile.id == first }?.profile.name, "Alpha")
         XCTAssertEqual(workspace.servers.first { $0.profile.id == second }?.profile.name, "Beta")
+    }
+
+    func testEditableConfigurationWorkspaceUpdatesStartupScript() throws {
+        var workspace = try LegacyConfigurationWorkspace.empty()
+        workspace.updateScripting { $0.startupPath = "Scripts/startup.js" }
+
+        XCTAssertTrue(workspace.isDirty)
+        let rendered = try workspace.renderedDocument()
+        XCTAssertEqual(try LegacyConfigurationProjection(document: rendered).scripting.startupPath, "Scripts/startup.js")
+    }
+
+    func testUnnamedCollectionEntriesCanBeEditedWithoutRewritingNeighbors() throws {
+        var document = try LegacyConfigurationDocument(source: """
+        Connections {
+          Aliases {
+            // retained comment
+            { FindString { MatchText="north" } Replace="n" WindowsOnly="keep" }
+          }
+        }
+        """)
+        try document.upsertValue("northward", inUnnamedBlockAt: 0, collectionPath: ["Connections", "Aliases"], relativePath: ["Replace"])
+        let newIndex = try document.appendUnnamedBlock(at: ["Connections", "Aliases"])
+        try document.upsertValue("south", inUnnamedBlockAt: newIndex, collectionPath: ["Connections", "Aliases"], relativePath: ["FindString", "MatchText"])
+        try document.upsertValue("s", inUnnamedBlockAt: newIndex, collectionPath: ["Connections", "Aliases"], relativePath: ["Replace"])
+        XCTAssertTrue(try document.removeUnnamedBlock(at: newIndex, collectionPath: ["Connections", "Aliases"]))
+
+        let serialized = document.serialized()
+        XCTAssertTrue(serialized.contains("// retained comment"))
+        XCTAssertTrue(serialized.contains("MatchText=\"north\""))
+        XCTAssertTrue(serialized.contains("Replace=\"northward\""))
+        XCTAssertTrue(serialized.contains("WindowsOnly=\"keep\""))
+        XCTAssertFalse(serialized.contains("MatchText=\"south\""))
+    }
+
+    func testEditableWorkspaceAddsUpdatesAndRemovesGlobalAutomation() throws {
+        var workspace = try LegacyConfigurationWorkspace.empty()
+        let alias = try workspace.addGlobalAlias(
+            description: "Go north",
+            match: .init(text: "n", startsWith: true),
+            replacement: "north"
+        )
+        let trigger = try workspace.addGlobalTrigger(
+            description: "Score",
+            match: .init(text: "score", matchCase: true),
+            action: .send("score")
+        )
+        let macro = try workspace.addGlobalMacro(
+            description: "Quick score",
+            key: "Control+Alt+S",
+            macro: "score",
+            typeIntoInput: true
+        )
+        try workspace.updateGlobalAlias(
+            at: alias,
+            description: "Go south",
+            match: .init(text: "s", startsWith: true),
+            replacement: "south"
+        )
+        try workspace.updateGlobalTrigger(
+            at: trigger,
+            description: "Hide score",
+            match: .init(text: "score"),
+            action: .gag(display: true, log: true)
+        )
+
+        XCTAssertEqual(workspace.globalAliases.map(\.description), ["Go south"])
+        XCTAssertEqual(workspace.globalAliases.first?.replacement, "south")
+        XCTAssertEqual(workspace.globalTriggers.map(\.description), ["Hide score"])
+        XCTAssertTrue(workspace.globalTriggers.first?.actions.contains(.gag(display: true, log: true)) == true)
+        XCTAssertEqual(workspace.globalMacros.first?.macro, "score")
+        XCTAssertTrue(workspace.globalMacros.first?.typeIntoInput == true)
+
+        try workspace.removeGlobalAlias(at: alias)
+        try workspace.removeGlobalTrigger(at: trigger)
+        try workspace.removeGlobalMacro(at: macro)
+        XCTAssertTrue(workspace.globalAliases.isEmpty)
+        XCTAssertTrue(workspace.globalTriggers.isEmpty)
+        XCTAssertTrue(workspace.globalMacros.isEmpty)
     }
 
     func testStartupConnectionsUseAutoConnectCharactersAndGlobalPolicy() throws {

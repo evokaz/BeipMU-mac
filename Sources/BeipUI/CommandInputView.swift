@@ -6,6 +6,7 @@ final class CommandInputView: NSTextView {
     let containerScrollView: NSScrollView
     var onSubmit: ((String) -> Void)?
     var onSmartPaste: (([String]) -> Bool)?
+    var onMacro: ((NSEvent) -> Bool)?
     var behavior = InputBehavior()
     var completionCandidates: [String] = []
     private var commandHistory = InputHistory()
@@ -59,6 +60,7 @@ final class CommandInputView: NSTextView {
     }
 
     override func keyDown(with event: NSEvent) {
+        if onMacro?(event) == true { return }
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         switch event.keyCode {
         case 36 where !modifiers.contains(.shift) && !modifiers.contains(.option),

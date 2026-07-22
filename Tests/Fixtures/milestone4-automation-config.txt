@@ -1,0 +1,52 @@
+// Milestone 4 acceptance fixture, derived from BeipMU v331 Root.prp and
+// Connection.cpp at 3d43fe9327e18dcc30a38b2f7422f558b95a4c3c.
+Version=331
+Connections {
+  Logging.DefaultLogFileName="Logs/%server%-%character%.html"
+  Logging.Path="~/Shared Logs"
+  Logging.FileDateFormat="yyyy-MM-dd"
+  Logging.LogSent=true
+  Logging.SentPrefix="S>"
+  Logging.LogTyped=true
+  Logging.TypedPrefix="T>"
+  Logging.TimeFormat=14
+  Logging.Wrap=true
+  Logging.WrapChars=72
+  Logging.HangingIndent=true
+  Logging.HangingIndentChars=4
+  Logging.DoubleSpace=true
+  Aliases { Active=true Echo=false ProcessCommands=true { FindString { MatchText="n" } Replace="north" } }
+  KeyboardMacros2 { Active=true { Description="Look" Macro="look" key=Control+L } }
+  Triggers { Active=true
+    { Description="Extended formatting"
+      FindString { MatchText="(Hero)" RegularExpression=true }
+      Color { FontFace="Menlo" FontSize=16 ForeHash=true BackDefault=true }
+      Paragraph {
+        UseBorder=true Border=3 UseBorderStyle=true BorderStyle=1
+        UseStroke=true StrokeWidth=2 StrokeHash=true StrokeStyle=2
+        UseHorizontalRule=true
+      }
+      Activate { Active=true ImportantActivity=true NoActivity=true }
+      Spawn { Active=true Title="$1" TabGroup="Combat-%group%" CaptureUntil="END" }
+      Send { Active=true Send="look $1" CaptureIndex=1 SendOnClick=true ExpandVariables=true }
+      Filter { Active=true HTML=true Replace="<b>$1</b>" }
+      Stat {
+        Title="Vitals" Name="Hero" Prefix="01" Value="$1" Type=1
+        UseColor=true Color=RGB(255,0,0) NameAlignment=2
+        UseFont=true Font { Name="Menlo" Size=14 Bold=true }
+      }
+    }
+  }
+  Shortcuts {
+    World {
+      Host="example.test:8888"
+      Characters {
+        Hero {
+          LogFileName="Hero.html"
+          LogFileNameTimeFormat=2
+          KeyboardMacros2 { { Macro="inventory" key=F1 Type=true } }
+        }
+      }
+    }
+  }
+}

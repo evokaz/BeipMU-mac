@@ -156,4 +156,37 @@ final class RenderedLineTests: XCTestCase {
         XCTAssertTrue(html.contains("font-weight:bold"))
         XCTAssertTrue(html.contains("a=1&amp;b=2"))
     }
+
+    func testLogFilenameExpandsTokensAndMarksDailyFilesForRollover() {
+        let date = Date(timeIntervalSince1970: 86_400)
+        let resolution = SessionLogFilename.resolve(
+            "Logs/%server%-%character%-%date%.html",
+            date: date,
+            dateFormat: "yyyy-MM-dd",
+            serverName: "Lambda",
+            characterName: "Ada",
+            timeZone: TimeZone(secondsFromGMT: 0)!
+        )
+        XCTAssertEqual(resolution.filename, "Logs/Lambda-Ada-1970-01-02.html")
+        XCTAssertTrue(resolution.rollsOverDaily)
+
+        let appended = SessionLogFilename.resolve(
+            "Logs/session.txt",
+            date: date,
+            appendingDate: true,
+            timeZone: TimeZone(secondsFromGMT: 0)!
+        )
+        XCTAssertEqual(appended.filename, "Logs/session - 1970-01-02.txt")
+        XCTAssertTrue(appended.rollsOverDaily)
+    }
+
+    func testSessionLogOptionsDecodesPreAutologPreferences() throws {
+        let data = Data("{\"logsSentText\":true,\"sentPrefix\":\"Sent:\"}".utf8)
+        let options = try JSONDecoder().decode(SessionLogOptions.self, from: data)
+        XCTAssertTrue(options.logsSentText)
+        XCTAssertEqual(options.sentPrefix, "Sent:")
+        XCTAssertFalse(options.autoLogEnabled)
+        XCTAssertEqual(options.defaultLogFilename, "")
+        XCTAssertEqual(options.fileDateFormat, "yyyy-MM-dd")
+    }
 }

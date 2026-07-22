@@ -20,7 +20,7 @@ let package = Package(
             dependencies: ["BeipCore"],
             linkerSettings: [.linkedFramework("Network"), .linkedFramework("Security")]
         ),
-        .target(name: "BeipPersistence", dependencies: ["BeipCore"]),
+        .target(name: "BeipPersistence", dependencies: ["BeipCore", "BeipAutomation"]),
         .target(name: "BeipAutomation", dependencies: ["BeipCore"]),
         .target(
             name: "BeipScriptRuntime",

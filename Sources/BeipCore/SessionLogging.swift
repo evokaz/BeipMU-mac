@@ -9,6 +9,10 @@ public enum SessionLogFormat: String, Sendable, Codable {
 }
 
 public struct SessionLogOptions: Sendable, Codable, Equatable {
+    public var autoLogEnabled: Bool
+    public var defaultLogFilename: String
+    public var appendsDateToFilename: Bool
+    public var fileDateFormat: String
     public var logsSentText: Bool
     public var sentPrefix: String
     public var logsTypedText: Bool
@@ -22,6 +26,10 @@ public struct SessionLogOptions: Sendable, Codable, Equatable {
     public var doubleSpaces: Bool
 
     public init(
+        autoLogEnabled: Bool = false,
+        defaultLogFilename: String = "",
+        appendsDateToFilename: Bool = false,
+        fileDateFormat: String = "yyyy-MM-dd",
         logsSentText: Bool = false,
         sentPrefix: String = "Sent>",
         logsTypedText: Bool = false,
@@ -34,6 +42,10 @@ public struct SessionLogOptions: Sendable, Codable, Equatable {
         wrapsAtWords: Bool = true,
         doubleSpaces: Bool = false
     ) {
+        self.autoLogEnabled = autoLogEnabled
+        self.defaultLogFilename = defaultLogFilename
+        self.appendsDateToFilename = appendsDateToFilename
+        self.fileDateFormat = fileDateFormat.isEmpty ? "yyyy-MM-dd" : fileDateFormat
         self.logsSentText = logsSentText
         self.sentPrefix = sentPrefix
         self.logsTypedText = logsTypedText
@@ -45,6 +57,83 @@ public struct SessionLogOptions: Sendable, Codable, Equatable {
         self.hangingIndent = max(0, hangingIndent)
         self.wrapsAtWords = wrapsAtWords
         self.doubleSpaces = doubleSpaces
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case autoLogEnabled, defaultLogFilename, appendsDateToFilename, fileDateFormat
+        case logsSentText, sentPrefix, logsTypedText, typedPrefix
+        case includesTime, includesDate, uses24HourTime, wrapWidth, hangingIndent, wrapsAtWords, doubleSpaces
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            autoLogEnabled: try values.decodeIfPresent(Bool.self, forKey: .autoLogEnabled) ?? false,
+            defaultLogFilename: try values.decodeIfPresent(String.self, forKey: .defaultLogFilename) ?? "",
+            appendsDateToFilename: try values.decodeIfPresent(Bool.self, forKey: .appendsDateToFilename) ?? false,
+            fileDateFormat: try values.decodeIfPresent(String.self, forKey: .fileDateFormat) ?? "yyyy-MM-dd",
+            logsSentText: try values.decodeIfPresent(Bool.self, forKey: .logsSentText) ?? false,
+            sentPrefix: try values.decodeIfPresent(String.self, forKey: .sentPrefix) ?? "Sent>",
+            logsTypedText: try values.decodeIfPresent(Bool.self, forKey: .logsTypedText) ?? false,
+            typedPrefix: try values.decodeIfPresent(String.self, forKey: .typedPrefix) ?? "Typed>",
+            includesTime: try values.decodeIfPresent(Bool.self, forKey: .includesTime) ?? false,
+            includesDate: try values.decodeIfPresent(Bool.self, forKey: .includesDate) ?? false,
+            uses24HourTime: try values.decodeIfPresent(Bool.self, forKey: .uses24HourTime) ?? false,
+            wrapWidth: try values.decodeIfPresent(Int.self, forKey: .wrapWidth),
+            hangingIndent: try values.decodeIfPresent(Int.self, forKey: .hangingIndent) ?? 0,
+            wrapsAtWords: try values.decodeIfPresent(Bool.self, forKey: .wrapsAtWords) ?? true,
+            doubleSpaces: try values.decodeIfPresent(Bool.self, forKey: .doubleSpaces) ?? false
+        )
+    }
+}
+
+/// Expands the portable filename substitutions used by manual and automatic
+/// logs. A date substitution makes the log a daily log, so callers can safely
+/// reopen it when the local calendar day changes.
+public enum SessionLogFilename {
+    public struct Resolution: Sendable, Equatable {
+        public var filename: String
+        public var rollsOverDaily: Bool
+
+        public init(filename: String, rollsOverDaily: Bool) {
+            self.filename = filename
+            self.rollsOverDaily = rollsOverDaily
+        }
+    }
+
+    public static func resolve(
+        _ template: String,
+        date: Date = Date(),
+        dateFormat: String = "yyyy-MM-dd",
+        appendingDate: Bool = false,
+        serverName: String? = nil,
+        characterName: String? = nil,
+        timeZone: TimeZone = .current
+    ) -> Resolution {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = timeZone
+        formatter.dateFormat = dateFormat.isEmpty ? "yyyy-MM-dd" : dateFormat
+        let dateText = formatter.string(from: date)
+        var filename = template
+        var rollsOverDaily = appendingDate
+        if filename.range(of: "%date%", options: .caseInsensitive) != nil {
+            filename = filename.replacingOccurrences(of: "%date%", with: dateText, options: .caseInsensitive)
+            rollsOverDaily = true
+        }
+        if let serverName {
+            filename = filename.replacingOccurrences(of: "%server%", with: serverName, options: .caseInsensitive)
+        }
+        if let characterName {
+            filename = filename.replacingOccurrences(of: "%character%", with: characterName, options: .caseInsensitive)
+        }
+        if appendingDate {
+            let path = filename as NSString
+            let extensionValue = path.pathExtension
+            let stem = extensionValue.isEmpty ? filename : path.deletingPathExtension
+            filename = stem + " - " + dateText + (extensionValue.isEmpty ? "" : "." + extensionValue)
+        }
+        return .init(filename: filename, rollsOverDaily: rollsOverDaily)
     }
 }
 
@@ -95,7 +184,9 @@ public struct SessionLogRenderer: Sendable {
             let timestamp = timestampHTML(line.timestamp)
             let alignment = line.paragraph.alignment.rawValue
             let background = line.paragraph.background.map { "background:\(Self.hex($0));" } ?? ""
-            return "<p class=\"line\" style=\"text-align:\(alignment);\(background)\">\(timestamp)\(styledHTML(line))</p>\n"
+            let border = line.paragraph.borderWidth > 0
+                ? "border:\(line.paragraph.borderWidth)px solid \(line.paragraph.strokeColor.map(Self.hex) ?? "currentColor");border-radius:\(line.paragraph.borderStyle == .round ? 8 : 0)px;" : ""
+            return "<p class=\"line\" style=\"text-align:\(alignment);\(background)\(border)\">\(timestamp)\(styledHTML(line))</p>\n"
         }
     }
 

@@ -1,3 +1,4 @@
+import BeipAutomation
 import BeipCore
 import Foundation
 
@@ -40,13 +41,88 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
         }
     }
 
+    /// Global scripting settings that are portable to the JavaScriptCore/XPC
+    /// runtime. The source document remains lossless for all other OM fields.
+    public struct Scripting: Sendable, Equatable {
+        public var startupPath: String
+
+        public init(startupPath: String = "") {
+            self.startupPath = startupPath
+        }
+    }
+
     public struct Server: Sendable, Equatable {
         public var profile: ServerProfile
         public var characters: [CharacterProfile]
+        public var automation: Automation
+
+        public init(
+            profile: ServerProfile,
+            characters: [CharacterProfile],
+            automation: Automation = .init()
+        ) {
+            self.profile = profile
+            self.characters = characters
+            self.automation = automation
+        }
     }
+
+    /// Read-only typed automation projection. Config.txt stays the source of
+    /// truth, including unsupported trigger properties and unknown extensions.
+    /// This supplies the portable alias/trigger subset to a live session.
+    public struct Automation: Sendable, Equatable {
+        public var aliases: AliasGroup
+        public var triggers: TriggerGroup
+        public var macros: KeyboardMacroGroup
+        public var characters: [String: Scope]
+
+        public init(
+            aliases: AliasGroup = .init(),
+            triggers: TriggerGroup = .init(),
+            macros: KeyboardMacroGroup = .init(),
+            characters: [String: Scope] = [:]
+        ) {
+            self.aliases = aliases
+            self.triggers = triggers
+            self.macros = macros
+            self.characters = characters
+        }
+
+        public struct Scope: Sendable, Equatable {
+            public var aliases: AliasGroup
+            public var triggers: TriggerGroup
+            public var macros: KeyboardMacroGroup
+            public var automaticLogFilename: String
+            public var automaticLogAppendsDate: Bool
+
+            public init(
+                aliases: AliasGroup = .init(),
+                triggers: TriggerGroup = .init(),
+                macros: KeyboardMacroGroup = .init(),
+                automaticLogFilename: String = "",
+                automaticLogAppendsDate: Bool = false
+            ) {
+                self.aliases = aliases
+                self.triggers = triggers
+                self.macros = macros
+                self.automaticLogFilename = automaticLogFilename
+                self.automaticLogAppendsDate = automaticLogAppendsDate
+            }
+        }
+
+        public func scope(for character: CharacterProfile?) -> Scope {
+            guard let character else { return .init() }
+            return characters[character.name.folding(options: [.caseInsensitive], locale: .current)] ?? .init()
+        }
+    }
+
+    public var automation: Automation
 
     public var sourceVersion: Int
     public var settings: ConnectionSettings
+    public var scripting: Scripting
+    public var logging: SessionLogOptions
+    public var loggingPath: String
     public var servers: [Server]
 
     public init(document: LegacyConfigurationDocument) throws {
@@ -56,6 +132,8 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
         }
         sourceVersion = version
         let connections = document.firstBlock(named: "Connections")?.children ?? []
+        let globalAutomation = Self.automation(from: connections)
+        automation = globalAutomation
         settings = .init(
             connectTimeoutMilliseconds: connections.value("ConnectTimeout").flatMap(Int.init) ?? 30_000,
             connectRetryCount: connections.value("ConnectRetry").flatMap(Int.init) ?? 5,
@@ -63,6 +141,10 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
             tcpKeepAlive: document.rootBool("TCP_KeepAlive") ?? true,
             tcpNoDelay: document.rootBool("TCP_NoDelay") ?? true
         )
+        scripting = .init(startupPath: document.rootValue("ScriptStartup") ?? "")
+        let loggingNodes = connections.properties(named: "Logging")
+        logging = Self.loggingOptions(from: loggingNodes)
+        loggingPath = loggingNodes?.value("Path") ?? ""
 
         let shortcutNodes = connections.firstBlock(named: "Shortcuts")?.children ?? []
         servers = shortcutNodes.namedBlocks().map { name, children in
@@ -119,7 +201,11 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
                     puppets: puppets
                 )
             }
-            return Server(profile: profile, characters: characters)
+            var serverAutomation = Self.automation(from: children)
+            for (characterName, properties) in characterNodes.namedBlocks() {
+                serverAutomation.characters[characterName.folding(options: [.caseInsensitive], locale: .current)] = Self.scope(from: properties)
+            }
+            return Server(profile: profile, characters: characters, automation: serverAutomation)
         }
     }
 
@@ -131,6 +217,47 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
             keepAlive: settings.tcpKeepAlive,
             noDelay: settings.tcpNoDelay
         )
+    }
+
+    /// Builds the exact global → server → character → server → global order
+    /// used by Connection.cpp. The global aliases/triggers group acts as the
+    /// master enable switch, while server and character groups supply their
+    /// ordered pre/post slices.
+    public func automationGroups(
+        for server: ServerProfile,
+        character: CharacterProfile?
+    ) -> (aliases: [AliasGroup], triggers: [TriggerGroup]) {
+        guard let selected = servers.first(where: { $0.profile.id == server.id }) else {
+            return ([], [])
+        }
+        let characterScope = selected.automation.scope(for: character)
+        let aliases = Self.aliasGroups(
+            global: automation.aliases,
+            server: selected.automation.aliases,
+            character: characterScope.aliases
+        )
+        let triggers = Self.triggerGroups(
+            global: automation.triggers,
+            server: selected.automation.triggers,
+            character: characterScope.triggers
+        )
+        return (aliases, triggers)
+    }
+
+    /// Keyboard macros resolve character before server before global, unlike
+    /// aliases/triggers which use pre/post slices around every scope.
+    public func macroGroups(for server: ServerProfile, character: CharacterProfile?) -> [KeyboardMacroGroup] {
+        guard automation.macros.active,
+              let selected = servers.first(where: { $0.profile.id == server.id }) else { return [] }
+        let characterScope = selected.automation.scope(for: character)
+        return [characterScope.macros, selected.automation.macros, automation.macros]
+    }
+
+    public func automaticLog(for server: ServerProfile, character: CharacterProfile?) -> (filename: String, appendsDate: Bool)? {
+        guard let selected = servers.first(where: { $0.profile.id == server.id }), let character else { return nil }
+        let scope = selected.automation.scope(for: character)
+        guard !scope.automaticLogFilename.isEmpty else { return nil }
+        return (scope.automaticLogFilename, scope.automaticLogAppendsDate)
     }
 
     public func startupConnections() -> [ConnectionRequest] {
@@ -160,6 +287,7 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
         try result.upsertValue(Self.flag(settings.retryForever), at: ["Connections", "RetryForever"], quoted: false)
         try result.upsertValue(Self.flag(settings.tcpKeepAlive), at: ["TCP_KeepAlive"], quoted: false)
         try result.upsertValue(Self.flag(settings.tcpNoDelay), at: ["TCP_NoDelay"], quoted: false)
+        try result.upsertValue(scripting.startupPath, at: ["ScriptStartup"])
 
         for server in servers {
             let base = ["Connections", "Shortcuts", server.profile.name]
@@ -277,6 +405,406 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
                 try document.upsertValue("true", at: serverBase + ["TLS"], quoted: false)
             }
         }
+    }
+
+    private static func automation(from nodes: [LegacyConfigurationDocument.Node]) -> Automation {
+        .init(
+            aliases: aliasGroup(from: nodes.firstBlock(named: "Aliases")?.children),
+            triggers: triggerGroup(from: nodes.firstBlock(named: "Triggers")?.children),
+            macros: macroGroup(from: nodes.firstBlock(named: "KeyboardMacros2")?.children)
+        )
+    }
+
+    private static func scope(from nodes: [LegacyConfigurationDocument.Node]) -> Automation.Scope {
+        let timeFormat = nodes.value("LogFileNameTimeFormat").flatMap(Int.init) ?? 0
+        return .init(
+            aliases: aliasGroup(from: nodes.firstBlock(named: "Aliases")?.children),
+            triggers: triggerGroup(from: nodes.firstBlock(named: "Triggers")?.children),
+            macros: macroGroup(from: nodes.firstBlock(named: "KeyboardMacros2")?.children),
+            automaticLogFilename: nodes.value("LogFileName") ?? "",
+            automaticLogAppendsDate: timeFormat & 0b110 != 0
+        )
+    }
+
+    private static func loggingOptions(from nodes: [LegacyConfigurationDocument.Node]?) -> SessionLogOptions {
+        guard let nodes else { return .init() }
+        let timeFormat = nodes.value("TimeFormat").flatMap(Int.init) ?? 0
+        let wraps = nodes.bool("Wrap") ?? false
+        let hanging = nodes.bool("HangingIndent") ?? false
+        return .init(
+            defaultLogFilename: nodes.value("DefaultLogFileName") ?? "",
+            fileDateFormat: nodes.value("FileDateFormat") ?? "yyyy-MM-dd",
+            logsSentText: nodes.bool("LogSent") ?? false,
+            sentPrefix: nodes.value("SentPrefix") ?? "Sent>",
+            logsTypedText: nodes.bool("LogTyped") ?? false,
+            typedPrefix: nodes.value("TypedPrefix") ?? "Typed>",
+            includesTime: timeFormat & 0b010 != 0,
+            includesDate: timeFormat & 0b100 != 0,
+            uses24HourTime: timeFormat & 0b1000 != 0,
+            wrapWidth: wraps ? (nodes.value("WrapChars").flatMap(Int.init) ?? 80) : nil,
+            hangingIndent: hanging ? (nodes.value("HangingIndentChars").flatMap(Int.init) ?? 2) : 0,
+            wrapsAtWords: nodes.bool("WrapNearestWord") ?? true,
+            doubleSpaces: nodes.bool("DoubleSpace") ?? false
+        )
+    }
+
+    private static func macroGroup(from nodes: [LegacyConfigurationDocument.Node]?) -> KeyboardMacroGroup {
+        guard let nodes else { return .init() }
+        return .init(
+            active: nodes.bool("Active") ?? true,
+            macros: nodes.unnamedBlocks().map(macro)
+        )
+    }
+
+    private static func macro(_ nodes: [LegacyConfigurationDocument.Node]) -> KeyboardMacro {
+        .init(
+            description: nodes.value("Description") ?? "",
+            macro: nodes.value("Macro") ?? "",
+            key: nodes.value("key") ?? "",
+            typeIntoInput: nodes.bool("Type") ?? false,
+            folder: nodes.bool("Folder") ?? false,
+            children: macroGroup(from: nodes.firstBlock(named: "KeyboardMacros2")?.children).macros
+        )
+    }
+
+    private static func aliasGroup(from nodes: [LegacyConfigurationDocument.Node]?) -> AliasGroup {
+        guard let nodes else { return .init() }
+        return .init(
+            active: nodes.bool("Active") ?? false,
+            echo: nodes.bool("Echo") ?? true,
+            processCommands: nodes.bool("ProcessCommands") ?? false,
+            afterCount: nodes.value("AfterCount").flatMap(Int.init) ?? 0,
+            aliases: nodes.unnamedBlocks().map(alias)
+        )
+    }
+
+    private static func alias(_ nodes: [LegacyConfigurationDocument.Node]) -> Alias {
+        Alias(
+            description: nodes.value("Description") ?? "",
+            match: matchDefinition(from: nodes),
+            replacement: nodes.value("Replace") ?? "",
+            folder: nodes.bool("Folder") ?? false,
+            stopProcessing: nodes.bool("StopProcessing") ?? false,
+            expandVariables: nodes.bool("ExpandVariables") ?? false,
+            children: aliasGroup(from: nodes.firstBlock(named: "Aliases")?.children).aliases
+        )
+    }
+
+    private static func triggerGroup(from nodes: [LegacyConfigurationDocument.Node]?) -> TriggerGroup {
+        guard let nodes else { return .init(active: false) }
+        return .init(
+            active: nodes.bool("Active") ?? true,
+            afterCount: nodes.value("AfterCount").flatMap(Int.init) ?? 0,
+            triggers: nodes.unnamedBlocks().map(trigger)
+        )
+    }
+
+    private static func trigger(_ nodes: [LegacyConfigurationDocument.Node]) -> Trigger {
+        let cooldown = nodes.bool("Cooldown") == true
+            ? (nodes.value("CooldownTime").flatMap(TimeInterval.init) ?? 0)
+            : nil
+        let multiline: MultilineTriggerOptions? = nodes.bool("Multiline") == true
+            ? .init(
+                lineLimit: nodes.value("Multiline_Limit").flatMap(Int.init) ?? 0,
+                timeLimit: nodes.value("Multiline_Time").flatMap(TimeInterval.init) ?? 0
+            ) : nil
+        let childGroup = triggerGroup(from: nodes.firstBlock(named: "Triggers")?.children)
+        return Trigger(
+            description: nodes.value("Description") ?? "",
+            match: matchDefinition(from: nodes),
+            disabled: nodes.bool("Disabled") ?? false,
+            stopProcessing: nodes.bool("StopProcessing") ?? false,
+            oncePerLine: nodes.bool("OncePerLine") ?? false,
+            awayPresent: nodes.bool("AwayPresent") ?? false,
+            awayPresentOnce: nodes.bool("AwayPresentOnce") ?? false,
+            away: nodes.bool("Away") ?? true,
+            cooldown: cooldown,
+            multiline: multiline,
+            actions: triggerActions(from: nodes),
+            children: childGroup.triggers,
+            childrenActive: childGroup.active
+        )
+    }
+
+    private static func matchDefinition(from nodes: [LegacyConfigurationDocument.Node]) -> MatchDefinition {
+        let find = nodes.firstBlock(named: "FindString")?.children ?? nodes
+        return .init(
+            text: find.value("MatchText") ?? "",
+            isRegularExpression: find.bool("RegularExpression") ?? false,
+            matchCase: find.bool("MatchCase") ?? false,
+            startsWith: find.bool("StartsWith") ?? false,
+            endsWith: find.bool("EndsWith") ?? false,
+            wholeWord: find.bool("WholeWord") ?? false
+        )
+    }
+
+    private static func triggerActions(from nodes: [LegacyConfigurationDocument.Node]) -> [TriggerAction] {
+        var actions: [TriggerAction] = []
+        if let color = nodes.firstBlock(named: "Color")?.children {
+            let foreground = color.bool("UseForeColor") == true
+                ? parseColor(color.value("Fore")) : nil
+            let background = color.bool("UseBackColor") == true
+                ? parseColor(color.value("Back")) : nil
+            if foreground != nil || background != nil {
+                actions.append(.color(
+                    foreground: foreground,
+                    background: background,
+                    wholeLine: color.bool("WholeLine") ?? false
+                ))
+            }
+            let wholeLine = color.bool("WholeLine") ?? false
+            let defaultForeground = color.bool("ForeDefault") ?? false
+            let defaultBackground = color.bool("BackDefault") ?? false
+            if defaultForeground || defaultBackground {
+                actions.append(.colorDefault(foreground: defaultForeground, background: defaultBackground, wholeLine: wholeLine))
+            }
+            let hashForeground = color.bool("ForeHash") ?? false
+            let hashBackground = color.bool("BackHash") ?? false
+            if hashForeground || hashBackground {
+                actions.append(.colorHash(foreground: hashForeground, background: hashBackground, wholeLine: wholeLine))
+            }
+            let useDefaultFont = color.bool("FontDefault") ?? false
+            let face = color.value("FontFace") ?? ""
+            let size = color.value("FontSize").flatMap(Double.init) ?? 0
+            if useDefaultFont || (!face.isEmpty && size > 0) {
+                actions.append(.font(face: face, size: size, useDefault: useDefaultFont, wholeLine: wholeLine))
+            }
+        }
+        if let style = nodes.firstBlock(named: "Style")?.children {
+            let patch = TextStylePatch(
+                bold: style.bool("SetBold") == true ? (style.bool("Bold") ?? false) : nil,
+                italic: style.bool("SetItalic") == true ? (style.bool("Italic") ?? false) : nil,
+                underline: style.bool("SetUnderline") == true ? (style.bool("Underline") ?? false) : nil,
+                strikeout: style.bool("SetStrikeout") == true ? (style.bool("Strikeout") ?? false) : nil,
+                blink: style.bool("Flash") == true
+                    ? (style.bool("FlashFast") == true ? .fast : .slow) : nil
+            )
+            if patch.bold != nil || patch.italic != nil || patch.underline != nil
+                || patch.strikeout != nil || patch.blink != nil {
+                actions.append(.appearance(patch, wholeLine: style.bool("WholeLine") ?? false))
+            }
+        }
+        if let paragraph = nodes.firstBlock(named: "Paragraph")?.children {
+            let alignment: ParagraphStyle.Alignment? = switch paragraph.value("Alignment").flatMap(Int.init) {
+            case 1: .center
+            case 2: .right
+            case 0: .left
+                default: nil
+            }
+            let strokeStyle: ParagraphStyle.StrokeStyle? = if paragraph.bool("UseStroke") == true {
+                switch paragraph.value("StrokeStyle").flatMap(Int.init) {
+                case 1: .top
+                case 2: .bottom
+                default: .outline
+                }
+            } else {
+                nil
+            }
+            let patch = ParagraphPatch(
+                alignment: paragraph.bool("UseAlignment") == true ? alignment : nil,
+                leftIndent: paragraph.bool("UseIndent_Left") == true
+                    ? paragraph.value("Indent_Left").flatMap(Double.init) : nil,
+                rightIndent: paragraph.bool("UseIndent_Right") == true
+                    ? paragraph.value("Indent_Right").flatMap(Double.init) : nil,
+                topPadding: paragraph.bool("UsePadding_Top") == true
+                    ? paragraph.value("Padding_Top").flatMap(Double.init) : nil,
+                bottomPadding: paragraph.bool("UsePadding_Bottom") == true
+                    ? paragraph.value("Padding_Bottom").flatMap(Double.init) : nil,
+                background: paragraph.bool("UseBackgroundColor") == true
+                    ? parseColor(paragraph.value("Background")) : nil,
+                backgroundHash: paragraph.bool("UseBackgroundColor") == true
+                    && paragraph.bool("BackgroundHash") == true,
+                borderWidth: paragraph.bool("UseBorder") == true
+                    ? paragraph.value("Border").flatMap(Double.init) : nil,
+                borderStyle: paragraph.bool("UseBorderStyle") == true
+                    ? (paragraph.value("BorderStyle") == "1" ? .round : .square) : nil,
+                strokeWidth: paragraph.bool("UseStroke") == true
+                    ? paragraph.value("StrokeWidth").flatMap(Double.init) : nil,
+                strokeColor: paragraph.bool("UseStroke") == true
+                    ? parseColor(paragraph.value("Stroke")) : nil,
+                strokeHash: paragraph.bool("UseStroke") == true && paragraph.bool("StrokeHash") == true,
+                strokeStyle: strokeStyle,
+                horizontalRule: paragraph.bool("UseHorizontalRule") == true ? true : nil
+            )
+            if !patch.isEmpty { actions.append(.paragraph(patch)) }
+        }
+        if let gag = nodes.firstBlock(named: "Gag")?.children {
+            let display = gag.bool("Active") ?? false
+            let log = gag.bool("Log") ?? false
+            if display || log { actions.append(.gag(display: display, log: log)) }
+        }
+        if let activate = nodes.firstBlock(named: "Activate")?.children,
+           activate.bool("Active") == true {
+            actions.append(.activateWindow)
+            if activate.bool("ImportantActivity") == true {
+                actions.append(.activity(important: true))
+            } else if activate.bool("Activity") == true {
+                actions.append(.activity(important: false))
+            }
+            if activate.bool("NoActivity") == true { actions.append(.suppressActivity) }
+        }
+        if let spawn = nodes.firstBlock(named: "Spawn")?.children,
+           spawn.bool("Active") == true {
+            actions.append(.spawn(.init(
+                title: spawn.value("Title") ?? "",
+                tabGroup: spawn.value("TabGroup") ?? "",
+                captureUntil: spawn.value("CaptureUntil") ?? "",
+                onlyChildrenDuringCapture: spawn.bool("OnlyChildrenDuringCapture") ?? false,
+                clear: spawn.bool("Clear") ?? false,
+                showTab: spawn.bool("ShowTab") ?? false,
+                gagLog: spawn.bool("GagLog") ?? false,
+                copy: spawn.bool("Copy") ?? false
+            )))
+        }
+        if let stat = nodes.firstBlock(named: "Stat")?.children,
+           let name = stat.value("Name"), !name.isEmpty {
+            let kind: TriggerStatKind = switch stat.value("Type").flatMap(Int.init) {
+            case 1: .string
+            case 2: .range
+            default: .integer
+            }
+            let integer = stat.firstBlock(named: "Int")?.children ?? []
+            let range = stat.firstBlock(named: "Range")?.children ?? []
+            let fontNodes = stat.firstBlock(named: "Font")?.children ?? []
+            let font: TriggerFontStyle? = stat.bool("UseFont") == true ? .init(
+                name: fontNodes.value("Name") ?? "Courier New",
+                size: fontNodes.value("Size").flatMap(Double.init) ?? 13,
+                bold: fontNodes.bool("Bold") ?? false,
+                italic: fontNodes.bool("Italic") ?? false,
+                underline: fontNodes.bool("Underline") ?? false,
+                strikeout: fontNodes.bool("Strikeout") ?? false
+            ) : nil
+            let nameAlignment: ParagraphStyle.Alignment = switch stat.value("NameAlignment").flatMap(Int.init) {
+            case 0: .left
+            case 2: .right
+            default: .center
+            }
+            actions.append(.stat(.init(
+                title: stat.value("Title") ?? "",
+                name: name,
+                prefix: stat.value("Prefix") ?? "",
+                value: stat.value("Value") ?? "",
+                kind: kind,
+                addsToExistingInteger: integer.bool("Add") ?? false,
+                lower: range.value("Lower") ?? "",
+                upper: range.value("Upper") ?? "",
+                color: stat.bool("UseColor") == true ? parseColor(stat.value("Color")) : nil,
+                rangeColor: parseColor(range.value("Color")),
+                nameAlignment: nameAlignment,
+                font: font
+            )))
+        }
+        if let sound = nodes.firstBlock(named: "Sound")?.children,
+           sound.bool("Active") == true, let path = sound.value("Sound"), !path.isEmpty {
+            actions.append(.sound(path))
+        }
+        if let speech = nodes.firstBlock(named: "Speech")?.children,
+           speech.bool("Active") == true {
+            actions.append(.speech(
+                speech.value("Say") ?? "",
+                wholeLine: speech.bool("WholeLine") ?? false
+            ))
+        }
+        if let send = nodes.firstBlock(named: "Send")?.children,
+           send.bool("Active") == true, let text = send.value("Send"), !text.isEmpty {
+            actions.append(.send(
+                text,
+                captureIndex: send.value("CaptureIndex").flatMap(Int.init) ?? 1,
+                expandVariables: send.bool("ExpandVariables") ?? false,
+                sendOnClick: send.bool("SendOnClick") ?? false
+            ))
+        }
+        if let toast = nodes.firstBlock(named: "Toast")?.children, toast.bool("Active") == true {
+            actions.append(.notification)
+        }
+        // Filter is intentionally late: replacing text invalidates match
+        // offsets used by the visual, send-on-click, and notification actions.
+        if let filter = nodes.firstBlock(named: "Filter")?.children,
+           filter.bool("Active") == true {
+            let replacement = filter.value("Replace") ?? ""
+            let expand = filter.bool("ExpandVariables") ?? false
+            actions.append(filter.bool("HTML") == true
+                ? .replaceHTML(replacement, expandVariables: expand)
+                : .replace(replacement, expandVariables: expand))
+        }
+        if let avatar = nodes.firstBlock(named: "Avatar")?.children,
+           let url = avatar.value("URL"), !url.isEmpty {
+            actions.append(.avatar(url))
+        }
+        if let script = nodes.firstBlock(named: "Script")?.children,
+           script.bool("Active") == true, let function = script.value("Function"), !function.isEmpty {
+            actions.append(.script(function))
+        }
+        return actions
+    }
+
+    private static func parseColor(_ source: String?) -> RGBColor? {
+        guard let source else { return nil }
+        let value = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hex = value.hasPrefix("#") ? String(value.dropFirst()) : value
+        if hex.count == 6, let raw = UInt32(hex, radix: 16) {
+            return .init(
+                red: UInt8((raw >> 16) & 0xFF),
+                green: UInt8((raw >> 8) & 0xFF),
+                blue: UInt8(raw & 0xFF)
+            )
+        }
+        if let open = value.firstIndex(of: "("), let close = value.lastIndex(of: ")"), open < close {
+            let components = value[value.index(after: open)..<close]
+                .split(separator: ",")
+                .compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+            if components.count >= 3, components.prefix(3).allSatisfy({ (0...255).contains($0) }) {
+                return .init(red: UInt8(components[0]), green: UInt8(components[1]), blue: UInt8(components[2]))
+            }
+        }
+        return switch value.lowercased() {
+        case "white", "::colors::white": .white
+        case "black", "::colors::black": .black
+        case "transparent", "::colors::transparent": .transparent
+        case "red", "::colors::red": .init(red: 255, green: 0, blue: 0)
+        case "green", "::colors::green": .init(red: 0, green: 128, blue: 0)
+        case "blue", "::colors::blue": .init(red: 0, green: 0, blue: 255)
+        default: nil
+        }
+    }
+
+    private static func aliasGroups(
+        global: AliasGroup,
+        server: AliasGroup,
+        character: AliasGroup
+    ) -> [AliasGroup] {
+        guard global.active else { return [] }
+        return [
+            aliasSlice(global.pre),
+            aliasSlice(server.pre),
+            aliasSlice(character.aliases),
+            aliasSlice(server.post),
+            aliasSlice(global.post),
+        ].filter { !$0.aliases.isEmpty }
+    }
+
+    private static func triggerGroups(
+        global: TriggerGroup,
+        server: TriggerGroup,
+        character: TriggerGroup
+    ) -> [TriggerGroup] {
+        guard global.active else { return [] }
+        var result = [triggerSlice(global.pre)]
+        if server.active {
+            result.append(triggerSlice(server.pre))
+            if character.active { result.append(triggerSlice(character.triggers)) }
+            result.append(triggerSlice(server.post))
+        }
+        result.append(triggerSlice(global.post))
+        return result.filter { !$0.triggers.isEmpty }
+    }
+
+    private static func aliasSlice(_ aliases: [Alias]) -> AliasGroup {
+        .init(active: true, aliases: aliases)
+    }
+
+    private static func triggerSlice(_ triggers: [Trigger]) -> TriggerGroup {
+        .init(active: true, triggers: triggers)
     }
 
     private static func migrateDeprecatedName(
@@ -413,6 +941,19 @@ private extension Array where Element == LegacyConfigurationDocument.Node {
         return order.compactMap { key in
             guard let name = canonicalNames[key], let children = groups[key] else { return nil }
             return (name, children)
+        }
+    }
+
+    func properties(named name: String) -> [Element]? {
+        namedBlocks().first { $0.0.caseInsensitiveCompare(name) == .orderedSame }?.1
+    }
+
+    func unnamedBlocks() -> [[Element]] {
+        compactMap {
+            guard case let .block(name: nil, children: children, insertionIndex: _, sourceRange: _) = $0 else {
+                return nil
+            }
+            return children
         }
     }
 }

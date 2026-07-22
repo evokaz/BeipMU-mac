@@ -28,6 +28,8 @@ public struct TextStyle: Sendable, Hashable, Codable {
     public var strikeout: Bool
     public var blink: Blink
     public var link: LinkAction?
+    public var fontFace: String?
+    public var fontSize: Double?
 
     public enum Blink: String, Sendable, Hashable, Codable {
         case none, slow, fast
@@ -42,7 +44,9 @@ public struct TextStyle: Sendable, Hashable, Codable {
         underline: Bool = false,
         strikeout: Bool = false,
         blink: Blink = .none,
-        link: LinkAction? = nil
+        link: LinkAction? = nil,
+        fontFace: String? = nil,
+        fontSize: Double? = nil
     ) {
         self.foreground = foreground
         self.background = background
@@ -53,6 +57,21 @@ public struct TextStyle: Sendable, Hashable, Codable {
         self.strikeout = strikeout
         self.blink = blink
         self.link = link
+        self.fontFace = fontFace
+        self.fontSize = fontSize
+    }
+
+    /// Retains the pre-Milestone-4 initializer ABI for clients compiled
+    /// against the original style model.
+    public init(
+        foreground: RGBColor?, background: RGBColor?, bold: Bool, faint: Bool,
+        italic: Bool, underline: Bool, strikeout: Bool, blink: Blink, link: LinkAction?
+    ) {
+        self.init(
+            foreground: foreground, background: background, bold: bold, faint: faint,
+            italic: italic, underline: underline, strikeout: strikeout, blink: blink,
+            link: link, fontFace: nil, fontSize: nil
+        )
     }
 }
 
@@ -75,6 +94,8 @@ public struct StyleRun: Sendable, Hashable, Codable {
 
 public struct ParagraphStyle: Sendable, Hashable, Codable {
     public enum Alignment: String, Sendable, Hashable, Codable { case left, center, right }
+    public enum BorderStyle: String, Sendable, Hashable, Codable { case square, round }
+    public enum StrokeStyle: String, Sendable, Hashable, Codable { case outline, top, bottom }
     public var alignment: Alignment
     public var leftIndent: Double
     /// Additional indentation applied to wrapped continuation lines.
@@ -83,6 +104,12 @@ public struct ParagraphStyle: Sendable, Hashable, Codable {
     public var topPadding: Double
     public var bottomPadding: Double
     public var background: RGBColor?
+    public var borderWidth: Double
+    public var borderStyle: BorderStyle
+    public var strokeWidth: Double
+    public var strokeColor: RGBColor?
+    public var strokeStyle: StrokeStyle
+    public var horizontalRule: Bool
 
     public init(
         alignment: Alignment = .left,
@@ -91,7 +118,13 @@ public struct ParagraphStyle: Sendable, Hashable, Codable {
         rightIndent: Double = 0,
         topPadding: Double = 0,
         bottomPadding: Double = 0,
-        background: RGBColor? = nil
+        background: RGBColor? = nil,
+        borderWidth: Double = 0,
+        borderStyle: BorderStyle = .square,
+        strokeWidth: Double = 0,
+        strokeColor: RGBColor? = nil,
+        strokeStyle: StrokeStyle = .outline,
+        horizontalRule: Bool = false
     ) {
         self.alignment = alignment
         self.leftIndent = leftIndent
@@ -100,10 +133,31 @@ public struct ParagraphStyle: Sendable, Hashable, Codable {
         self.topPadding = topPadding
         self.bottomPadding = bottomPadding
         self.background = background
+        self.borderWidth = borderWidth
+        self.borderStyle = borderStyle
+        self.strokeWidth = strokeWidth
+        self.strokeColor = strokeColor
+        self.strokeStyle = strokeStyle
+        self.horizontalRule = horizontalRule
+    }
+
+    /// Retains the pre-Milestone-4 initializer ABI for persisted/test clients.
+    public init(
+        alignment: Alignment, leftIndent: Double, wrappedIndent: Double,
+        rightIndent: Double, topPadding: Double, bottomPadding: Double,
+        background: RGBColor?
+    ) {
+        self.init(
+            alignment: alignment, leftIndent: leftIndent, wrappedIndent: wrappedIndent,
+            rightIndent: rightIndent, topPadding: topPadding, bottomPadding: bottomPadding,
+            background: background, borderWidth: 0, borderStyle: .square,
+            strokeWidth: 0, strokeColor: nil, strokeStyle: .outline, horizontalRule: false
+        )
     }
 
     private enum CodingKeys: String, CodingKey {
         case alignment, leftIndent, wrappedIndent, rightIndent, topPadding, bottomPadding, background
+        case borderWidth, borderStyle, strokeWidth, strokeColor, strokeStyle, horizontalRule
     }
 
     public init(from decoder: Decoder) throws {
@@ -115,6 +169,12 @@ public struct ParagraphStyle: Sendable, Hashable, Codable {
         topPadding = try values.decodeIfPresent(Double.self, forKey: .topPadding) ?? 0
         bottomPadding = try values.decodeIfPresent(Double.self, forKey: .bottomPadding) ?? 0
         background = try values.decodeIfPresent(RGBColor.self, forKey: .background)
+        borderWidth = try values.decodeIfPresent(Double.self, forKey: .borderWidth) ?? 0
+        borderStyle = try values.decodeIfPresent(BorderStyle.self, forKey: .borderStyle) ?? .square
+        strokeWidth = try values.decodeIfPresent(Double.self, forKey: .strokeWidth) ?? 0
+        strokeColor = try values.decodeIfPresent(RGBColor.self, forKey: .strokeColor)
+        strokeStyle = try values.decodeIfPresent(StrokeStyle.self, forKey: .strokeStyle) ?? .outline
+        horizontalRule = try values.decodeIfPresent(Bool.self, forKey: .horizontalRule) ?? false
     }
 }
 
