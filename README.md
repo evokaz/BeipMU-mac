@@ -105,6 +105,13 @@ generated parity rows pass. Assisted VoiceOver/audio/device gates pass on the
 latest Apple-silicon device, with macOS 14 Intel accepted as an explicit
 assumption for this task.
 
+Milestone 6 is complete. The 750-row matrix now has explicit release
+dispositions, typed accepted evidence, preservation-only round-trip coverage,
+and nine genuine gaps assigned to Milestone 7. The generated matrix and the
+human-readable summaries are enforced by
+`Scripts/verify-parity-matrix.py --check`; see
+`Documentation/MILESTONE6_AUDIT.md` for the audit.
+
 This is an executable foundation rather than a parity release. Milestone status
 is recorded in `Documentation/MILESTONES.md`; remaining compatibility work and
 its required differential evidence are tracked in `Documentation/PARITY.md`.

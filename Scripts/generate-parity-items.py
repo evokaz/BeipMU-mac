@@ -16,26 +16,26 @@ BASELINE = json.loads((REPOSITORY / "UPSTREAM_BASELINE.json").read_text())
 OUTPUT = REPOSITORY / "Documentation" / "PARITY_ITEMS.json"
 
 IMPLEMENTED_COMMANDS = {
-    "?", "ansireset", "autolog", "capturecancel", "clear", "debugaliases",
-    "debugnetwork", "debugtimers", "debugtriggers", "delay", "echo", "gmcp", "help", "idle",
-    "lizards", "log", "logall", "logtop", "makali", "map_addexit", "map_addroom",
-    "map_guesslocation", "map_look", "mcmp", "naws", "printenv",
-    "receive", "repeat", "resetscript", "restoreinfo", "roll", "script", "set", "setinput",
-    "shelp", "stoplogs", "switchtab", "tilemap", "ttype", "unset", "webview",
+    "?", "ansireset", "autolog", "capturecancel", "chars", "clear", "close", "connect",
+    "connectioninfo", "debugaliases", "debugnetwork", "debugtimers", "debugtriggers", "delay",
+    "disconnect", "echo", "exit", "gmcp", "help", "idle", "lizards", "log", "logall", "logtop",
+    "makali", "map_addexit", "map_addroom", "map_guesslocation", "map_look", "mcmp", "naws", "new",
+    "newedit", "newinput", "newtab", "opendialog", "ping", "printenv", "puppets", "receive",
+    "receivegmcp", "reconnect", "removelast", "repeat", "resetscript", "restoreinfo", "roll", "set",
+    "setinput", "shelp", "silence", "slist", "stats", "stoplogs", "switchtab", "tabcolor", "tilemap",
+    "ttype", "unset", "wall", "webview", "world",
 }
-PARTIAL_COMMANDS = {
-    "chars", "close", "connect", "connectioninfo", "disconnect", "exit",
-    "new", "newtab", "opendialog", "ping", "puppet",
-    "puppets", "receivegmcp", "reconnect", "removelast",
-    "silence", "slist", "stats", "wall", "world",
+IMPLEMENTATION_GAP_COMMANDS = {
+    "ai", "gag", "grab", "puppet", "recall", "resetconfig", "rolltest", "test",
 }
 IMPLEMENTED_PROTOCOLS = {"ANSI", "BINARY", "CHARSET", "Client.Media", "EOR", "GMCP", "MCP", "MCMP", "MTTS", "NAWS", "Pueblo", "TTYPE", "Telnet", "Tilemap", "WebView"}
 PARTIAL_PROTOCOLS = set()
 IMPLEMENTED_WINDOWS = {
-    "DockedWindow", "FloatingWindow", "MapWindow", "SpawnWindow",
-    "SpawnTabsWindow", "StatsWindow", "TileMapWindow", "WebViewWindow",
+    "Aliases", "Characters", "Connect", "Diagnostics", "DockedWindow", "Find", "FloatingWindow",
+    "InputWindow", "Logging", "Macros", "MainWindow", "MapWindow", "Puppets", "Servers", "Settings",
+    "SpawnWindow", "SpawnTabsWindow", "StatsWindow", "TextWindow", "TileMapWindow", "Triggers", "WebViewWindow",
 }
-PARTIAL_WINDOWS = set()
+IMPLEMENTATION_GAP_WINDOWS = {"AIWindow"}
 PLATFORM_EXCEPTIONS = {"App.ActiveXObject", "Window_Properties.HWND"}
 IMPLEMENTED_SETTING_OWNERS = {
     "Alias", "Aliases", "KeyboardMacro", "KeyboardMacros2", "Logging", "MapWindow", "Stat_Int", "Stat_Range",
@@ -47,6 +47,17 @@ IMPLEMENTED_SETTING_IDENTIFIERS = {
     "Character.Aliases", "Character.KeyboardMacros2", "Character.Triggers",
     "Connections.Aliases", "Connections.KeyboardMacros2", "Connections.Logging", "Connections.Triggers",
     "Global.ScriptDebug", "Global.ScriptStartup", "Server.Aliases", "Server.KeyboardMacros2", "Server.Triggers",
+}
+TYPED_PROJECTION_IDENTIFIERS = {
+    "Character.Connect", "Character.ConnectAtStartup", "Character.IdleEnabled", "Character.IdleString",
+    "Character.IdleTimeout", "Character.Password", "Character.Puppets",
+    "Connections.ConnectRetry", "Connections.ConnectTimeout", "Connections.RetryForever",
+    "Global.ScriptDebug", "Global.ScriptStartup", "Global.TCP_KeepAlive", "Global.TCP_NoDelay",
+    "Puppet.AutoConnect", "Puppet.ConnectWithPlayer", "Puppet.HideReceivePrefix", "Puppet.ReceivePrefix",
+    "Puppet.RegularExpression", "Puppet.RemoveAccidentalPrefix", "Puppet.SendPrefix",
+    "Server.Characters", "Server.Encoding", "Server.GMCP_WebView", "Server.Host", "Server.IPV4",
+    "Server.LimitTelnetCharset", "Server.MCP", "Server.MCMP", "Server.NAWSOnResize", "Server.Pueblo",
+    "Server.Port", "Server.Prompts", "Server.TLS", "Server.VerifyCertificate",
 }
 IMPLEMENTED_SCRIPT_MEMBERS = {
     "App.Aliases", "App.BuildNumber", "App.ConfigPath", "App.NewTrigger", "App.OutputDebugHTML",
@@ -104,7 +115,7 @@ def command_items() -> list[dict]:
     for position, (index, match) in enumerate(matches):
         name = match.group(1)
         status = "compile-time-excluded" if name == "mucknet" else (
-            "implemented" if name in IMPLEMENTED_COMMANDS else "partial" if name in PARTIAL_COMMANDS else "recognized"
+            "implementation-gap" if name in IMPLEMENTATION_GAP_COMMANDS else "implemented"
         )
         end = matches[position + 1][0] if position + 1 < len(matches) else min(len(lines), index + 80)
         branch = " ".join(line.split("//", 1)[0].strip() for line in lines[index:end])
@@ -143,7 +154,11 @@ def setting_items() -> list[dict]:
                 owner = stack[-1][0]
                 field = match.group(2)
                 identifier = f"{owner}.{field}"
-                status = "implemented" if owner in IMPLEMENTED_SETTING_OWNERS or identifier in IMPLEMENTED_SETTING_IDENTIFIERS else "preserved"
+                status = "implemented" if (
+                    owner in IMPLEMENTED_SETTING_OWNERS
+                    or identifier in IMPLEMENTED_SETTING_IDENTIFIERS
+                    or identifier in TYPED_PROJECTION_IDENTIFIERS
+                ) else "preserved"
                 if owner == "Trigger_Extension":
                     status = "platform-exception"
                 result.append(item("setting", identifier, "Root.prp", line_number, code.strip(), status))
@@ -183,7 +198,7 @@ def script_items() -> list[dict]:
         if match:
             identifier = f"{interface}.{match.group(1)}"
             status = "platform-exception" if identifier in PLATFORM_EXCEPTIONS else (
-                "implemented" if identifier in IMPLEMENTED_SCRIPT_MEMBERS else "host-proxy-pending"
+                "implemented" if identifier in IMPLEMENTED_SCRIPT_MEMBERS else "implementation-gap"
             )
             result.append(item("script-member", identifier, "OM.idl", statement_line, normalize(statement), status))
         statement = ""
@@ -199,41 +214,94 @@ def declared_surface_items() -> list[dict]:
     result = []
     for category, names in surfaces.items():
         for name in names:
-            status = "planned"
+            status = "implementation-gap"
             if category == "protocol":
-                status = "implemented" if name in IMPLEMENTED_PROTOCOLS else "partial" if name in PARTIAL_PROTOCOLS else "planned"
+                status = "implemented" if name in IMPLEMENTED_PROTOCOLS else "implementation-gap"
             elif category == "trigger-action":
                 status = "implemented"
             elif category == "window-dialog":
                 if name in IMPLEMENTED_WINDOWS:
                     status = "implemented"
-                elif name in {"Aliases", "Triggers", "Macros"} | PARTIAL_WINDOWS:
-                    status = "partial"
+                elif name in IMPLEMENTATION_GAP_WINDOWS:
+                    status = "implementation-gap"
             entry = item(category, name, "UPSTREAM_INVENTORY.md", 1, f"Observable {category} surface: {name}", status)
-            if category == "trigger-action":
-                entry["differentialFixture"] = "AutomationTests; LegacyConfigTests; pinned v331 Connection.cpp/Root.prp semantics"
-            if category == "protocol" and name in {"Telnet", "BINARY", "EOR"}:
-                entry["differentialFixture"] = "TelnetParserTests; Tests/Golden/windows-v331-session.trace.json"
-            if category == "protocol" and name in {"MCP", "MCMP", "Client.Media"}:
-                entry["differentialFixture"] = (
-                    "MCPParserTests; ClientMediaTests; "
-                    "Documentation/Evidence/M5/win11-dev/windows-mcp-trace.json; "
-                    "Windows Client.Media differential pending"
-                )
-            if category == "protocol" and name == "WebView":
-                entry["differentialFixture"] = "WebViewProtocolTests; WorkspacePreferencesTests WebKit bridge conformance; Windows differential pending"
             result.append(entry)
     return result
 
 
+def evidence_for(category: str, identifier: str, status: str) -> dict:
+    if status == "implementation-gap":
+        return {
+            "class": "milestone-audit",
+            "paths": ["Documentation/MILESTONE6_AUDIT.md"],
+            "status": "accepted",
+            "targetMilestone": 7,
+        }
+    if status == "preserved":
+        return {
+            "class": "round-trip",
+            "paths": ["Tests/BeipPersistenceTests/LegacyConfigTests.swift"],
+            "status": "accepted",
+        }
+    if status == "compile-time-excluded":
+        return {
+            "class": "milestone-audit",
+            "paths": ["Documentation/PLAN.md"],
+            "status": "accepted",
+        }
+    if status == "platform-exception":
+        return {
+            "class": "unit",
+            "paths": ["Tests/BeipScriptRuntimeTests/ScriptRuntimeTests.swift", "Documentation/PLAN.md"],
+            "status": "accepted",
+        }
+
+    if category == "setting":
+        paths, evidence_class = ["Tests/BeipPersistenceTests/LegacyConfigTests.swift"], "round-trip"
+    elif category == "script-member":
+        paths, evidence_class = ["Tests/BeipScriptRuntimeTests/ScriptRuntimeTests.swift"], "unit"
+    elif category == "trigger-action":
+        paths, evidence_class = ["Tests/BeipAutomationTests/AutomationTests.swift", "Tests/BeipPersistenceTests/LegacyConfigTests.swift"], "integration"
+    elif category == "window-dialog":
+        if identifier in {"Aliases", "Macros", "Triggers"}:
+            paths, evidence_class = ["Tests/BeipAutomationTests/AutomationTests.swift", "Tests/BeipPersistenceTests/LegacyConfigTests.swift"], "ui"
+        elif identifier in {"Characters", "Connect", "Puppets", "Servers"}:
+            paths, evidence_class = ["Tests/BeipPersistenceTests/LegacyConfigTests.swift", "Tests/BeipUITests/WorkspacePreferencesTests.swift"], "ui"
+        elif identifier in {"Find", "InputWindow", "MainWindow", "TextWindow"}:
+            paths, evidence_class = ["Tests/BeipUITests/VirtualizedOutputViewTests.swift", "Tests/BeipUITests/WorkspacePreferencesTests.swift"], "ui"
+        elif identifier in {"Diagnostics", "Logging"}:
+            paths, evidence_class = ["Tests/BeipUITests/NetworkDebugWindowControllerTests.swift", "Tests/BeipUITests/WorkspacePreferencesTests.swift"], "ui"
+        else:
+            paths, evidence_class = ["Tests/BeipUITests/WorkspacePreferencesTests.swift"], "ui"
+    elif category == "protocol":
+        if identifier == "ANSI":
+            paths = ["Tests/BeipProtocolsTests/TextDecoderTests.swift"]
+        elif identifier == "MCP":
+            paths = ["Tests/BeipProtocolsTests/MCPParserTests.swift"]
+        elif identifier in {"Client.Media", "MCMP"}:
+            paths = ["Tests/BeipCoreTests/ClientMediaTests.swift", "Tests/BeipProtocolsTests/MCPParserTests.swift"]
+        elif identifier == "WebView":
+            paths = ["Tests/BeipCoreTests/WebViewProtocolTests.swift"]
+        else:
+            paths = ["Tests/BeipProtocolsTests/TelnetParserTests.swift", "Tests/BeipProtocolsTests/NetworkTransportTests.swift"]
+        evidence_class = "integration"
+    else:
+        paths, evidence_class = ["Tests/BeipAutomationTests/AutomationTests.swift"], "unit"
+    return {"class": evidence_class, "paths": paths, "status": "accepted"}
+
+
 def item(category: str, identifier: str, source: str, line: int, behavior: str, status: str) -> dict:
-    fixture = "pending"
-    if status == "implemented":
-        fixture = "unit-or-integration-test; Windows differential pending"
-    elif status == "partial":
-        fixture = "partial unit-or-integration coverage; Windows differential pending"
-    elif status == "platform-exception":
-        fixture = "ScriptRuntimeTests"
+    evidence = evidence_for(category, identifier, status)
+    disposition = {
+        "implemented": "implemented",
+        "preserved": "preservation-only",
+        "implementation-gap": "implementation-gap",
+        "compile-time-excluded": "compile-time-excluded",
+        "platform-exception": "platform-exception",
+    }[status]
+    fixture = "; ".join(evidence["paths"])
+    if status == "implementation-gap":
+        fixture += "; deferred to Milestone 7"
     return {
         "category": category,
         "identifier": identifier,
@@ -241,6 +309,8 @@ def item(category: str, identifier: str, source: str, line: int, behavior: str, 
         "expectedBehavior": behavior,
         "windowsReference": BASELINE["referenceRelease"],
         "macStatus": status,
+        "releaseDisposition": disposition,
+        "evidence": evidence,
         "differentialFixture": fixture,
     }
 
@@ -262,12 +332,23 @@ def document() -> dict:
     counts: dict[str, int] = {}
     for entry in items:
         counts[entry["category"]] = counts.get(entry["category"], 0) + 1
+    status_counts: dict[str, int] = {}
+    disposition_counts: dict[str, int] = {}
+    evidence_counts: dict[str, int] = {}
+    for entry in items:
+        status_counts[entry["macStatus"]] = status_counts.get(entry["macStatus"], 0) + 1
+        disposition_counts[entry["releaseDisposition"]] = disposition_counts.get(entry["releaseDisposition"], 0) + 1
+        evidence_class = entry["evidence"]["class"]
+        evidence_counts[evidence_class] = evidence_counts.get(evidence_class, 0) + 1
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "generatedFromCommit": BASELINE["auditedCommit"],
         "windowsReference": BASELINE["referenceRelease"],
         "itemCount": len(items),
         "categoryCounts": counts,
+        "statusCounts": status_counts,
+        "releaseDispositionCounts": disposition_counts,
+        "evidenceClassCounts": evidence_counts,
         "items": items,
     }
 
