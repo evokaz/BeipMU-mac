@@ -36,6 +36,12 @@ final class ProfileLibrary {
         store = LegacyConfigurationStore(url: url)
     }
 
+    init(workspace: LegacyConfigurationWorkspace) {
+        self.workspace = workspace
+        sidecarURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BeipMU.ProfileLibrary.\(UUID().uuidString).json")
+    }
+
     var displayName: String {
         workspace.sourceURL?.lastPathComponent ?? "Untitled Config"
     }

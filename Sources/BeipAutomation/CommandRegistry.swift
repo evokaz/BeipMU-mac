@@ -8,6 +8,7 @@ public struct EditWindowOptions: Sendable, Equatable {
     public var checksSpelling: Bool
     public var prepend: String
     public var append: String
+    public var initialText: String?
 
     public init(
         title: String = "",
@@ -15,7 +16,8 @@ public struct EditWindowOptions: Sendable, Equatable {
         captureSkipCount: Int = 0,
         checksSpelling: Bool = true,
         prepend: String = "",
-        append: String = ""
+        append: String = "",
+        initialText: String? = nil
     ) {
         self.title = title
         self.captureLineCount = captureLineCount
@@ -23,6 +25,7 @@ public struct EditWindowOptions: Sendable, Equatable {
         self.checksSpelling = checksSpelling
         self.prepend = prepend
         self.append = append
+        self.initialText = initialText
     }
 }
 
@@ -63,6 +66,13 @@ public enum CommandOutcome: Sendable, Equatable {
     case newTab
     case newInput(prefix: String, unique: Bool)
     case newEdit(EditWindowOptions)
+    case ai(String?)
+    case gag(String)
+    case grab(object: String, property: String)
+    case recall(lineCount: Int, search: String)
+    case resetConfiguration
+    case rollTest
+    case compatibilityTest(String)
     case webView(WebViewOpenRequest)
     case silence
     case removeLast
@@ -194,6 +204,39 @@ public struct CommandRegistry: Sendable {
         case "newedit":
             do { return .newEdit(try parseEditWindowOptions(String(rawArguments))) }
             catch { return .display("Command error: \(error.localizedDescription)") }
+        case "ai":
+            return .ai(rawArguments.isEmpty ? nil : String(rawArguments))
+        case "gag":
+            guard arguments.count == 1 else { return .display("Usage: /gag (text to search for)") }
+            return .gag(arguments[0])
+        case "grab":
+            guard arguments.count == 1 else {
+                return .display("Usage: '/grab (object)/(property to grab)' - On a server with @pemit support, will grab the property on the object and send it to the input window for easy editing")
+            }
+            guard let separator = arguments[0].firstIndex(of: "/") else {
+                return .display("Grab:Missing / in param, type /grab for help")
+            }
+            let object = String(arguments[0][..<separator])
+            let property = String(arguments[0][arguments[0].index(after: separator)...])
+            guard !object.isEmpty, !property.isEmpty else {
+                return .display("Grab:Missing / in param, type /grab for help")
+            }
+            return .grab(object: object, property: property)
+        case "recall":
+            guard arguments.count == 2 else {
+                return .display("Usage: /recall (# of lines to go back) (text to search for)")
+            }
+            guard let lineCount = Int(arguments[0]), lineCount >= 0 else {
+                return .display("Recall:Could not understand number of lines entered.")
+            }
+            return .recall(lineCount: lineCount, search: arguments[1])
+        case "resetconfig": return .resetConfiguration
+        case "rolltest": return .rollTest
+        case "test":
+            guard let kind = arguments.first, CommandTestFixtures.payload(for: kind) != nil else {
+                return .display("What do you want to test? (ansi/html/emoji/international/utf8)")
+            }
+            return .compatibilityTest(kind.lowercased())
         case "webview":
             do { return .webView(try parseWebViewOptions(String(rawArguments))) }
             catch { return .display("Command error: \(error.localizedDescription)") }
@@ -588,6 +631,7 @@ public struct CommandRegistry: Sendable {
 
     /ansireset - Reset ansi state to default (useful if the server misbehaves and leaves a style set)
     /autolog - If one is setup and was stopped, this restarts the autolog
+    /ai ($) - Open the AI window or submit a prompt to the configured endpoint
     /capturecancel - Cancel any spawn capture in the current window
     /chars - List characters for the current server
     /clear - Clears the Output window
@@ -630,11 +674,14 @@ public struct CommandRegistry: Sendable {
     /reconnect $ - Reconnects if disconnected (with 'all' parameter it applies to every window)
     /resetscript - Reset the scripting engine (possibly switching languages)
     /roll [count]d[sides](+bonus) - Dice roll. Example /roll 10d6
+    /rolltest - Run the deterministic six-sided die fairness test
+    /resetconfig - Reset the active Config.txt projection to a new empty configuration
     /script $ - Run single line script
     /shelp ($) - Scripting help
     /set $=$ - Set environment variable
     /setinput $ - Sets any text after the "/setinput " into the active input window
     /silence - Stop all playing sounds
+    /test $ - Run the ANSI, HTML, emoji, international, or UTF-8 compatibility test
     /slist - List all worlds
     /stats - List connection statistics
     /switchtab <tab group> <tab name> - Brings 'tab name' to top in the 'tab group' spawn window

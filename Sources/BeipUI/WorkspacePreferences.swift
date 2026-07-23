@@ -98,6 +98,7 @@ struct WorkspacePreferences: Codable, Equatable {
     var spawnSurfaces: [String: SpawnSurfacePreferences] = [:]
     var atlasSurfaces: [String: AtlasSurfacePreferences] = [:]
     var webViewPanes: [String: [SavedWebViewPane]] = [:]
+    var tileMapEdits: [String: [String: GMCPTileMap]] = [:]
 
     init(
         outputHistoryLimit: Int = 10_000,
@@ -118,7 +119,8 @@ struct WorkspacePreferences: Codable, Equatable {
         characterNotes: [String: String] = [:],
         spawnSurfaces: [String: SpawnSurfacePreferences] = [:],
         atlasSurfaces: [String: AtlasSurfacePreferences] = [:],
-        webViewPanes: [String: [SavedWebViewPane]] = [:]
+        webViewPanes: [String: [SavedWebViewPane]] = [:],
+        tileMapEdits: [String: [String: GMCPTileMap]] = [:]
     ) {
         self.outputHistoryLimit = outputHistoryLimit
         self.showsTimestamps = showsTimestamps
@@ -139,6 +141,7 @@ struct WorkspacePreferences: Codable, Equatable {
         self.spawnSurfaces = spawnSurfaces
         self.atlasSurfaces = atlasSurfaces
         self.webViewPanes = webViewPanes
+        self.tileMapEdits = tileMapEdits
     }
 
     init(from decoder: Decoder) throws {
@@ -162,6 +165,7 @@ struct WorkspacePreferences: Codable, Equatable {
         spawnSurfaces = try values.decodeIfPresent([String: SpawnSurfacePreferences].self, forKey: .spawnSurfaces) ?? [:]
         atlasSurfaces = try values.decodeIfPresent([String: AtlasSurfacePreferences].self, forKey: .atlasSurfaces) ?? [:]
         webViewPanes = try values.decodeIfPresent([String: [SavedWebViewPane]].self, forKey: .webViewPanes) ?? [:]
+        tileMapEdits = try values.decodeIfPresent([String: [String: GMCPTileMap]].self, forKey: .tileMapEdits) ?? [:]
     }
 }
 

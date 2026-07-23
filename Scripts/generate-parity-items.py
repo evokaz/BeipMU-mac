@@ -23,19 +23,18 @@ IMPLEMENTED_COMMANDS = {
     "newedit", "newinput", "newtab", "opendialog", "ping", "printenv", "puppets", "receive",
     "receivegmcp", "reconnect", "removelast", "repeat", "resetscript", "restoreinfo", "roll", "set",
     "setinput", "shelp", "silence", "slist", "stats", "stoplogs", "switchtab", "tabcolor", "tilemap",
-    "ttype", "unset", "wall", "webview", "world",
+    "ttype", "unset", "wall", "webview", "world", "ai", "gag", "grab", "puppet", "recall",
+    "resetconfig", "rolltest", "test",
 }
-IMPLEMENTATION_GAP_COMMANDS = {
-    "ai", "gag", "grab", "puppet", "recall", "resetconfig", "rolltest", "test",
-}
+IMPLEMENTATION_GAP_COMMANDS = set()
 IMPLEMENTED_PROTOCOLS = {"ANSI", "BINARY", "CHARSET", "Client.Media", "EOR", "GMCP", "MCP", "MCMP", "MTTS", "NAWS", "Pueblo", "TTYPE", "Telnet", "Tilemap", "WebView"}
 PARTIAL_PROTOCOLS = set()
 IMPLEMENTED_WINDOWS = {
     "Aliases", "Characters", "Connect", "Diagnostics", "DockedWindow", "Find", "FloatingWindow",
     "InputWindow", "Logging", "Macros", "MainWindow", "MapWindow", "Puppets", "Servers", "Settings",
-    "SpawnWindow", "SpawnTabsWindow", "StatsWindow", "TextWindow", "TileMapWindow", "Triggers", "WebViewWindow",
+    "SpawnWindow", "SpawnTabsWindow", "StatsWindow", "TextWindow", "TileMapWindow", "Triggers", "WebViewWindow", "AIWindow",
 }
-IMPLEMENTATION_GAP_WINDOWS = {"AIWindow"}
+IMPLEMENTATION_GAP_WINDOWS = set()
 PLATFORM_EXCEPTIONS = {"App.ActiveXObject", "Window_Properties.HWND"}
 IMPLEMENTED_SETTING_OWNERS = {
     "Alias", "Aliases", "KeyboardMacro", "KeyboardMacros2", "Logging", "MapWindow", "Stat_Int", "Stat_Range",
@@ -159,7 +158,7 @@ def setting_items() -> list[dict]:
                     or identifier in IMPLEMENTED_SETTING_IDENTIFIERS
                     or identifier in TYPED_PROJECTION_IDENTIFIERS
                 ) else "preserved"
-                if owner == "Trigger_Extension":
+                if owner == "Trigger_Extension" or identifier == "Trigger.Extensions":
                     status = "platform-exception"
                 result.append(item("setting", identifier, "Root.prp", line_number, code.strip(), status))
 
@@ -251,8 +250,12 @@ def evidence_for(category: str, identifier: str, status: str) -> dict:
         }
     if status == "platform-exception":
         return {
-            "class": "unit",
-            "paths": ["Tests/BeipScriptRuntimeTests/ScriptRuntimeTests.swift", "Documentation/PLAN.md"],
+            "class": "round-trip" if category == "setting" else "unit",
+            "paths": (
+                ["Tests/BeipPersistenceTests/LegacyConfigTests.swift", "Documentation/MILESTONE7_AUDIT.md"]
+                if category == "setting"
+                else ["Tests/BeipScriptRuntimeTests/ScriptRuntimeTests.swift", "Documentation/PLAN.md"]
+            ),
             "status": "accepted",
         }
 

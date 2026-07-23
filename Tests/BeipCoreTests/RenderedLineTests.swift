@@ -35,13 +35,21 @@ final class RenderedLineTests: XCTestCase {
     }
 
     func testPuppetRoutingSupportsLiteralRegexHiddenPrefixesAndOutgoingText() {
-        let literal = PuppetProfile(name: "Bot", receivePrefix: "Bot> ", sendPrefix: "tell Bot ")
-        let regex = PuppetProfile(name: "Numbered", receivePrefix: #"^P\d+: "#, receivePrefixIsRegex: true, hideReceivePrefix: false)
+        let literal = PuppetProfile(
+            name: "Bot", receivePrefix: "Bot> ", sendPrefix: "tell Bot ",
+            removeAccidentalPrefix: true
+        )
+        let regex = PuppetProfile(
+            name: "Numbered", receivePrefix: #"^P\d+(: )"#,
+            receivePrefixIsRegex: true, hideReceivePrefix: true
+        )
 
         XCTAssertEqual(PuppetRouter.route("Bot> hello", through: [literal])?.text, "hello")
-        XCTAssertEqual(PuppetRouter.route("P12: status", through: [regex])?.text, "P12: status")
+        XCTAssertEqual(PuppetRouter.route("bOt> hello", through: [literal])?.text, "hello")
+        XCTAssertEqual(PuppetRouter.route("P12: status", through: [regex])?.text, "P12status")
         XCTAssertNil(PuppetRouter.route("ordinary", through: [literal, regex]))
         XCTAssertEqual(PuppetRouter.outgoing("look", for: literal), "tell Bot look")
+        XCTAssertEqual(PuppetRouter.outgoing("tell Bot look", for: literal), "tell Bot look")
     }
 
     func testOutputHistoryBoundsPausesResumesAndSearchesUTF16Ranges() throws {

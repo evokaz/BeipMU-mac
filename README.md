@@ -99,18 +99,18 @@ the release-wide replay corpus (`Tests/Golden/windows-v331-replay-*`) whose
 fragmented-ANSI rendering, gag/spawn/send triggers, wire-level alias
 expansion, Windows-written plain/HTML logs, `/@ SetOnReceive` callback
 ordering, and post-session configuration save are replayed through the
-portable engines by `WindowsReplayDifferentialTests`. All 230 Swift tests,
+portable engines by `WindowsReplayDifferentialTests`. All 239 Swift tests,
 six XCUITests, six visual baselines, performance/leak gates, and 750
 generated parity rows pass. Assisted VoiceOver/audio/device gates pass on the
 latest Apple-silicon device, with macOS 14 Intel accepted as an explicit
 assumption for this task.
 
-Milestone 6 is complete. The 750-row matrix now has explicit release
+Milestones 6 and 7 are complete. The 750-row matrix now has explicit release
 dispositions, typed accepted evidence, preservation-only round-trip coverage,
-and nine genuine gaps assigned to Milestone 7. The generated matrix and the
+and zero remaining portable implementation gaps. The generated matrix and the
 human-readable summaries are enforced by
 `Scripts/verify-parity-matrix.py --check`; see
-`Documentation/MILESTONE6_AUDIT.md` for the audit.
+`Documentation/MILESTONE7_AUDIT.md` for the latest audit.
 
 This is an executable foundation rather than a parity release. Milestone status
 is recorded in `Documentation/MILESTONES.md`; remaining compatibility work and

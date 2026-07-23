@@ -80,17 +80,20 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
         public var triggers: TriggerGroup
         public var macros: KeyboardMacroGroup
         public var characters: [String: Scope]
+        public var puppets: [String: Scope]
 
         public init(
             aliases: AliasGroup = .init(),
             triggers: TriggerGroup = .init(),
             macros: KeyboardMacroGroup = .init(),
-            characters: [String: Scope] = [:]
+            characters: [String: Scope] = [:],
+            puppets: [String: Scope] = [:]
         ) {
             self.aliases = aliases
             self.triggers = triggers
             self.macros = macros
             self.characters = characters
+            self.puppets = puppets
         }
 
         public struct Scope: Sendable, Equatable {
@@ -99,25 +102,37 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
             public var macros: KeyboardMacroGroup
             public var automaticLogFilename: String
             public var automaticLogAppendsDate: Bool
+            public var variables: [String: String]
 
             public init(
                 aliases: AliasGroup = .init(),
                 triggers: TriggerGroup = .init(),
                 macros: KeyboardMacroGroup = .init(),
                 automaticLogFilename: String = "",
-                automaticLogAppendsDate: Bool = false
+                automaticLogAppendsDate: Bool = false,
+                variables: [String: String] = [:]
             ) {
                 self.aliases = aliases
                 self.triggers = triggers
                 self.macros = macros
                 self.automaticLogFilename = automaticLogFilename
                 self.automaticLogAppendsDate = automaticLogAppendsDate
+                self.variables = variables
             }
         }
 
         public func scope(for character: CharacterProfile?) -> Scope {
             guard let character else { return .init() }
             return characters[character.name.folding(options: [.caseInsensitive], locale: .current)] ?? .init()
+        }
+
+        public func puppetScope(for character: CharacterProfile?, puppet: PuppetProfile?) -> Scope {
+            guard let character, let puppet else { return .init() }
+            return puppets[Self.puppetKey(character.name, puppet.name)] ?? .init()
+        }
+
+        fileprivate static func puppetKey(_ character: String, _ puppet: String) -> String {
+            "\(character.folding(options: [.caseInsensitive], locale: .current))/\(puppet.folding(options: [.caseInsensitive], locale: .current))"
         }
     }
 
@@ -182,7 +197,9 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
                 mcmp: children.bool("MCMP") ?? false,
                 gmcpWebViewPolicy: children.value("GMCP_WebView").flatMap(Int.init).flatMap(ServerWebViewPolicy.init(rawValue:)) ?? .ask,
                 sendNAWSOnResize: children.bool("NAWSOnResize") ?? false,
-                limitTelnetCharset: children.bool("LimitTelnetCharset") ?? false
+                limitTelnetCharset: children.bool("LimitTelnetCharset") ?? false,
+                aiEndpoint: (children.value("AIEndpoint") ?? children.value("AI")).flatMap(URL.init(string:)),
+                aiModel: children.value("AIModel") ?? ""
             )
             let characterNodes = children.firstBlock(named: "Characters")?.children ?? []
             let namedCharacters = characterNodes.namedBlocks()
@@ -197,7 +214,11 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
                         hideReceivePrefix: puppetProperties.bool("HideReceivePrefix") ?? true,
                         autoConnect: puppetProperties.bool("AutoConnect") ?? true,
                         connectWithPlayer: puppetProperties.bool("ConnectWithPlayer") ?? false,
-                        removeAccidentalPrefix: puppetProperties.bool("RemoveAccidentalPrefix") ?? false
+                        removeAccidentalPrefix: puppetProperties.bool("RemoveAccidentalPrefix") ?? false,
+                        logFilename: puppetProperties.value("LogFileName") ?? "",
+                        logAppendsDate: (puppetProperties.value("LogFileNameTimeFormat").flatMap(Int.init) ?? 0) & 0b110 != 0,
+                        characterLog: puppetProperties.bool("CharacterLog") ?? false,
+                        characterLogPrefix: puppetProperties.value("CharacterLogPrefix") ?? ""
                     )
                 }
                 return CharacterProfile(
@@ -214,6 +235,9 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
             var serverAutomation = Self.automation(from: children)
             for (characterName, properties) in characterNodes.namedBlocks() {
                 serverAutomation.characters[characterName.folding(options: [.caseInsensitive], locale: .current)] = Self.scope(from: properties)
+                for (puppetName, puppetProperties) in properties.firstBlock(named: "Puppets")?.children.namedBlocks() ?? [] {
+                    serverAutomation.puppets[Automation.puppetKey(characterName, puppetName)] = Self.scope(from: puppetProperties)
+                }
             }
             let restoreLogAssignments: [Int: String] = Dictionary(uniqueKeysWithValues: namedCharacters.compactMap { characterName, properties in
                 guard let index = properties.value("RestoreLogIndex").flatMap(Int.init), index >= 0 else { return nil }
@@ -246,19 +270,30 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
         for server: ServerProfile,
         character: CharacterProfile?
     ) -> (aliases: [AliasGroup], triggers: [TriggerGroup]) {
+        automationGroups(for: server, character: character, puppet: nil)
+    }
+
+    public func automationGroups(
+        for server: ServerProfile,
+        character: CharacterProfile?,
+        puppet: PuppetProfile?
+    ) -> (aliases: [AliasGroup], triggers: [TriggerGroup]) {
         guard let selected = servers.first(where: { $0.profile.id == server.id }) else {
             return ([], [])
         }
         let characterScope = selected.automation.scope(for: character)
+        let puppetScope = selected.automation.puppetScope(for: character, puppet: puppet)
         let aliases = Self.aliasGroups(
             global: automation.aliases,
             server: selected.automation.aliases,
-            character: characterScope.aliases
+            character: characterScope.aliases,
+            puppet: puppetScope.aliases
         )
         let triggers = Self.triggerGroups(
             global: automation.triggers,
             server: selected.automation.triggers,
-            character: characterScope.triggers
+            character: characterScope.triggers,
+            puppet: puppetScope.triggers
         )
         return (aliases, triggers)
     }
@@ -266,10 +301,25 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
     /// Keyboard macros resolve character before server before global, unlike
     /// aliases/triggers which use pre/post slices around every scope.
     public func macroGroups(for server: ServerProfile, character: CharacterProfile?) -> [KeyboardMacroGroup] {
+        macroGroups(for: server, character: character, puppet: nil)
+    }
+
+    public func macroGroups(for server: ServerProfile, character: CharacterProfile?, puppet: PuppetProfile?) -> [KeyboardMacroGroup] {
         guard automation.macros.active,
               let selected = servers.first(where: { $0.profile.id == server.id }) else { return [] }
         let characterScope = selected.automation.scope(for: character)
-        return [characterScope.macros, selected.automation.macros, automation.macros]
+        let puppetScope = selected.automation.puppetScope(for: character, puppet: puppet)
+        var result = [characterScope.macros, selected.automation.macros, automation.macros]
+        if puppet != nil { result.insert(puppetScope.macros, at: 0) }
+        return result
+    }
+
+    public func variables(for server: ServerProfile, character: CharacterProfile?, puppet: PuppetProfile?) -> [String: String] {
+        guard let selected = servers.first(where: { $0.profile.id == server.id }) else { return character?.variables ?? [:] }
+        let characterScope = selected.automation.scope(for: character)
+        let puppetScope = selected.automation.puppetScope(for: character, puppet: puppet)
+        return (character?.variables ?? [:]).merging(characterScope.variables) { _, value in value }
+            .merging(puppetScope.variables) { _, value in value }
     }
 
     public func automaticLog(for server: ServerProfile, character: CharacterProfile?) -> (filename: String, appendsDate: Bool)? {
@@ -323,9 +373,11 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
             ] {
                 try result.upsertValue(Self.flag(enabled), at: base + [name], quoted: false)
             }
+            try result.upsertValue(server.profile.aiEndpoint?.absoluteString ?? "", at: base + ["AIEndpoint"])
+            try result.upsertValue(server.profile.aiModel, at: base + ["AIModel"])
             try result.upsertValue(String((server.profile.gmcpWebViewPolicy ?? .ask).rawValue), at: base + ["GMCP_WebView"], quoted: false)
             for character in server.characters {
-                let characterBase = base + ["Characters", character.name]
+            let characterBase = base + ["Characters", character.name]
                 try result.upsertValue(character.connectText, at: characterBase + ["Connect"])
                 try result.upsertValue(character.password, at: characterBase + ["Password"])
                 try result.upsertValue(Self.flag(character.autoConnect), at: characterBase + ["ConnectAtStartup"], quoted: false)
@@ -339,12 +391,16 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
                     let puppetBase = characterBase + ["Puppets", puppet.name]
                     try result.upsertValue(puppet.receivePrefix, at: puppetBase + ["ReceivePrefix"])
                     try result.upsertValue(puppet.sendPrefix, at: puppetBase + ["SendPrefix"])
+                    try result.upsertValue(puppet.logFilename, at: puppetBase + ["LogFileName"])
+                    try result.upsertValue(puppet.logAppendsDate ? "6" : "0", at: puppetBase + ["LogFileNameTimeFormat"], quoted: false)
+                    try result.upsertValue(puppet.characterLogPrefix, at: puppetBase + ["CharacterLogPrefix"])
                     for (name, enabled) in [
                         ("RegularExpression", puppet.receivePrefixIsRegex),
                         ("HideReceivePrefix", puppet.hideReceivePrefix),
                         ("AutoConnect", puppet.autoConnect),
                         ("ConnectWithPlayer", puppet.connectWithPlayer),
                         ("RemoveAccidentalPrefix", puppet.removeAccidentalPrefix),
+                        ("CharacterLog", puppet.characterLog),
                     ] {
                         try result.upsertValue(Self.flag(enabled), at: puppetBase + [name], quoted: false)
                     }
@@ -443,7 +499,8 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
             triggers: triggerGroup(from: nodes.firstBlock(named: "Triggers")?.children),
             macros: macroGroup(from: nodes.firstBlock(named: "KeyboardMacros2")?.children),
             automaticLogFilename: nodes.value("LogFileName") ?? "",
-            automaticLogAppendsDate: timeFormat & 0b110 != 0
+            automaticLogAppendsDate: timeFormat & 0b110 != 0,
+            variables: variables(nodes)
         )
     }
 
@@ -792,13 +849,15 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
     private static func aliasGroups(
         global: AliasGroup,
         server: AliasGroup,
-        character: AliasGroup
+        character: AliasGroup,
+        puppet: AliasGroup
     ) -> [AliasGroup] {
         guard global.active else { return [] }
         return [
             aliasSlice(global.pre),
             aliasSlice(server.pre),
             aliasSlice(character.aliases),
+            aliasSlice(puppet.aliases),
             aliasSlice(server.post),
             aliasSlice(global.post),
         ].filter { !$0.aliases.isEmpty }
@@ -807,13 +866,15 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
     private static func triggerGroups(
         global: TriggerGroup,
         server: TriggerGroup,
-        character: TriggerGroup
+        character: TriggerGroup,
+        puppet: TriggerGroup
     ) -> [TriggerGroup] {
         guard global.active else { return [] }
         var result = [triggerSlice(global.pre)]
         if server.active {
             result.append(triggerSlice(server.pre))
             if character.active { result.append(triggerSlice(character.triggers)) }
+            if puppet.active { result.append(triggerSlice(puppet.triggers)) }
             result.append(triggerSlice(server.post))
         }
         result.append(triggerSlice(global.post))

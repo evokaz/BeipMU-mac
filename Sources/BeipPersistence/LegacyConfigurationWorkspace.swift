@@ -6,6 +6,22 @@ import Foundation
 /// The projection supplies native models while `document` retains every
 /// comment, ordering choice, and platform-specific field for writeback.
 public struct LegacyConfigurationWorkspace: Sendable {
+    public enum AutomationScope: Sendable, Equatable {
+        case global
+        case server(UUID)
+        case character(server: UUID, character: UUID)
+        case puppet(server: UUID, character: UUID, puppet: UUID)
+
+        public var displayName: String {
+            switch self {
+            case .global: "Global"
+            case .server: "World"
+            case .character: "Character"
+            case .puppet: "Puppet"
+            }
+        }
+    }
+
     public enum WorkspaceError: LocalizedError, Equatable {
         case serverNotFound
         case characterNotFound
@@ -73,6 +89,247 @@ public struct LegacyConfigurationWorkspace: Sendable {
     public var globalAliases: [Alias] { projection.automation.aliases.aliases }
     public var globalTriggers: [Trigger] { projection.automation.triggers.triggers }
     public var globalMacros: [KeyboardMacro] { projection.automation.macros.macros }
+
+    public func aliases(in scope: AutomationScope) -> [Alias] {
+        switch scope {
+        case .global: projection.automation.aliases.aliases
+        case let .server(id): server(id)?.automation.aliases.aliases ?? []
+        case let .character(serverID, characterID): character(serverID: serverID, characterID: characterID)?.aliases.aliases ?? []
+        case let .puppet(serverID, characterID, puppetID): puppet(serverID: serverID, characterID: characterID, puppetID: puppetID)?.aliases.aliases ?? []
+        }
+    }
+
+    public func triggers(in scope: AutomationScope) -> [Trigger] {
+        switch scope {
+        case .global: projection.automation.triggers.triggers
+        case let .server(id): server(id)?.automation.triggers.triggers ?? []
+        case let .character(serverID, characterID): character(serverID: serverID, characterID: characterID)?.triggers.triggers ?? []
+        case let .puppet(serverID, characterID, puppetID): puppet(serverID: serverID, characterID: characterID, puppetID: puppetID)?.triggers.triggers ?? []
+        }
+    }
+
+    public func macros(in scope: AutomationScope) -> [KeyboardMacro] {
+        switch scope {
+        case .global: projection.automation.macros.macros
+        case let .server(id): server(id)?.automation.macros.macros ?? []
+        case let .character(serverID, characterID): character(serverID: serverID, characterID: characterID)?.macros.macros ?? []
+        case let .puppet(serverID, characterID, puppetID): puppet(serverID: serverID, characterID: characterID, puppetID: puppetID)?.macros.macros ?? []
+        }
+    }
+
+    @discardableResult
+    public mutating func addAlias(in scope: AutomationScope, description: String = "New Alias", match: MatchDefinition = .init(text: ""), replacement: String = "") throws -> Int {
+        try addAutomationEntry(in: scope, kind: .aliases, description: description, match: match, replacement: replacement)
+    }
+
+    @discardableResult
+    public mutating func addTrigger(in scope: AutomationScope, description: String = "New Trigger", match: MatchDefinition = .init(text: ""), action: EditableTriggerAction = .gag(display: true, log: false)) throws -> Int {
+        try addAutomationEntry(in: scope, kind: .triggers, description: description, match: match, action: action)
+    }
+
+    @discardableResult
+    public mutating func addMacro(in scope: AutomationScope, description: String = "New Macro", key: String = "Control+Alt+M", macro: String = "", typeIntoInput: Bool = false) throws -> Int {
+        try addAutomationEntry(in: scope, kind: .macros, description: description, key: key, macro: macro, typeIntoInput: typeIntoInput)
+    }
+
+    public mutating func updateAlias(at index: Int, in scope: AutomationScope, description: String, match: MatchDefinition, replacement: String) throws {
+        try updateAutomationEntry(at: index, in: scope, kind: .aliases, description: description, match: match, replacement: replacement)
+    }
+
+    public mutating func updateTrigger(at index: Int, in scope: AutomationScope, description: String, match: MatchDefinition, action: EditableTriggerAction) throws {
+        try updateAutomationEntry(at: index, in: scope, kind: .triggers, description: description, match: match, action: action)
+    }
+
+    public mutating func updateMacro(at index: Int, in scope: AutomationScope, description: String, key: String, macro: String, typeIntoInput: Bool) throws {
+        try updateAutomationEntry(at: index, in: scope, kind: .macros, description: description, key: key, macro: macro, typeIntoInput: typeIntoInput)
+    }
+
+    public mutating func removeAutomationEntry(at index: Int, in scope: AutomationScope, kind: AutomationKind) throws {
+        let path = try automationCollectionPath(scope, kind: kind)
+        let count = switch kind {
+        case .aliases: aliases(in: scope).count
+        case .triggers: triggers(in: scope).count
+        case .macros: macros(in: scope).count
+        }
+        guard (0..<count).contains(index) else { throw WorkspaceError.automationEntryNotFound }
+        _ = try document.removeUnnamedBlock(at: index, collectionPath: path)
+        try reloadProjectionAfterAutomationEdit()
+    }
+
+    public enum AutomationKind: Sendable { case aliases, triggers, macros }
+
+    private func server(_ id: UUID) -> LegacyConfigurationProjection.Server? {
+        projection.servers.first { $0.profile.id == id }
+    }
+
+    private func character(serverID: UUID, characterID: UUID) -> LegacyConfigurationProjection.Automation.Scope? {
+        guard let server = server(serverID), let character = server.characters.first(where: { $0.id == characterID }) else { return nil }
+        return server.automation.scope(for: character)
+    }
+
+    private func puppet(serverID: UUID, characterID: UUID, puppetID: UUID) -> LegacyConfigurationProjection.Automation.Scope? {
+        guard let server = server(serverID), let character = server.characters.first(where: { $0.id == characterID }),
+              let puppet = character.puppets.first(where: { $0.id == puppetID }) else { return nil }
+        return server.automation.puppetScope(for: character, puppet: puppet)
+    }
+
+    private func automationCollectionPath(_ scope: AutomationScope, kind: AutomationKind) throws -> [String] {
+        let collection: String = switch kind {
+        case .aliases: "Aliases"
+        case .triggers: "Triggers"
+        case .macros: "KeyboardMacros2"
+        }
+        switch scope {
+        case .global: return ["Connections", collection]
+        case let .server(serverID):
+            guard let server = server(serverID) else { throw WorkspaceError.serverNotFound }
+            return ["Connections", "Shortcuts", server.profile.name, collection]
+        case let .character(serverID, characterID):
+            guard let server = server(serverID), let character = server.characters.first(where: { $0.id == characterID }) else {
+                throw WorkspaceError.characterNotFound
+            }
+            return ["Connections", "Shortcuts", server.profile.name, "Characters", character.name, collection]
+        case let .puppet(serverID, characterID, puppetID):
+            guard let server = server(serverID), let character = server.characters.first(where: { $0.id == characterID }),
+                  let puppet = character.puppets.first(where: { $0.id == puppetID }) else { throw WorkspaceError.puppetNotFound }
+            return ["Connections", "Shortcuts", server.profile.name, "Characters", character.name, "Puppets", puppet.name, collection]
+        }
+    }
+
+    private mutating func addAutomationEntry(
+        in scope: AutomationScope,
+        kind: AutomationKind,
+        description: String,
+        match: MatchDefinition,
+        replacement: String
+    ) throws -> Int {
+        let path = try automationCollectionPath(scope, kind: kind)
+        let index = aliases(in: scope).count
+        try document.upsertValue("true", at: path + ["Active"], quoted: false)
+        _ = try document.appendUnnamedBlock(at: path)
+        try writeAlias(at: index, collectionPath: path, description: description, match: match, replacement: replacement)
+        return index
+    }
+
+    private mutating func addAutomationEntry(
+        in scope: AutomationScope,
+        kind: AutomationKind,
+        description: String,
+        match: MatchDefinition,
+        action: EditableTriggerAction
+    ) throws -> Int {
+        let path = try automationCollectionPath(scope, kind: kind)
+        let index = triggers(in: scope).count
+        try document.upsertValue("true", at: path + ["Active"], quoted: false)
+        _ = try document.appendUnnamedBlock(at: path)
+        try writeTrigger(at: index, collectionPath: path, description: description, match: match, action: action)
+        return index
+    }
+
+    private mutating func addAutomationEntry(
+        in scope: AutomationScope,
+        kind: AutomationKind,
+        description: String,
+        key: String,
+        macro: String,
+        typeIntoInput: Bool
+    ) throws -> Int {
+        let path = try automationCollectionPath(scope, kind: kind)
+        let index = macros(in: scope).count
+        try document.upsertValue("true", at: path + ["Active"], quoted: false)
+        _ = try document.appendUnnamedBlock(at: path)
+        try writeMacro(at: index, collectionPath: path, description: description, key: key, macro: macro, typeIntoInput: typeIntoInput)
+        return index
+    }
+
+    private mutating func updateAutomationEntry(
+        at index: Int,
+        in scope: AutomationScope,
+        kind: AutomationKind,
+        description: String,
+        match: MatchDefinition,
+        replacement: String
+    ) throws {
+        guard aliases(in: scope).indices.contains(index) else { throw WorkspaceError.automationEntryNotFound }
+        let path = try automationCollectionPath(scope, kind: kind)
+        try writeAlias(at: index, collectionPath: path, description: description, match: match, replacement: replacement)
+    }
+
+    private mutating func updateAutomationEntry(
+        at index: Int,
+        in scope: AutomationScope,
+        kind: AutomationKind,
+        description: String,
+        match: MatchDefinition,
+        action: EditableTriggerAction
+    ) throws {
+        guard triggers(in: scope).indices.contains(index) else { throw WorkspaceError.automationEntryNotFound }
+        let path = try automationCollectionPath(scope, kind: kind)
+        try writeTrigger(at: index, collectionPath: path, description: description, match: match, action: action)
+    }
+
+    private mutating func updateAutomationEntry(
+        at index: Int,
+        in scope: AutomationScope,
+        kind: AutomationKind,
+        description: String,
+        key: String,
+        macro: String,
+        typeIntoInput: Bool
+    ) throws {
+        guard macros(in: scope).indices.contains(index) else { throw WorkspaceError.automationEntryNotFound }
+        let path = try automationCollectionPath(scope, kind: kind)
+        try writeMacro(at: index, collectionPath: path, description: description, key: key, macro: macro, typeIntoInput: typeIntoInput)
+    }
+
+    private mutating func writeAlias(at index: Int, collectionPath: [String], description: String, match: MatchDefinition, replacement: String) throws {
+        try document.upsertValue(description, inUnnamedBlockAt: index, collectionPath: collectionPath, relativePath: ["Description"])
+        try writeMatch(match, at: index, collectionPath: collectionPath)
+        try document.upsertValue(replacement, inUnnamedBlockAt: index, collectionPath: collectionPath, relativePath: ["Replace"])
+        try reloadProjectionAfterAutomationEdit()
+    }
+
+    private mutating func writeTrigger(at index: Int, collectionPath: [String], description: String, match: MatchDefinition, action: EditableTriggerAction) throws {
+        try document.upsertValue(description, inUnnamedBlockAt: index, collectionPath: collectionPath, relativePath: ["Description"])
+        try writeMatch(match, at: index, collectionPath: collectionPath)
+        switch action {
+        case let .gag(display, log):
+            try document.upsertValue(Self.flag(display), inUnnamedBlockAt: index, collectionPath: collectionPath, relativePath: ["Gag", "Active"], quoted: false)
+            try document.upsertValue(Self.flag(log), inUnnamedBlockAt: index, collectionPath: collectionPath, relativePath: ["Gag", "Log"], quoted: false)
+            try document.upsertValue("false", inUnnamedBlockAt: index, collectionPath: collectionPath, relativePath: ["Send", "Active"], quoted: false)
+        case let .send(text):
+            try document.upsertValue("false", inUnnamedBlockAt: index, collectionPath: collectionPath, relativePath: ["Gag", "Active"], quoted: false)
+            try document.upsertValue("true", inUnnamedBlockAt: index, collectionPath: collectionPath, relativePath: ["Send", "Active"], quoted: false)
+            try document.upsertValue(text, inUnnamedBlockAt: index, collectionPath: collectionPath, relativePath: ["Send", "Send"])
+        }
+        try reloadProjectionAfterAutomationEdit()
+    }
+
+    private mutating func writeMacro(at index: Int, collectionPath: [String], description: String, key: String, macro: String, typeIntoInput: Bool) throws {
+        try document.upsertValue(description, inUnnamedBlockAt: index, collectionPath: collectionPath, relativePath: ["Description"])
+        try document.upsertValue(key, inUnnamedBlockAt: index, collectionPath: collectionPath, relativePath: ["key"])
+        try document.upsertValue(macro, inUnnamedBlockAt: index, collectionPath: collectionPath, relativePath: ["Macro"])
+        try document.upsertValue(Self.flag(typeIntoInput), inUnnamedBlockAt: index, collectionPath: collectionPath, relativePath: ["Type"], quoted: false)
+        try reloadProjectionAfterAutomationEdit()
+    }
+
+    /// Implements `/gag` as the same persisted global trigger used by the
+    /// native trigger editor. Existing matches are re-enabled in place so a
+    /// repeated command never creates duplicate gags.
+    @discardableResult
+    public mutating func addOrActivateGlobalGag(_ text: String) throws -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw WorkspaceError.emptyName }
+        if let index = globalTriggers.firstIndex(where: {
+            !$0.match.isRegularExpression && $0.match.text == trimmed
+        }) {
+            try document.upsertValue("true", inUnnamedBlockAt: index, collectionPath: ["Connections", "Triggers"], relativePath: ["Gag", "Active"], quoted: false)
+            try reloadProjectionAfterAutomationEdit()
+            return false
+        }
+        _ = try addGlobalTrigger(description: "Gag: \(trimmed)", match: .init(text: trimmed), action: .gag(display: true, log: false))
+        return true
+    }
 
     @discardableResult
     public mutating func addGlobalMacro(

@@ -422,6 +422,29 @@ final class AutomationTests: XCTestCase {
         XCTAssertEqual(registry.parse("//look", variables: [:]), .send("/look"))
     }
 
+    func testMilestone7CommandOutcomes() {
+        let registry = CommandRegistry()
+        XCTAssertEqual(registry.parse("/ai explain this", variables: [:]), .ai("explain this"))
+        XCTAssertEqual(registry.parse("/ai", variables: [:]), .ai(nil))
+        XCTAssertEqual(registry.parse("/gag danger", variables: [:]), .gag("danger"))
+        XCTAssertEqual(registry.parse("/grab #1/description", variables: [:]), .grab(object: "#1", property: "description"))
+        XCTAssertEqual(registry.parse("/recall 12 warning", variables: [:]), .recall(lineCount: 12, search: "warning"))
+        XCTAssertEqual(registry.parse("/rolltest", variables: [:]), .rollTest)
+        XCTAssertEqual(registry.parse("/test utf8", variables: [:]), .compatibilityTest("utf8"))
+        XCTAssertEqual(
+            registry.parse("/test", variables: [:]),
+            .display("What do you want to test? (ansi/html/emoji/international/utf8)")
+        )
+    }
+
+    func testDiceFairnessIsDeterministicAndReportsEverySide() {
+        let first = DiceFairnessReport.run(rollCount: 10_000, seed: 42)
+        XCTAssertEqual(first, DiceFairnessReport.run(rollCount: 10_000, seed: 42))
+        XCTAssertEqual(first.counts.reduce(0, +), first.rollCount)
+        XCTAssertEqual(first.counts.count, 6)
+        XCTAssertTrue(first.displayText.contains("Side 6 odds:"))
+    }
+
     func testCommandCompatibilityFormsPreservePayloads() {
         let registry = CommandRegistry()
         XCTAssertEqual(registry.parse("/gmcp dump_on", variables: [:]), .gmcpDump(true))

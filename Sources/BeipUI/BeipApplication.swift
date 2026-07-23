@@ -1,4 +1,5 @@
 import AppKit
+import BeipCore
 
 @MainActor
 public enum BeipApplication {
@@ -55,6 +56,25 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         let controller = makeController()
         controller.showWindow(sender)
         controller.startDeviceMediaAuditIfRequested()
+    }
+
+    @discardableResult
+    func openPuppet(
+        master: ClientWindowController,
+        server: ServerProfile,
+        character: CharacterProfile,
+        puppet: PuppetProfile
+    ) -> ClientWindowController {
+        if let existing = master.puppetController(for: puppet.id) {
+            existing.showWindow(nil)
+            existing.window?.makeKeyAndOrderFront(nil)
+            return existing
+        }
+        let controller = makeController()
+        controller.showWindow(nil)
+        controller.startPuppetSession(master: master, server: server, character: character, puppet: puppet)
+        controller.window?.makeKeyAndOrderFront(nil)
+        return controller
     }
 
     @objc func newTab(_ sender: Any?) {

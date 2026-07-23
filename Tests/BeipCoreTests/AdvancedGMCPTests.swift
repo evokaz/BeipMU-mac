@@ -2,6 +2,65 @@ import BeipCore
 import XCTest
 
 final class AdvancedGMCPTests: XCTestCase {
+
+    func testAIResponseShapesAndConfiguredPrompt() throws {
+        XCTAssertEqual(
+            AIClient.decodeText(Data(#"{"response":"hello"}"#.utf8)),
+            "hello"
+        )
+        XCTAssertEqual(
+            AIClient.decodeText(Data(#"{"choices":[{"message":{"content":"world"}}]}"#.utf8)),
+            "world"
+        )
+        XCTAssertNil(AIClient.decodeText(Data("{}".utf8)))
+    }
+
+    func testAIClientRejectsNonHTTPURLs() async {
+        let client = AIClient()
+        do {
+            _ = try await client.request(.init(prompt: "hello"), endpoint: URL(string: "file:///tmp/ai"))
+            XCTFail("Expected an invalid endpoint error")
+        } catch {
+            XCTAssertEqual(error as? AIClientError, .invalidEndpoint)
+        }
+    }
+
+    func testMutableTileEditorSupportsUndoRedoAndWireEncoding() throws {
+        let map = GMCPTileMap(name: "edit", columns: 2, rows: 2, encoding: .hex8, tiles: [1, 2, 3, 4])
+        var editor = TileMapEditor(map: map)
+        try editor.setTile(column: 1, row: 0, value: 42)
+        XCTAssertEqual(editor.map.tiles, [1, 42, 3, 4])
+        XCTAssertEqual(editor.encodedTiles(), "012A0304")
+        XCTAssertTrue(editor.undo())
+        XCTAssertEqual(editor.map, map)
+        XCTAssertTrue(editor.redo())
+        XCTAssertEqual(editor.map.tiles[1], 42)
+        XCTAssertThrowsError(try editor.setTile(column: 4, row: 0, value: 1))
+        XCTAssertThrowsError(try editor.setTile(column: 0, row: 0, value: 256))
+
+        let selection = TileMapEditor.Selection(column: 0, row: 0, columns: 2, rows: 1)
+        let scrap = try editor.copy(selection)
+        XCTAssertEqual(scrap.tiles, [1, 42])
+        _ = try editor.cut(selection)
+        XCTAssertEqual(editor.map.tiles, [0, 0, 3, 4])
+        try editor.paste(scrap, at: .init(column: 0, row: 1))
+        XCTAssertEqual(editor.map.tiles, [0, 0, 1, 42])
+        let moved = try editor.move(
+            .init(column: 0, row: 1, columns: 2, rows: 1),
+            by: .init(column: 0, row: -1)
+        )
+        XCTAssertEqual(moved, selection)
+        XCTAssertEqual(editor.map.tiles, [1, 42, 0, 0])
+        XCTAssertTrue(editor.clipboardPayload().contains("beip.tilemap.data"))
+
+        var hex4 = TileMapEditor(map: .init(
+            name: "hex", columns: 1, rows: 1, encoding: .hex4, tiles: [0]
+        ))
+        XCTAssertThrowsError(try hex4.setTile(column: 0, row: 0, value: 16))
+        try hex4.setEncoding(.hex8)
+        try hex4.setTile(column: 0, row: 0, value: 16)
+        XCTAssertThrowsError(try hex4.setEncoding(.hex4))
+    }
     func testStatisticsApplyPartialUpdatesColorsProgressAndDeletion() throws {
         var state = AdvancedGMCPState()
         let initial = ##"{"Player":{"background-color":"#002040","values":{"0_Name":{"prefix-length":2,"string":"Bennet","name-color":"Ansi256(56)"},"1_HP":{"prefix-length":2,"range":{"value":80,"max":100,"bar-fill":"#00ff00"}},"2_XP":{"prefix-length":2,"progress":{"label":"75%","value":0.75,"outline-color":"transparent"}}}}}"##

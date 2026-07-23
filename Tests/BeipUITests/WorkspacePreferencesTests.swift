@@ -5,6 +5,56 @@ import BeipPersistence
 import XCTest
 
 final class WorkspacePreferencesTests: XCTestCase {
+    @MainActor
+    func testAIWindowUsesNativeAccessibleSurfaceAndProfileState() throws {
+        let controller = AIWindowController(profileKey: "milestone7")
+        controller.updateEndpoint(URL(string: "https://example.invalid/ai")!)
+        controller.showResponse("answer", for: "question")
+        controller.showWindow(nil)
+
+        XCTAssertEqual(controller.window?.title, "AI")
+        XCTAssertNotNil(controller.window?.contentView)
+        let dockedView = controller.contentViewForDocking()
+        let descendants = recursiveSubviews(of: dockedView)
+        XCTAssertTrue(controller.isDocked)
+        XCTAssertTrue(descendants.contains { $0.accessibilityIdentifier() == "aiPrompt" })
+        XCTAssertTrue(descendants.contains { $0.accessibilityIdentifier() == "aiResponse" })
+        XCTAssertTrue(descendants.contains { $0.accessibilityIdentifier() == "aiEndpoint" })
+        XCTAssertTrue(descendants.contains { $0.accessibilityIdentifier() == "aiStatus" })
+        XCTAssertTrue(descendants.contains { $0.accessibilityIdentifier() == "aiSend" })
+        XCTAssertTrue(descendants.contains { $0.accessibilityIdentifier() == "aiClear" })
+        controller.showFloating(nil)
+        XCTAssertFalse(controller.isDocked)
+
+        controller.close()
+    }
+
+    @MainActor
+    func testPuppetWindowAttachesWithoutCreatingASecondNetworkSession() throws {
+        let library = ProfileLibrary(workspace: try .empty(isDirty: false))
+        let master = ClientWindowController(profileLibrary: library)
+        let puppetWindow = ClientWindowController(profileLibrary: library)
+        let server = ServerProfile(name: "World", host: "example.invalid", port: 8888)
+        let puppet = PuppetProfile(name: "Helper", receivePrefix: "Helper> ", sendPrefix: "tell Helper ")
+        let character = CharacterProfile(name: "Player", puppets: [puppet])
+
+        puppetWindow.startPuppetSession(
+            master: master,
+            server: server,
+            character: character,
+            puppet: puppet
+        )
+
+        XCTAssertTrue(puppetWindow.isPuppetAttachment)
+        XCTAssertFalse(puppetWindow.ownsNetworkSession)
+        XCTAssertTrue(master.puppetController(for: puppet.id) === puppetWindow)
+
+        puppetWindow.disconnect()
+        XCTAssertNil(master.puppetController(for: puppet.id))
+        master.close()
+        puppetWindow.close()
+    }
+
     func testWorkspacePreferencesRoundTrip() throws {
         let suiteName = "WorkspacePreferencesTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -49,6 +99,9 @@ final class WorkspacePreferencesTests: XCTestCase {
                     width: 480,
                     height: 320
                 )))],
+            ],
+            tileMapEdits: [
+                "world/character": ["surface": .init(name: "surface", columns: 2, rows: 1, encoding: .hex8, tiles: [3, 4])],
             ]
         )
         WorkspacePreferencesStore.save(preferences, defaults: defaults)
@@ -83,6 +136,7 @@ final class WorkspacePreferencesTests: XCTestCase {
         XCTAssertEqual(decoded.atlasSurfaces, [:])
         XCTAssertEqual(decoded.workspaceLayouts, [:])
         XCTAssertEqual(decoded.webViewPanes, [:])
+        XCTAssertEqual(decoded.tileMapEdits, [:])
     }
 
     func testUnsafeLayoutValuesAreNormalizedOnLoad() throws {
@@ -342,6 +396,9 @@ final class WorkspacePreferencesTests: XCTestCase {
         let mapViews = recursiveSubviews(of: mapContent)
         XCTAssertTrue(mapViews.contains { $0.accessibilityLabel() == "Tile map Castle" })
         XCTAssertTrue(mapViews.contains { ($0.accessibilityValue() as? String) == "4 columns by 3 rows" })
+        XCTAssertTrue(mapViews.contains { $0.accessibilityIdentifier() == "tileMapEditMode" })
+        XCTAssertTrue(mapViews.contains { $0.accessibilityIdentifier() == "tileMapEncoding" })
+        XCTAssertTrue(mapViews.contains { $0.accessibilityLabel() == "Tile picker" })
     }
 
     @MainActor

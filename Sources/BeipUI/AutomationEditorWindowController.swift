@@ -31,6 +31,7 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
 
     private let library: ProfileLibrary
     private let kind: Kind
+    private let scope: LegacyConfigurationWorkspace.AutomationScope
     private let table = NSTableView()
     private let status = NSTextField(labelWithString: "")
     private let descriptionField = NSTextField()
@@ -41,16 +42,17 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
     private var selectedIndex: Int?
     var onClose: (() -> Void)?
 
-    init(library: ProfileLibrary, kind: Kind) {
+    init(library: ProfileLibrary, kind: Kind, scope: LegacyConfigurationWorkspace.AutomationScope = .global) {
         self.library = library
         self.kind = kind
+        self.scope = scope
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 760, height: 480),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
-        window.title = kind.title
+        window.title = "\(kind.title) — \(scope.displayName)"
         window.minSize = NSSize(width: 620, height: 360)
         super.init(window: window)
         window.delegate = self
@@ -164,9 +166,9 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
 
     func numberOfRows(in tableView: NSTableView) -> Int {
         switch kind {
-        case .aliases: library.workspace.globalAliases.count
-        case .triggers: library.workspace.globalTriggers.count
-        case .macros: library.workspace.globalMacros.count
+        case .aliases: library.workspace.aliases(in: scope).count
+        case .triggers: library.workspace.triggers(in: scope).count
+        case .macros: library.workspace.macros(in: scope).count
         }
     }
 
@@ -188,13 +190,13 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
         }()
         switch kind {
         case .aliases:
-            let alias = library.workspace.globalAliases[row]
+            let alias = library.workspace.aliases(in: scope)[row]
             view.textField?.stringValue = alias.description.isEmpty ? alias.match.text : alias.description
         case .triggers:
-            let trigger = library.workspace.globalTriggers[row]
+            let trigger = library.workspace.triggers(in: scope)[row]
             view.textField?.stringValue = trigger.description.isEmpty ? trigger.match.text : trigger.description
         case .macros:
-            let macro = library.workspace.globalMacros[row]
+            let macro = library.workspace.macros(in: scope)[row]
             view.textField?.stringValue = macro.description.isEmpty ? macro.key : macro.description
         }
         return view
@@ -213,15 +215,15 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
             switch kind {
             case .aliases:
                 var added = 0
-                try library.mutate { added = try $0.addGlobalAlias(description: kind.emptyTitle) }
+                try library.mutate { added = try $0.addAlias(in: scope, description: kind.emptyTitle) }
                 index = added
             case .triggers:
                 var added = 0
-                try library.mutate { added = try $0.addGlobalTrigger(description: kind.emptyTitle) }
+                try library.mutate { added = try $0.addTrigger(in: scope, description: kind.emptyTitle) }
                 index = added
             case .macros:
                 var added = 0
-                try library.mutate { added = try $0.addGlobalMacro(description: kind.emptyTitle) }
+                try library.mutate { added = try $0.addMacro(in: scope, description: kind.emptyTitle) }
                 index = added
             }
             reload(selecting: index)
@@ -233,9 +235,9 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
         do {
             try library.mutate {
                 switch kind {
-                case .aliases: try $0.removeGlobalAlias(at: selectedIndex)
-                case .triggers: try $0.removeGlobalTrigger(at: selectedIndex)
-                case .macros: try $0.removeGlobalMacro(at: selectedIndex)
+                case .aliases: try $0.removeAutomationEntry(at: selectedIndex, in: scope, kind: .aliases)
+                case .triggers: try $0.removeAutomationEntry(at: selectedIndex, in: scope, kind: .triggers)
+                case .macros: try $0.removeAutomationEntry(at: selectedIndex, in: scope, kind: .macros)
                 }
             }
             reload(selecting: max(0, selectedIndex - 1))
@@ -247,8 +249,9 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
         if kind == .macros {
             do {
                 try library.mutate {
-                    try $0.updateGlobalMacro(
+                    try $0.updateMacro(
                         at: selectedIndex,
+                        in: scope,
                         description: descriptionField.stringValue,
                         key: matchField.stringValue,
                         macro: actionField.stringValue,
@@ -261,8 +264,8 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
             return
         }
         let existingMatch: MatchDefinition = switch kind {
-        case .aliases: library.workspace.globalAliases[selectedIndex].match
-        case .triggers: library.workspace.globalTriggers[selectedIndex].match
+        case .aliases: library.workspace.aliases(in: scope)[selectedIndex].match
+        case .triggers: library.workspace.triggers(in: scope)[selectedIndex].match
         case .macros: preconditionFailure("Macros are handled above.")
         }
         let match = MatchDefinition(
@@ -277,9 +280,9 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
             try library.mutate {
                 switch kind {
                 case .aliases:
-                    try $0.updateGlobalAlias(at: selectedIndex, description: descriptionField.stringValue, match: match, replacement: actionField.stringValue)
+                    try $0.updateAlias(at: selectedIndex, in: scope, description: descriptionField.stringValue, match: match, replacement: actionField.stringValue)
                 case .triggers:
-                    try $0.updateGlobalTrigger(at: selectedIndex, description: descriptionField.stringValue, match: match, action: selectedTriggerAction)
+                    try $0.updateTrigger(at: selectedIndex, in: scope, description: descriptionField.stringValue, match: match, action: selectedTriggerAction)
                 case .macros:
                     break
                 }
@@ -310,13 +313,13 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
     private func loadEntry(at index: Int) {
         switch kind {
         case .aliases:
-            let alias = library.workspace.globalAliases[index]
+            let alias = library.workspace.aliases(in: scope)[index]
             descriptionField.stringValue = alias.description
             matchField.stringValue = alias.match.text
             regex.state = alias.match.isRegularExpression ? .on : .off
             actionField.stringValue = alias.replacement
         case .triggers:
-            let trigger = library.workspace.globalTriggers[index]
+            let trigger = library.workspace.triggers(in: scope)[index]
             descriptionField.stringValue = trigger.description
             matchField.stringValue = trigger.match.text
             regex.state = trigger.match.isRegularExpression ? .on : .off
@@ -335,7 +338,7 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
             }
             updateActionFieldState()
         case .macros:
-            let macro = library.workspace.globalMacros[index]
+            let macro = library.workspace.macros(in: scope)[index]
             descriptionField.stringValue = macro.description
             matchField.stringValue = macro.key
             regex.state = macro.typeIntoInput ? .on : .off

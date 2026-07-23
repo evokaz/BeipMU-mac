@@ -22,6 +22,10 @@ public struct ServerProfile: Identifiable, Sendable, Hashable, Codable {
     public var gmcpWebViewPolicy: ServerWebViewPolicy?
     public var sendNAWSOnResize: Bool
     public var limitTelnetCharset: Bool
+    /// Optional HTTP endpoint used by the native `/ai` window.  It is kept
+    /// profile-local so prompts never leak across worlds.
+    public var aiEndpoint: URL?
+    public var aiModel: String
 
     public init(
         id: UUID = UUID(),
@@ -38,7 +42,9 @@ public struct ServerProfile: Identifiable, Sendable, Hashable, Codable {
         mcmp: Bool = false,
         gmcpWebViewPolicy: ServerWebViewPolicy = .ask,
         sendNAWSOnResize: Bool = false,
-        limitTelnetCharset: Bool = false
+        limitTelnetCharset: Bool = false,
+        aiEndpoint: URL? = nil,
+        aiModel: String = ""
     ) {
         self.id = id
         self.name = name
@@ -55,6 +61,8 @@ public struct ServerProfile: Identifiable, Sendable, Hashable, Codable {
         self.gmcpWebViewPolicy = gmcpWebViewPolicy
         self.sendNAWSOnResize = sendNAWSOnResize
         self.limitTelnetCharset = limitTelnetCharset
+        self.aiEndpoint = aiEndpoint
+        self.aiModel = aiModel
     }
 }
 
@@ -102,6 +110,10 @@ public struct PuppetProfile: Identifiable, Sendable, Hashable, Codable {
     public var autoConnect: Bool
     public var connectWithPlayer: Bool
     public var removeAccidentalPrefix: Bool
+    public var logFilename: String
+    public var logAppendsDate: Bool
+    public var characterLog: Bool
+    public var characterLogPrefix: String
 
     public init(
         id: UUID = UUID(),
@@ -112,7 +124,11 @@ public struct PuppetProfile: Identifiable, Sendable, Hashable, Codable {
         hideReceivePrefix: Bool = true,
         autoConnect: Bool = true,
         connectWithPlayer: Bool = false,
-        removeAccidentalPrefix: Bool = false
+        removeAccidentalPrefix: Bool = false,
+        logFilename: String = "",
+        logAppendsDate: Bool = false,
+        characterLog: Bool = false,
+        characterLogPrefix: String = ""
     ) {
         self.id = id
         self.name = name
@@ -123,6 +139,10 @@ public struct PuppetProfile: Identifiable, Sendable, Hashable, Codable {
         self.autoConnect = autoConnect
         self.connectWithPlayer = connectWithPlayer
         self.removeAccidentalPrefix = removeAccidentalPrefix
+        self.logFilename = logFilename
+        self.logAppendsDate = logAppendsDate
+        self.characterLog = characterLog
+        self.characterLogPrefix = characterLogPrefix
     }
 }
 
@@ -130,42 +150,65 @@ public enum PuppetRouter {
     public struct RoutedLine: Sendable, Equatable {
         public var puppetID: UUID
         public var text: String
+        public var removedRange: Range<Int>?
     }
 
     public static func route(_ text: String, through puppets: [PuppetProfile]) -> RoutedLine? {
         for puppet in puppets where !puppet.receivePrefix.isEmpty {
             let range: Range<String.Index>?
             if puppet.receivePrefixIsRegex {
-                range = text.range(of: puppet.receivePrefix, options: [.regularExpression, .anchored])
+                guard let expression = try? NSRegularExpression(pattern: puppet.receivePrefix) else { continue }
+                let sourceRange = NSRange(text.startIndex..., in: text)
+                guard let match = expression.firstMatch(in: text, options: [.anchored], range: sourceRange) else {
+                    continue
+                }
+                let selected = match.numberOfRanges > 1 && match.range(at: 1).location != NSNotFound
+                    ? match.range(at: 1)
+                    : match.range
+                range = Range(selected, in: text)
             } else {
-                range = text.hasPrefix(puppet.receivePrefix)
-                    ? text.startIndex..<text.index(text.startIndex, offsetBy: puppet.receivePrefix.count)
-                    : nil
+                range = text.range(of: puppet.receivePrefix, options: [.caseInsensitive, .anchored])
             }
             guard let range else { continue }
-            let routed = puppet.hideReceivePrefix ? String(text[range.upperBound...]) : text
-            return .init(puppetID: puppet.id, text: routed)
+            let routed = puppet.hideReceivePrefix
+                ? String(text[..<range.lowerBound] + text[range.upperBound...])
+                : text
+            let nsRange = NSRange(range, in: text)
+            return .init(
+                puppetID: puppet.id,
+                text: routed,
+                removedRange: puppet.hideReceivePrefix ? nsRange.location..<nsRange.upperBound : nil
+            )
         }
         return nil
     }
 
     public static func outgoing(_ text: String, for puppet: PuppetProfile) -> String {
-        puppet.sendPrefix + text
+        let value: String
+        if puppet.removeAccidentalPrefix, !puppet.sendPrefix.isEmpty, text.hasPrefix(puppet.sendPrefix) {
+            value = String(text.dropFirst(puppet.sendPrefix.count))
+        } else {
+            value = text
+        }
+        return puppet.sendPrefix + value
     }
 }
 
 public struct ConnectionRequest: Sendable, Hashable {
     public var server: ServerProfile
     public var character: CharacterProfile?
+    public var puppet: PuppetProfile?
     public var policy: ConnectionPolicy
 
     public init(
         server: ServerProfile,
         character: CharacterProfile? = nil,
+        puppet: PuppetProfile? = nil,
         policy: ConnectionPolicy = .init()
     ) {
         self.server = server
         self.character = character
+        self.puppet = puppet
         self.policy = policy
     }
 }

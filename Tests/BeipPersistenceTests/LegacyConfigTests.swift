@@ -381,6 +381,65 @@ final class LegacyConfigTests: XCTestCase {
         XCTAssertTrue(actions.contains { if case .stat = $0 { return true }; return false })
     }
 
+    func testMilestone7PuppetAutomationAndAIProfileRoundTrip() throws {
+        let source = """
+        Version=331
+        Connections {
+          Shortcuts {
+            World {
+              Host="example.test:8888"
+              AIEndpoint="https://ai.example.test/generate"
+              AIModel="test-model"
+              Characters {
+                Hero {
+                  Variables { mood="quiet" }
+                  Puppets {
+                    Scout {
+                      ReceivePrefix="[Scout] "
+                      SendPrefix="scout "
+                      Aliases { Active=true { FindString { MatchText="north" } Replace="scout north" } }
+                      KeyboardMacros2 { Active=true { Macro="inventory" key=F1 } }
+                      Variables { mood="scouting" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        """
+        var workspace = try LegacyConfigurationWorkspace(document: .init(source: source))
+        let server = try XCTUnwrap(workspace.servers.first)
+        let character = try XCTUnwrap(server.characters.first)
+        let puppet = try XCTUnwrap(character.puppets.first)
+        XCTAssertEqual(server.profile.aiEndpoint?.absoluteString, "https://ai.example.test/generate")
+        XCTAssertEqual(server.profile.aiModel, "test-model")
+
+        let groups = workspace.projection.automationGroups(for: server.profile, character: character, puppet: puppet)
+        XCTAssertEqual(try AliasEngine.process("north", groups: groups.aliases, variables: [:]).text, "scout north")
+        XCTAssertEqual(workspace.projection.variables(for: server.profile, character: character, puppet: puppet)["mood"], "scouting")
+        XCTAssertEqual(workspace.projection.macroGroups(for: server.profile, character: character, puppet: puppet).first?.macros.first?.macro, "inventory")
+
+        _ = try workspace.addAlias(
+            in: .puppet(server: server.profile.id, character: character.id, puppet: puppet.id),
+            description: "South",
+            match: .init(text: "south"),
+            replacement: "scout south"
+        )
+        let rendered = try workspace.renderedDocument().serialized()
+        XCTAssertTrue(rendered.contains("scout south"))
+        XCTAssertTrue(rendered.contains("AIEndpoint=\"https://ai.example.test/generate\""))
+
+        try workspace.updateServer(id: try XCTUnwrap(workspace.servers.first?.profile.id)) {
+            $0.profile.aiEndpoint = nil
+            $0.profile.aiModel = ""
+        }
+        let cleared = try workspace.renderedDocument()
+        let reloaded = try LegacyConfigurationProjection(document: cleared)
+        XCTAssertNil(reloaded.servers.first?.profile.aiEndpoint)
+        XCTAssertEqual(reloaded.servers.first?.profile.aiModel, "")
+    }
+
     func testTypedProjectionUsesWindowsDefaultsAndPortableSettings() throws {
         let source = """
         Version=331
@@ -713,6 +772,38 @@ final class LegacyConfigTests: XCTestCase {
         XCTAssertTrue(serialized.contains("FutureCharacterField=\"preserve\""))
         XCTAssertTrue(serialized.contains("FuturePuppetField=\"preserve\""))
         XCTAssertTrue(serialized.contains("WindowsOnly=\"untouched\""))
+    }
+
+    func testTriggerExtensionGUIDAndUnknownPayloadRemainLossless() throws {
+        let source = """
+        Version=331
+        Connections {
+          Triggers {
+            {
+              Description="Extension-backed trigger"
+              FindString { String="ready" }
+              Extensions {
+                {
+                  GUID="{01234567-89AB-CDEF-0123-456789ABCDEF}"
+                  FutureExtensionPayload="opaque"
+                }
+              }
+            }
+          }
+        }
+        """
+        let document = try LegacyConfigurationDocument(source: source)
+        var workspace = try LegacyConfigurationWorkspace(document: document)
+        try workspace.updateGlobalTrigger(
+            at: 0,
+            description: "Portable edit",
+            match: .init(text: "ready"),
+            action: .gag(display: true, log: false)
+        )
+        let saved = try workspace.renderedDocument()
+        XCTAssertTrue(saved.serialized().contains("Description=\"Portable edit\""))
+        XCTAssertTrue(saved.serialized().contains("GUID=\"{01234567-89AB-CDEF-0123-456789ABCDEF}\""))
+        XCTAssertTrue(saved.serialized().contains("FutureExtensionPayload=\"opaque\""))
     }
 
     func testEditableConfigurationWorkspaceAddsRenamesAndRemovesProfiles() throws {

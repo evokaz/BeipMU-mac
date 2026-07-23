@@ -29,12 +29,16 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
     private var portField: NSTextField?
     private var encodingPopup: NSPopUpButton?
     private var webViewPolicyPopup: NSPopUpButton?
+    private var aiEndpointField: NSTextField?
+    private var aiModelField: NSTextField?
     private var connectField: NSTextField?
     private var passwordField: NSSecureTextField?
     private var idleMinutesField: NSTextField?
     private var idleTextField: NSTextField?
     private var receivePrefixField: NSTextField?
     private var sendPrefixField: NSTextField?
+    private var puppetLogFilenameField: NSTextField?
+    private var puppetCharacterLogPrefixField: NSTextField?
     private var checks: [String: NSButton] = [:]
     var onRequestSaveAs: (() -> Void)?
 
@@ -257,6 +261,10 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
         encoding.selectItem(withTitle: server.encoding.rawValue)
         encoding.setAccessibilityIdentifier("worldEncoding")
         nameField = name; hostField = host; portField = port; encodingPopup = encoding
+        let aiEndpoint = textField(server.aiEndpoint?.absoluteString ?? "", identifier: "worldAIEndpoint")
+        let aiModel = textField(server.aiModel, identifier: "worldAIModel")
+        aiEndpointField = aiEndpoint
+        aiModelField = aiModel
         let webViewPolicy = NSPopUpButton()
         webViewPolicy.addItems(withTitles: ServerWebViewPolicy.allCases.map(\.title))
         webViewPolicy.selectItem(withTitle: (server.gmcpWebViewPolicy ?? .ask).title)
@@ -264,7 +272,7 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
         webViewPolicyPopup = webViewPolicy
         detailStack.addArrangedSubview(grid([
             ("Name:", name), ("Host:", host), ("Port:", port), ("Encoding:", encoding),
-            ("Server WebViews:", webViewPolicy),
+            ("Server WebViews:", webViewPolicy), ("AI endpoint:", aiEndpoint), ("AI model:", aiModel),
         ]))
         addCheck("tls", "Use TLS", server.usesTLS)
         addCheck("verify", "Verify TLS certificate", server.verifiesCertificate)
@@ -306,15 +314,22 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
         let name = textField(puppet.name, identifier: "puppetName")
         let receive = textField(puppet.receivePrefix, identifier: "puppetReceivePrefix")
         let send = textField(puppet.sendPrefix, identifier: "puppetSendPrefix")
+        let logFilename = textField(puppet.logFilename, identifier: "puppetLogFilename")
+        let characterLogPrefix = textField(puppet.characterLogPrefix, identifier: "puppetCharacterLogPrefix")
         nameField = name; receivePrefixField = receive; sendPrefixField = send
+        puppetLogFilenameField = logFilename
+        puppetCharacterLogPrefixField = characterLogPrefix
         detailStack.addArrangedSubview(grid([
             ("Name:", name), ("Receive prefix:", receive), ("Send prefix:", send),
+            ("Log filename:", logFilename), ("Character log prefix:", characterLogPrefix),
         ]))
         addCheck("regex", "Receive prefix is a regular expression", puppet.receivePrefixIsRegex)
         addCheck("hide", "Hide receive prefix", puppet.hideReceivePrefix)
         addCheck("autoConnect", "Auto-connect puppet", puppet.autoConnect)
         addCheck("withPlayer", "Connect with player", puppet.connectWithPlayer)
         addCheck("removePrefix", "Remove accidental outgoing prefix", puppet.removeAccidentalPrefix)
+        addCheck("puppetLogDate", "Append date to puppet log filename", puppet.logAppendsDate)
+        addCheck("puppetCharacterLog", "Copy routed lines to the character log", puppet.characterLog)
         addApplyButton()
     }
 
@@ -360,8 +375,10 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
 
     private func clearControls() {
         nameField = nil; hostField = nil; portField = nil; encodingPopup = nil; webViewPolicyPopup = nil
+        aiEndpointField = nil; aiModelField = nil
         connectField = nil; passwordField = nil; idleMinutesField = nil; idleTextField = nil
         receivePrefixField = nil; sendPrefixField = nil; checks = [:]
+        puppetLogFilenameField = nil; puppetCharacterLogPrefixField = nil
     }
 
     @objc private func addWorld(_ sender: Any?) {
@@ -440,6 +457,9 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
                         } ?? .ask
                         server.profile.sendNAWSOnResize = checked("naws")
                         server.profile.limitTelnetCharset = checked("charset")
+                        let endpointText = aiEndpointField?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                        server.profile.aiEndpoint = endpointText.isEmpty ? nil : URL(string: endpointText)
+                        server.profile.aiModel = aiModelField?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                     }
                 case let .character(server, character):
                     guard let nameField else { return }
@@ -462,6 +482,10 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
                         value.autoConnect = checked("autoConnect")
                         value.connectWithPlayer = checked("withPlayer")
                         value.removeAccidentalPrefix = checked("removePrefix")
+                        value.logFilename = puppetLogFilenameField?.stringValue ?? ""
+                        value.logAppendsDate = checked("puppetLogDate")
+                        value.characterLog = checked("puppetCharacterLog")
+                        value.characterLogPrefix = puppetCharacterLogPrefixField?.stringValue ?? ""
                     }
                 }
             }

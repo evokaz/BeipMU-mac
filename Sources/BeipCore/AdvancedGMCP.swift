@@ -264,6 +264,277 @@ public struct GMCPTileMap: Sendable, Hashable, Codable {
     }
 }
 
+public enum TileMapEditError: LocalizedError, Equatable {
+    case invalidCoordinate
+    case tileOutOfRange
+    case invalidSelection
+
+    public var errorDescription: String? {
+        switch self {
+        case .invalidCoordinate: "The selected tile is outside the map."
+        case .tileOutOfRange: "The tile index does not fit the selected encoding."
+        case .invalidSelection: "The tile selection is empty or outside the map."
+        }
+    }
+}
+
+/// Transactional editor for server-supplied tile maps.  Every mutation is a
+/// complete map snapshot, which keeps undo/redo deterministic and makes it
+/// safe to persist or transmit the edited bytes without losing dimensions or
+/// tileset metadata.
+public struct TileMapEditor: Sendable, Equatable {
+    public struct Coordinate: Sendable, Hashable, Codable {
+        public var column: Int
+        public var row: Int
+
+        public init(column: Int, row: Int) {
+            self.column = column
+            self.row = row
+        }
+    }
+
+    public struct Selection: Sendable, Hashable, Codable {
+        public var column: Int
+        public var row: Int
+        public var columns: Int
+        public var rows: Int
+
+        public init(column: Int, row: Int, columns: Int, rows: Int) {
+            self.column = column
+            self.row = row
+            self.columns = columns
+            self.rows = rows
+        }
+    }
+
+    public struct Scrap: Sendable, Hashable, Codable {
+        public var columns: Int
+        public var rows: Int
+        public var tiles: [UInt8]
+
+        public init(columns: Int, rows: Int, tiles: [UInt8]) {
+            self.columns = columns
+            self.rows = rows
+            self.tiles = tiles
+        }
+    }
+
+    public private(set) var map: GMCPTileMap
+    private var undoStack: [GMCPTileMap] = []
+    private var redoStack: [GMCPTileMap] = []
+
+    public init(map: GMCPTileMap) { self.map = map }
+
+    public var canUndo: Bool { !undoStack.isEmpty }
+    public var canRedo: Bool { !redoStack.isEmpty }
+    public var maximumTileValue: Int { map.encoding == .hex4 ? 15 : 255 }
+
+    public mutating func setTile(column: Int, row: Int, value: Int) throws {
+        try setTiles([Coordinate(column: column, row: row): value])
+    }
+
+    public mutating func setTiles(_ updates: [Coordinate: Int]) throws {
+        guard !updates.isEmpty else { return }
+        for (coordinate, value) in updates {
+            try validate(coordinate)
+            try validate(value)
+        }
+        let changed = updates.contains { coordinate, value in
+            map.tiles[index(of: coordinate)] != UInt8(value)
+        }
+        guard changed else { return }
+        record()
+        for (coordinate, value) in updates {
+            map.tiles[index(of: coordinate)] = UInt8(value)
+        }
+    }
+
+    public mutating func fill(value: Int) throws {
+        try validate(value)
+        guard map.tiles.contains(where: { $0 != UInt8(value) }) else { return }
+        record()
+        map.tiles = Array(repeating: UInt8(value), count: map.columns * map.rows)
+    }
+
+    public func copy(_ selection: Selection) throws -> Scrap {
+        try validate(selection)
+        var tiles: [UInt8] = []
+        tiles.reserveCapacity(selection.columns * selection.rows)
+        for row in selection.row..<(selection.row + selection.rows) {
+            for column in selection.column..<(selection.column + selection.columns) {
+                tiles.append(map.tiles[index(of: .init(column: column, row: row))])
+            }
+        }
+        return .init(columns: selection.columns, rows: selection.rows, tiles: tiles)
+    }
+
+    public mutating func cut(_ selection: Selection, fill: Int = 0) throws -> Scrap {
+        try validate(fill)
+        let scrap = try copy(selection)
+        var updates: [Coordinate: Int] = [:]
+        for row in selection.row..<(selection.row + selection.rows) {
+            for column in selection.column..<(selection.column + selection.columns) {
+                updates[.init(column: column, row: row)] = fill
+            }
+        }
+        try setTiles(updates)
+        return scrap
+    }
+
+    public mutating func paste(_ scrap: Scrap, at origin: Coordinate) throws {
+        guard scrap.columns > 0, scrap.rows > 0,
+              scrap.tiles.count == scrap.columns * scrap.rows else {
+            throw TileMapEditError.invalidSelection
+        }
+        var updates: [Coordinate: Int] = [:]
+        for row in 0..<scrap.rows {
+            for column in 0..<scrap.columns {
+                let target = Coordinate(column: origin.column + column, row: origin.row + row)
+                try validate(target)
+                updates[target] = Int(scrap.tiles[row * scrap.columns + column])
+            }
+        }
+        try setTiles(updates)
+    }
+
+    @discardableResult
+    public mutating func move(
+        _ selection: Selection,
+        by offset: Coordinate,
+        fill: Int = 0
+    ) throws -> Selection {
+        try validate(selection)
+        try validate(fill)
+        let destination = Selection(
+            column: selection.column + offset.column,
+            row: selection.row + offset.row,
+            columns: selection.columns,
+            rows: selection.rows
+        )
+        try validate(destination)
+        guard offset.column != 0 || offset.row != 0 else { return selection }
+        let original = map.tiles
+        record()
+        for row in selection.row..<(selection.row + selection.rows) {
+            for column in selection.column..<(selection.column + selection.columns) {
+                map.tiles[row * map.columns + column] = UInt8(fill)
+            }
+        }
+        for row in 0..<selection.rows {
+            for column in 0..<selection.columns {
+                let sourceIndex = (selection.row + row) * map.columns + selection.column + column
+                let destinationIndex = (destination.row + row) * map.columns + destination.column + column
+                map.tiles[destinationIndex] = original[sourceIndex]
+            }
+        }
+        return destination
+    }
+
+    public mutating func setEncoding(_ encoding: GMCPTileMap.Encoding) throws {
+        let maximum = encoding == .hex4 ? 15 : 255
+        guard map.tiles.allSatisfy({ Int($0) <= maximum }) else {
+            throw TileMapEditError.tileOutOfRange
+        }
+        guard map.encoding != encoding else { return }
+        record()
+        map.encoding = encoding
+    }
+
+    @discardableResult
+    public mutating func undo() -> Bool {
+        guard let previous = undoStack.popLast() else { return false }
+        redoStack.append(map)
+        map = previous
+        return true
+    }
+
+    @discardableResult
+    public mutating func redo() -> Bool {
+        guard let next = redoStack.popLast() else { return false }
+        undoStack.append(map)
+        map = next
+        return true
+    }
+
+    public func encodedTiles() -> String {
+        switch map.encoding {
+        case .hex4: return map.tiles.map { String(format: "%X", $0) }.joined()
+        case .hex8: return map.tiles.map { String(format: "%02X", $0) }.joined()
+        case .base64_8: return Data(map.tiles).base64EncodedString()
+        case .zbase64_8:
+            let input = Data(map.tiles)
+            let capacity = max(input.count + 64, input.count * 2)
+            var output = Data(repeating: 0, count: capacity)
+            let written = input.withUnsafeBytes { source in
+                output.withUnsafeMutableBytes { destination in
+                    compression_encode_buffer(
+                        destination.bindMemory(to: UInt8.self).baseAddress!, capacity,
+                        source.bindMemory(to: UInt8.self).baseAddress!, input.count,
+                        nil, COMPRESSION_ZLIB
+                    )
+                }
+            }
+            guard written > 0 else { return "" }
+            output.count = written
+            return output.base64EncodedString()
+        }
+    }
+
+    public func clipboardPayload() -> String {
+        let encoding = switch map.encoding {
+        case .hex4: "Hex_4"
+        case .hex8: "Hex_8"
+        case .base64_8: "Base64_8"
+        case .zbase64_8: "ZBase64_8"
+        }
+        let escapedName = Self.jsonString(map.name)
+        let escapedURL = Self.jsonString(map.tileURL?.absoluteString ?? "")
+        return """
+        beip.tilemap.info { \(escapedName):{"tile-url":\(escapedURL),"tile-size":"\(map.tileWidth),\(map.tileHeight)","map-size":"\(map.columns),\(map.rows)","enc":"\(encoding)"} }
+        beip.tilemap.data { \(escapedName):\(Self.jsonString(encodedTiles())) }
+        """
+    }
+
+    private mutating func record() {
+        undoStack.append(map)
+        redoStack.removeAll(keepingCapacity: true)
+    }
+
+    private func index(of coordinate: Coordinate) -> Int {
+        coordinate.row * map.columns + coordinate.column
+    }
+
+    private func validate(_ coordinate: Coordinate) throws {
+        guard (0..<map.columns).contains(coordinate.column),
+              (0..<map.rows).contains(coordinate.row),
+              map.tiles.indices.contains(index(of: coordinate)) else {
+            throw TileMapEditError.invalidCoordinate
+        }
+    }
+
+    private func validate(_ value: Int) throws {
+        guard (0...maximumTileValue).contains(value) else {
+            throw TileMapEditError.tileOutOfRange
+        }
+    }
+
+    private func validate(_ selection: Selection) throws {
+        guard selection.columns > 0, selection.rows > 0,
+              selection.column >= 0, selection.row >= 0,
+              selection.column + selection.columns <= map.columns,
+              selection.row + selection.rows <= map.rows else {
+            throw TileMapEditError.invalidSelection
+        }
+    }
+
+    private static func jsonString(_ value: String) -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed]) else {
+            return "\"\""
+        }
+        return String(decoding: data, as: UTF8.self)
+    }
+}
+
 public enum AdvancedGMCPEvent: Sendable, Hashable {
     case statisticsPane(String)
     case tileMap(String)
@@ -282,6 +553,10 @@ public struct AdvancedGMCPState: Sendable {
     private var pendingImageURL: URL?
 
     public init() {}
+
+    public mutating func updateTileMap(_ map: GMCPTileMap) {
+        tileMaps[map.name] = map
+    }
 
     public mutating func reset() {
         self = .init()

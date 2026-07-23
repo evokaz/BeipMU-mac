@@ -46,6 +46,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
     private let commandRegistry = CommandRegistry()
     private let delayScheduler = DelayScheduler()
     private let scriptService = ScriptServiceClient()
+    private let aiClient = AIClient()
     private let triggerEngine = TriggerEngine()
     private let speechSynthesizer = AVSpeechSynthesizer()
     private var scriptSounds: [NSSound] = []
@@ -62,6 +63,13 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
     private var sessionTask: Task<Void, Never>?
     private var currentServer: ServerProfile?
     private var currentCharacter: CharacterProfile?
+    private var currentPuppet: PuppetProfile?
+    private weak var puppetMaster: ClientWindowController?
+    private var puppetChildren: [UUID: ClientWindowController] = [:]
+    private var aiWindow: AIWindowController?
+    private var aiRequestTask: Task<Void, Never>?
+    private var preservingAIPlacement = false
+    private var grabPrefix: String?
     private var secondaryInputWindows: [SecondaryInputWindowController] = []
     private var editWindows: [EditWindowController] = []
     private var statisticsWindow: SessionStatisticsWindowController?
@@ -199,6 +207,14 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
     required init?(coder: NSCoder) { nil }
 
     func windowWillClose(_ notification: Notification) {
+        if let puppet = currentPuppet {
+            puppetMaster?.detachPuppetChild(puppet.id)
+            puppetMaster = nil
+        } else {
+            let children = Array(puppetChildren.values)
+            puppetChildren.removeAll()
+            children.forEach { $0.masterConnectionClosed() }
+        }
         Task { [weak self, scriptService] in
             guard let self else { return }
             applyScriptEvaluation(
@@ -227,6 +243,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
         automationDebugWindows.values.forEach { $0.close() }
         networkDebugWindow?.close()
         scriptDebugWindow?.close()
+        closeAIWindow(preservingDockPlacement: false)
         stopAllLogs(announcing: false)
         Task { [scriptService] in await scriptService.stopAsyncOutputDelivery() }
         sessionTask?.cancel()
@@ -338,6 +355,12 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func disconnect() {
+        if let puppet = currentPuppet, let master = puppetMaster {
+            master.detachPuppetChild(puppet.id)
+            puppetMaster = nil
+            masterConnectionStateChanged(connected: false)
+            return
+        }
         guard let session else { return }
         Task { await session.disconnect() }
     }
@@ -591,18 +614,36 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
         controller.window?.makeKeyAndOrderFront(self)
     }
 
-    func showAutomationEditor(_ kind: AutomationEditorWindowController.Kind) {
-        if let existing = automationEditors.first(where: { $0.window?.title == kind.title }) {
+    func showAutomationEditor(_ kind: AutomationEditorWindowController.Kind, scope: LegacyConfigurationWorkspace.AutomationScope? = nil) {
+        let selectedScope = scope ?? currentAutomationScope
+        let title = "\(kind.title) — \(selectedScope.displayName)"
+        if let existing = automationEditors.first(where: { $0.window?.title == title }) {
             existing.showWindow(nil)
             return
         }
-        let editor = AutomationEditorWindowController(library: profileLibrary, kind: kind)
+        let editor = AutomationEditorWindowController(library: profileLibrary, kind: kind, scope: selectedScope)
         editor.onClose = { [weak self, weak editor] in
             guard let editor else { return }
             self?.automationEditors.removeAll { $0 === editor }
         }
         automationEditors.append(editor)
         editor.showWindow(nil)
+    }
+
+    private var currentAutomationScope: LegacyConfigurationWorkspace.AutomationScope {
+        if let server = currentServer,
+           let projectionServer = profileLibrary.workspace.servers.first(where: { $0.profile.id == server.id }) {
+            if let character = currentCharacter,
+               let projectedCharacter = projectionServer.characters.first(where: { $0.id == character.id }) {
+                if let puppet = currentPuppet,
+                   let projectedPuppet = projectedCharacter.puppets.first(where: { $0.id == puppet.id }) {
+                    return .puppet(server: server.id, character: character.id, puppet: projectedPuppet.id)
+                }
+                return .character(server: server.id, character: character.id)
+            }
+            return .server(server.id)
+        }
+        return .global
     }
 
     func showAutomationDebugger(_ kind: CommandOutcome.DebugAutomationKind) {
@@ -931,7 +972,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
         let capturedLines = options.captureLineCount > 0
             ? output.capturedText(lineCount: options.captureLineCount, skipping: options.captureSkipCount)
             : ""
-        let captured = capturedLines.isEmpty ? "" : options.prepend + capturedLines + options.append
+        let captured = options.initialText ?? (capturedLines.isEmpty ? "" : options.prepend + capturedLines + options.append)
         if !options.title.isEmpty, let existing = editWindows.first(where: { $0.logicalTitle == options.title }) {
             if !captured.isEmpty { existing.setText(captured) }
             existing.showWindow(nil)
@@ -1103,9 +1144,26 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
         window.makeFirstResponder(input)
     }
 
+    func startPuppetSession(
+        master: ClientWindowController,
+        server: ServerProfile,
+        character: CharacterProfile,
+        puppet: PuppetProfile
+    ) {
+        startSession(
+            server,
+            character: character,
+            puppet: puppet,
+            master: master,
+            policy: profileLibrary.workspace.projection.connectionPolicy
+        )
+    }
+
     private func startSession(
         _ server: ServerProfile,
         character: CharacterProfile? = nil,
+        puppet: PuppetProfile? = nil,
+        master: ClientWindowController? = nil,
         policy: ConnectionPolicy = .init()
     ) {
         preferences.workspaceLayouts[notesKey] = dockController.currentLayout
@@ -1115,21 +1173,27 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
         saveAtlasSurfacePreferences()
         closeAtlasSurface()
         closeWebViews()
+        closeAIWindow(preservingDockPlacement: true)
         sessionTask?.cancel()
         if let session { Task { await session.disconnect() } }
         currentServer = server
         currentCharacter = character
-        variables = character?.variables ?? [:]
-        let automation = profileLibrary.workspace.projection.automationGroups(for: server, character: character)
+        currentPuppet = puppet
+        puppetMaster = master
+        variables = profileLibrary.workspace.projection.variables(for: server, character: character, puppet: puppet)
+        let automation = profileLibrary.workspace.projection.automationGroups(for: server, character: character, puppet: puppet)
         aliasGroups = automation.aliases
         triggerGroups = automation.triggers
-        keyboardMacroGroups = profileLibrary.workspace.projection.macroGroups(for: server, character: character)
+        keyboardMacroGroups = profileLibrary.workspace.projection.macroGroups(for: server, character: character, puppet: puppet)
         aliasesEchoResults = profileLibrary.workspace.projection.automation.aliases.echo
         aliasesProcessCommands = profileLibrary.workspace.projection.automation.aliases.processCommands
         gmcpState.reset()
         mediaState.reset()
         mediaController.flush()
-        baseWindowTitle = character.map { "\($0.name) @ \(server.name)" } ?? server.name
+        baseWindowTitle = character.map { character in
+            let suffix = puppet.map { " / \($0.name)" } ?? ""
+            return "\(character.name) @ \(server.name)\(suffix)"
+        } ?? server.name
         updateWindowTitle()
         dockController.setNotes(preferences.characterNotes[notesKey] ?? "")
         if let layout = preferences.workspaceLayouts[notesKey] ?? preferences.workspaceLayout {
@@ -1139,6 +1203,14 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
         restoreAtlasSurfacePreferences()
         restoreWebViewPreferences()
         refreshDiagnostics()
+        if let master, let puppet {
+            session = nil
+            output.clear()
+            master.attachPuppetChild(self, puppet: puppet)
+            masterConnectionStateChanged(connected: master.connectionStateText == "Connected")
+            appendClient("Puppet \(puppet.name) is attached to \(character?.name ?? "the character")'s connection.")
+            return
+        }
         var processor = MUDProtocolPipeline(
             encoding: server.encoding,
             mcp: server.mcp,
@@ -1160,7 +1232,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
         let size = output.terminalSize
         Task {
             await next.updateWindowSize(columns: size.columns, rows: size.rows)
-            await next.connect(.init(server: server, character: character, policy: policy))
+            await next.connect(.init(server: server, character: character, puppet: puppet, policy: policy))
         }
     }
 
@@ -1213,6 +1285,13 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
             if case .failed = state { webViewWindows.values.forEach { $0.connectionChanged(connected: false) } }
             if case .connected = state {
                 applyScriptEvaluation(await scriptService.dispatchConnectionEvent("connect", host: scriptHostSnapshot), showValue: false)
+                if let server = currentServer, let character = currentCharacter {
+                    for puppet in character.puppets where puppet.connectWithPlayer {
+                        _ = (NSApp.delegate as? ApplicationDelegate)?.openPuppet(
+                            master: self, server: server, character: character, puppet: puppet
+                        )
+                    }
+                }
             }
             if case .disconnected = state {
                 applyScriptEvaluation(await scriptService.dispatchConnectionEvent("disconnect", host: scriptHostSnapshot), showValue: false)
@@ -1220,34 +1299,21 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
             if case .failed = state {
                 applyScriptEvaluation(await scriptService.dispatchConnectionEvent("disconnect", host: scriptHostSnapshot), showValue: false)
             }
+            let connected = state == .connected
+            let shouldNotifyPuppets: Bool
+            switch state {
+            case .connected, .disconnected, .failed: shouldNotifyPuppets = true
+            default: shouldNotifyPuppets = false
+            }
+            if shouldNotifyPuppets {
+                puppetChildren.values.forEach { $0.masterConnectionStateChanged(connected: connected) }
+            }
         case let .renderedLine(line):
-            webViewWindows.values.forEach { $0.observeReceived(line.text) }
-            let hookedLine = await applyScriptDisplayHook(to: gmcpState.decorate(line))
-            let presentation = await applyTriggers(to: hookedLine)
-            let webViewGag = webViewWindows.values.reduce(false) { $1.observeDisplay(presentation.line) || $0 }
-            _ = atlasWindow?.observeOutput(presentation.line.text)
-            suppressNextSessionActivity = presentation.suppressActivity
-            if hasPendingPrompt { output.removeLastLine(); hasPendingPrompt = false }
-            if !presentation.gagDisplay, !webViewGag {
-                output.append(presentation.line)
-                offerImages(in: presentation.line)
-            }
-            if presentation.line.source != .localEcho && !presentation.gagLog { appendToLogs(presentation.line) }
+            if routeMasterLineToPuppet(line, isPrompt: false) { return }
+            await presentIncoming(line, isPrompt: false)
         case let .prompt(line):
-            webViewWindows.values.forEach { $0.observeReceived(line.text) }
-            let hookedLine = await applyScriptDisplayHook(to: gmcpState.decorate(line))
-            let presentation = await applyTriggers(to: hookedLine)
-            let webViewGag = webViewWindows.values.reduce(false) { $1.observeDisplay(presentation.line) || $0 }
-            _ = atlasWindow?.observeOutput(presentation.line.text)
-            if hasPendingPrompt { output.removeLastLine() }
-            if !presentation.gagDisplay, !webViewGag {
-                output.append(presentation.line, terminator: "")
-                offerImages(in: presentation.line)
-                hasPendingPrompt = true
-            } else {
-                hasPendingPrompt = false
-            }
-            if !presentation.gagLog { appendToLogs(presentation.line) }
+            if routeMasterLineToPuppet(line, isPrompt: true) { return }
+            await presentIncoming(line, isPrompt: true)
         case let .gmcp(message):
             webViewWindows.values.forEach { $0.observeGMCP(message) }
             let raw = message.payload.isEmpty ? message.package : "\(message.package) \(message.payload)"
@@ -1281,6 +1347,145 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
         case let .sent(data):
             networkDebugWindow?.append(data, received: false)
         }
+    }
+
+    func puppetController(for id: UUID) -> ClientWindowController? { puppetChildren[id] }
+    var ownsNetworkSession: Bool { session != nil }
+    var isPuppetAttachment: Bool { currentPuppet != nil && puppetMaster != nil && session == nil }
+
+    private func attachPuppetChild(_ controller: ClientWindowController, puppet: PuppetProfile) {
+        if let previous = puppetChildren.updateValue(controller, forKey: puppet.id), previous !== controller {
+            previous.masterConnectionClosed()
+        }
+    }
+
+    private func detachPuppetChild(_ id: UUID) {
+        puppetChildren.removeValue(forKey: id)
+    }
+
+    private func masterConnectionClosed() {
+        puppetMaster = nil
+        masterConnectionStateChanged(connected: false)
+    }
+
+    private func masterConnectionStateChanged(connected: Bool) {
+        let changed = (connectionStateText == "Connected") != connected
+        connectionStateText = connected ? "Connected" : "Disconnected"
+        stateLabel.stringValue = connectionStateText
+        stateLabel.textColor = connected ? .systemGreen : .secondaryLabelColor
+        webViewWindows.values.forEach { $0.connectionChanged(connected: connected) }
+        refreshDiagnostics()
+        guard changed else { return }
+        if connected { startAutomaticLog() }
+        Task { [weak self, scriptService] in
+            guard let self else { return }
+            applyScriptEvaluation(
+                await scriptService.dispatchConnectionEvent(
+                    connected ? "connect" : "disconnect",
+                    host: scriptHostSnapshot
+                ),
+                showValue: false
+            )
+        }
+    }
+
+    private func routeMasterLineToPuppet(_ line: RenderedLine, isPrompt: Bool) -> Bool {
+        guard currentPuppet == nil, let server = currentServer, let character = currentCharacter else {
+            return false
+        }
+        for puppet in character.puppets {
+            guard let routed = PuppetRouter.route(line.text, through: [puppet]) else { continue }
+            var child = puppetChildren[puppet.id]
+            if child == nil, puppet.autoConnect {
+                child = (NSApp.delegate as? ApplicationDelegate)?.openPuppet(
+                    master: self, server: server, character: character, puppet: puppet
+                )
+            }
+            guard let child else { continue }
+            if puppet.characterLog {
+                var logged = line
+                logged.text = puppet.characterLogPrefix + line.text
+                logged.runs = []
+                appendToLogs(logged)
+            }
+            child.receivePuppetLine(line, route: routed, isPrompt: isPrompt)
+            return true
+        }
+        return false
+    }
+
+    private func receivePuppetLine(
+        _ source: RenderedLine,
+        route: PuppetRouter.RoutedLine,
+        isPrompt: Bool
+    ) {
+        var line = source
+        line.text = route.text
+        if let removed = route.removedRange {
+            let length = removed.count
+            line.runs = line.runs.compactMap { run in
+                if run.range.upperBound <= removed.lowerBound { return run }
+                if run.range.lowerBound >= removed.upperBound {
+                    return .init(
+                        range: (run.range.lowerBound - length)..<(run.range.upperBound - length),
+                        style: run.style
+                    )
+                }
+                let lower = min(run.range.lowerBound, removed.lowerBound)
+                let upper = max(removed.lowerBound, run.range.upperBound - length)
+                return upper > lower ? .init(range: lower..<upper, style: run.style) : nil
+            }
+            line.assets = line.assets.compactMap { asset in
+                var adjusted = asset
+                if asset.characterOffset >= removed.upperBound {
+                    adjusted.characterOffset -= length
+                } else if asset.characterOffset >= removed.lowerBound {
+                    adjusted.characterOffset = removed.lowerBound
+                }
+                return adjusted
+            }
+        }
+        Task { [weak self] in await self?.presentIncoming(line, isPrompt: isPrompt) }
+    }
+
+    private func presentIncoming(_ line: RenderedLine, isPrompt: Bool) async {
+        if consumeGrabResponse(line.text) { return }
+        webViewWindows.values.forEach { $0.observeReceived(line.text) }
+        let hookedLine = await applyScriptDisplayHook(to: gmcpState.decorate(line))
+        let presentation = await applyTriggers(to: hookedLine)
+        let webViewGag = webViewWindows.values.reduce(false) { $1.observeDisplay(presentation.line) || $0 }
+        _ = atlasWindow?.observeOutput(presentation.line.text)
+        if !isPrompt {
+            suppressNextSessionActivity = presentation.suppressActivity
+            if hasPendingPrompt { output.removeLastLine(); hasPendingPrompt = false }
+            if !presentation.gagDisplay, !webViewGag {
+                output.append(presentation.line)
+                offerImages(in: presentation.line)
+            }
+            if presentation.line.source != .localEcho, !presentation.gagLog {
+                appendToLogs(presentation.line)
+            }
+            return
+        }
+        if hasPendingPrompt { output.removeLastLine() }
+        if !presentation.gagDisplay, !webViewGag {
+            output.append(presentation.line, terminator: "")
+            offerImages(in: presentation.line)
+            hasPendingPrompt = true
+        } else {
+            hasPendingPrompt = false
+        }
+        if !presentation.gagLog { appendToLogs(presentation.line) }
+    }
+
+    private func consumeGrabResponse(_ text: String) -> Bool {
+        guard let prefix = grabPrefix, text.hasPrefix(prefix) else { return false }
+        let assignment = String(text.dropFirst(prefix.count))
+        grabPrefix = nil
+        input.text = assignment
+        window?.makeFirstResponder(input)
+        appendClient("Grab complete. The editable property assignment is in the command input.")
+        return true
     }
 
     private func submitInput(_ value: String) {
@@ -1343,19 +1548,29 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func sendToSession(_ text: String) {
-        guard let session else { appendError("Not connected."); return }
+        guard session != nil || puppetMaster != nil else { appendError("Not connected."); return }
         Task { [weak self, scriptService] in
             guard let self else { return }
             let result = await scriptService.dispatchConnectionEvent("send", arguments: [text], host: scriptHostSnapshot)
             applyScriptEvaluation(result, showValue: false)
-            transmitToSession(text, session: session)
+            transmitToSession(text)
         }
     }
 
     private func transmitToSession(_ text: String, session explicitSession: SessionActor? = nil) {
-        guard let session = explicitSession ?? session else { appendError("Not connected."); return }
         appendSentToLogs(text)
         webViewWindows.values.forEach { $0.observeSent(text) }
+        if let puppet = currentPuppet, let master = puppetMaster {
+            master.transmitPuppetWire(PuppetRouter.outgoing(text, for: puppet))
+            return
+        }
+        guard let session = explicitSession ?? session else { appendError("Not connected."); return }
+        let outbound = text
+        Task { await session.send(outbound) }
+    }
+
+    private func transmitPuppetWire(_ text: String) {
+        guard let session else { appendError("The character connection is not connected."); return }
         Task { await session.send(text) }
     }
 
@@ -1527,8 +1742,13 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
             return
         }
         let settings = preferences.logging
-        let legacy = currentServer.flatMap {
-            profileLibrary.workspace.projection.automaticLog(for: $0, character: currentCharacter)
+        let legacy: (filename: String, appendsDate: Bool)? = if let puppet = currentPuppet,
+                                                               !puppet.logFilename.isEmpty {
+            (puppet.logFilename, puppet.logAppendsDate)
+        } else {
+            currentServer.flatMap {
+                profileLibrary.workspace.projection.automaticLog(for: $0, character: currentCharacter)
+            }
         }
         let template = legacy?.filename ?? settings.defaultLogFilename
         guard legacy != nil || settings.autoLogEnabled,
@@ -1635,6 +1855,160 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
         } catch {
             appendError("Alias error: \(error.localizedDescription)")
             sendToSession(text)
+        }
+    }
+
+    private func reloadCurrentAutomation() {
+        guard let server = currentServer else {
+            variables = [:]
+            aliasGroups = []
+            triggerGroups = []
+            keyboardMacroGroups = []
+            return
+        }
+        variables = profileLibrary.workspace.projection.variables(
+            for: server,
+            character: currentCharacter,
+            puppet: currentPuppet
+        )
+        let groups = profileLibrary.workspace.projection.automationGroups(
+            for: server,
+            character: currentCharacter,
+            puppet: currentPuppet
+        )
+        aliasGroups = groups.aliases
+        triggerGroups = groups.triggers
+        keyboardMacroGroups = profileLibrary.workspace.projection.macroGroups(
+            for: server,
+            character: currentCharacter,
+            puppet: currentPuppet
+        )
+    }
+
+    private func showAIWindow(prompt: String? = nil) {
+        let controller: AIWindowController
+        let isNew: Bool
+        if let aiWindow {
+            controller = aiWindow
+            isNew = false
+        } else {
+            controller = AIWindowController(profileKey: notesKey)
+            isNew = true
+            controller.onClose = { [weak self, weak controller] in
+                guard let self, self.aiWindow === controller else { return }
+                if !self.preservingAIPlacement {
+                    self.dockController.undockPane(.ai)
+                }
+                self.aiWindow = nil
+            }
+            controller.onDockRequest = { [weak self, weak controller] side in
+                guard let self, let controller else { return }
+                self.dockAIWindow(controller, side: side)
+            }
+            controller.onSubmit = { [weak self, weak controller] value in
+                guard let self else { return }
+                let endpoint = self.currentServer?.aiEndpoint
+                let model = self.currentServer?.aiModel ?? ""
+                self.aiRequestTask?.cancel()
+                self.aiRequestTask = Task {
+                    do {
+                        let result = try await self.aiClient.request(
+                            .init(prompt: value, model: model),
+                            endpoint: endpoint,
+                            apiKey: ProcessInfo.processInfo.environment["BEIPMU_AI_API_KEY"]
+                        )
+                        guard !Task.isCancelled else { return }
+                        controller?.showResponse(result, for: value)
+                    } catch is CancellationError {
+                        return
+                    } catch {
+                        guard !Task.isCancelled else { return }
+                        controller?.showError(error.localizedDescription)
+                    }
+                }
+            }
+            aiWindow = controller
+        }
+        controller.updateEndpoint(currentServer?.aiEndpoint)
+        controller.applyTheme(preferences.theme.palette)
+        if isNew {
+            presentAIWindow(controller)
+        } else if !controller.isDocked {
+            controller.showFloating(self)
+        }
+        if let prompt, !prompt.isEmpty {
+            controller.submitPrompt(prompt)
+        }
+    }
+
+    private func presentAIWindow(_ controller: AIWindowController) {
+        guard !controller.isDocked else { return }
+        let view = controller.contentViewForDocking()
+        if dockController.restorePane(
+            .ai,
+            view: view,
+            title: "AI",
+            onUndock: { [weak self, weak controller] in
+                guard let self, let controller else { return }
+                self.dockController.undockPane(.ai)
+                controller.showFloating(self)
+            }
+        ) {
+            return
+        }
+        dockAIWindow(controller, side: .bottom)
+    }
+
+    private func dockAIWindow(_ controller: AIWindowController, side: WebViewDockSide) {
+        dockController.dockPane(
+            .ai,
+            view: controller.contentViewForDocking(),
+            title: "AI",
+            side: side,
+            onUndock: { [weak self, weak controller] in
+                guard let self, let controller else { return }
+                self.dockController.undockPane(.ai)
+                controller.showFloating(self)
+            }
+        )
+    }
+
+    private func closeAIWindow(preservingDockPlacement: Bool) {
+        guard let controller = aiWindow else { return }
+        aiRequestTask?.cancel()
+        aiRequestTask = nil
+        preservingAIPlacement = preservingDockPlacement
+        if preservingDockPlacement, controller.isDocked {
+            dockController.releasePane(.ai)
+        }
+        controller.closeSurface()
+        preservingAIPlacement = false
+        aiWindow = nil
+    }
+
+    private func recallOutput(lineCount: Int, search: String) {
+        let retained = output.retainedLines
+        let start = max(0, retained.count - lineCount)
+        let matches = retained[start...].filter {
+            $0.text.range(of: search, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+        }
+        appendClient("Recall - Starting")
+        matches.forEach { output.append($0) }
+        appendClient("Recall - Finished")
+    }
+
+    private func runCompatibilityTest(_ kind: String) {
+        guard let payload = CommandTestFixtures.payload(for: kind) else { return }
+        if let session {
+            Task { await session.receive(payload) }
+        } else {
+            var processor = MUDProtocolPipeline(encoding: .utf8, pueblo: true, puebloActive: true)
+            for event in processor.consume(Data(payload.utf8)) {
+                switch event {
+                case let .line(line), let .prompt(line): output.append(line)
+                default: break
+                }
+            }
         }
     }
 
@@ -2038,6 +2412,32 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
             NSApplication.shared.sendAction(#selector(ApplicationDelegate.newTab(_:)), to: nil, from: nil)
         case let .newInput(prefix, unique): showNewInputWindow(prefix: prefix, unique: unique)
         case let .newEdit(options): showNewEditWindow(options: options)
+        case let .ai(prompt): showAIWindow(prompt: prompt)
+        case let .gag(text):
+            do {
+                _ = try profileLibrary.mutate { try $0.addOrActivateGlobalGag(text) }
+                reloadCurrentAutomation()
+                appendClient("Gag activated for: \(text)")
+            } catch { appendError("Gag: \(error.localizedDescription)") }
+        case let .grab(object, property):
+            guard session != nil else { appendError("Not connected."); return }
+            let token = String(format: "%08X", UInt32.random(in: UInt32.min...UInt32.max))
+            grabPrefix = token + " "
+            sendToSession("@pemit me=\(grabPrefix!)&\(property) \(object)=[get(\(object)/\(property))]")
+        case let .recall(lineCount, search): recallOutput(lineCount: lineCount, search: search)
+        case .resetConfiguration:
+            disconnect()
+            do {
+                try profileLibrary.newConfiguration()
+                currentServer = nil
+                currentCharacter = nil
+                currentPuppet = nil
+                reloadCurrentAutomation()
+                appendClient("Configuration reset.")
+            } catch { appendError("Unable to reset configuration: \(error.localizedDescription)") }
+        case .rollTest:
+            appendClient(DiceFairnessReport.run().displayText)
+        case let .compatibilityTest(kind): runCompatibilityTest(kind)
         case let .webView(request): openWebView(request)
         case .silence:
             mediaController.stop(name: nil)
@@ -2086,7 +2486,11 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
             let match = currentCharacter?.puppets.first {
                 $0.name.caseInsensitiveCompare(name) == .orderedSame
             }
-            if let match { appendClient("Puppet routing profile selected: \(match.name)") }
+            if let match, let server = currentServer, let character = currentCharacter {
+                _ = (NSApp.delegate as? ApplicationDelegate)?.openPuppet(
+                    master: self, server: server, character: character, puppet: match
+                )
+            }
             else { appendError("Puppet profile not found: \(name)") }
         case .stopLogs: stopAllLogs()
         case let .startLog(filename, history): startLog(template: filename, history: history)
@@ -2169,9 +2573,9 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
     private func savePreferences() { WorkspacePreferencesStore.save(preferences) }
 
     private var notesKey: String {
-        ([currentServer?.name, currentCharacter?.name].compactMap { $0 }.joined(separator: "/").isEmpty
+        ([currentServer?.name, currentCharacter?.name, currentPuppet?.name].compactMap { $0 }.joined(separator: "/").isEmpty
             ? "Untitled"
-            : [currentServer?.name, currentCharacter?.name].compactMap { $0 }.joined(separator: "/"))
+            : [currentServer?.name, currentCharacter?.name, currentPuppet?.name].compactMap { $0 }.joined(separator: "/"))
             .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
     }
 
@@ -2766,9 +3170,20 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
                     } else {
                         controller = .init(title: name)
                         controller.onClose = { [weak self] in self?.tileMapWindows.removeValue(forKey: name) }
+                        controller.onChange = { [weak self] map in
+                            guard let self else { return }
+                            self.gmcpState.updateTileMap(map)
+                            self.preferences.tileMapEdits[self.notesKey, default: [:]][name] = map
+                            self.savePreferences()
+                        }
                         tileMapWindows[name] = controller
                     }
-                    controller.update(map)
+                    let restored = preferences.tileMapEdits[notesKey]?[name]
+                    let displayMap = restored.map {
+                        $0.columns == map.columns && $0.rows == map.rows && $0.tiles.count == map.tiles.count ? $0 : map
+                    } ?? map
+                    if displayMap != map { gmcpState.updateTileMap(displayMap) }
+                    controller.update(displayMap)
                     controller.showWindow(self)
                 case let .roomInfo(room):
                     activityLabel.stringValue = room.area.isEmpty ? "Room: \(room.name)" : "Room: \(room.name) — \(room.area)"
