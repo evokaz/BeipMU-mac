@@ -51,7 +51,7 @@ let package = Package(
         ),
         .testTarget(name: "BeipCoreTests", dependencies: ["BeipCore"]),
         .testTarget(name: "BeipProtocolsTests", dependencies: ["BeipProtocols", "BeipCore", "BeipTestSupport"]),
-        .testTarget(name: "BeipPersistenceTests", dependencies: ["BeipPersistence", "BeipCore"]),
+        .testTarget(name: "BeipPersistenceTests", dependencies: ["BeipPersistence", "BeipCore", "BeipAutomation", "BeipProtocols"]),
         .testTarget(name: "BeipAutomationTests", dependencies: ["BeipAutomation", "BeipCore"]),
         .testTarget(name: "BeipScriptRuntimeTests", dependencies: ["BeipScriptRuntime", "BeipTestSupport"]),
         .testTarget(name: "BeipUITests", dependencies: ["BeipUI"]),

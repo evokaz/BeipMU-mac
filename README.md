@@ -60,7 +60,7 @@ Milestone 4 is complete, including hierarchical aliases, macros, triggers and
 their portable v331 actions, deterministic delays, logging/autolog/restore,
 native automation/debug panels, and the isolated JavaScriptCore runtime.
 
-Milestone 5 is in progress. Its first vertical slice adds incremental
+Milestone 5 is complete. Its first vertical slice adds incremental
 `beip.stats`, `beip.id` avatars, typed `room.info`, Hex/Base64/compressed
 tilemap decoding with zoomable native panes, `/tilemap`, and a native image
 viewer. Its second slice adds rich standalone/grouped trigger spawns with
@@ -91,15 +91,19 @@ the portable debugger set, adds repair-capable `/restoreinfo`, honors native
 contrast/non-color/transparency/motion settings, and adds deterministic
 keyboard accessibility, seeded parser/persistence properties, concurrent and
 fragmented fake-server sessions, and the signed universal release package.
-All 226 Swift tests, six XCUITests, six visual baselines, performance/leak
-gates, and 750 generated parity rows pass. Versioned `/debugnetwork`,
-`/restoreinfo`, `/stats`, rich stats, tilemap, atlas/map, image-pane, and
-reproducible WebView-crash evidence was captured from the designated
-`win11-dev` VM; successful Client.Media Windows replay and
-assisted VoiceOver/audio/device gates pass on the latest Apple-silicon device,
-with macOS 14 Intel accepted as an explicit assumption for this task. The
-remaining Windows capture and release-wide replay gates still block Milestone 5
-completion.
+Its ninth and final slice lands the two closing Windows gates on the
+designated `win11-dev` VM: a successful Client.Media trace (real loopback
+GMCP negotiation, composed default-URL WAV download with HTTP 200, and
+`/mcmp info` showing the cached sound playing with its decoded duration) and
+the release-wide replay corpus (`Tests/Golden/windows-v331-replay-*`) whose
+fragmented-ANSI rendering, gag/spawn/send triggers, wire-level alias
+expansion, Windows-written plain/HTML logs, `/@ SetOnReceive` callback
+ordering, and post-session configuration save are replayed through the
+portable engines by `WindowsReplayDifferentialTests`. All 230 Swift tests,
+six XCUITests, six visual baselines, performance/leak gates, and 750
+generated parity rows pass. Assisted VoiceOver/audio/device gates pass on the
+latest Apple-silicon device, with macOS 14 Intel accepted as an explicit
+assumption for this task.
 
 This is an executable foundation rather than a parity release. Milestone status
 is recorded in `Documentation/MILESTONES.md`; remaining compatibility work and
