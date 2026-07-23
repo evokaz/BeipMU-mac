@@ -108,3 +108,5 @@ assumption for this task.
 This is an executable foundation rather than a parity release. Milestone status
 is recorded in `Documentation/MILESTONES.md`; remaining compatibility work and
 its required differential evidence are tracked in `Documentation/PARITY.md`.
+The ordered working roadmap to the full-parity release is
+`Documentation/PARITY_RELEASE_PLAN.md`.
