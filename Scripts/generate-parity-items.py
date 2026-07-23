@@ -17,10 +17,11 @@ OUTPUT = REPOSITORY / "Documentation" / "PARITY_ITEMS.json"
 
 IMPLEMENTED_COMMANDS = {
     "?", "ansireset", "autolog", "capturecancel", "clear", "debugaliases",
-    "debugtimers", "debugtriggers", "delay", "echo", "gmcp", "help", "idle",
-    "lizards", "log", "logall", "logtop", "makali", "naws", "printenv",
-    "receive", "repeat", "resetscript", "roll", "script", "set", "setinput",
-    "shelp", "stoplogs", "ttype", "unset",
+    "debugnetwork", "debugtimers", "debugtriggers", "delay", "echo", "gmcp", "help", "idle",
+    "lizards", "log", "logall", "logtop", "makali", "map_addexit", "map_addroom",
+    "map_guesslocation", "map_look", "mcmp", "naws", "printenv",
+    "receive", "repeat", "resetscript", "restoreinfo", "roll", "script", "set", "setinput",
+    "shelp", "stoplogs", "switchtab", "tilemap", "ttype", "unset", "webview",
 }
 PARTIAL_COMMANDS = {
     "chars", "close", "connect", "connectioninfo", "disconnect", "exit",
@@ -28,11 +29,16 @@ PARTIAL_COMMANDS = {
     "puppets", "receivegmcp", "reconnect", "removelast",
     "silence", "slist", "stats", "wall", "world",
 }
-IMPLEMENTED_PROTOCOLS = {"ANSI", "BINARY", "CHARSET", "EOR", "GMCP", "MTTS", "NAWS", "Pueblo", "TTYPE", "Telnet"}
+IMPLEMENTED_PROTOCOLS = {"ANSI", "BINARY", "CHARSET", "Client.Media", "EOR", "GMCP", "MCP", "MCMP", "MTTS", "NAWS", "Pueblo", "TTYPE", "Telnet", "Tilemap", "WebView"}
 PARTIAL_PROTOCOLS = set()
+IMPLEMENTED_WINDOWS = {
+    "DockedWindow", "FloatingWindow", "MapWindow", "SpawnWindow",
+    "SpawnTabsWindow", "StatsWindow", "TileMapWindow", "WebViewWindow",
+}
+PARTIAL_WINDOWS = set()
 PLATFORM_EXCEPTIONS = {"App.ActiveXObject", "Window_Properties.HWND"}
 IMPLEMENTED_SETTING_OWNERS = {
-    "Alias", "Aliases", "KeyboardMacro", "KeyboardMacros2", "Logging", "Stat_Int", "Stat_Range",
+    "Alias", "Aliases", "KeyboardMacro", "KeyboardMacros2", "Logging", "MapWindow", "Stat_Int", "Stat_Range",
     "Trigger", "Trigger_Activate", "Trigger_Avatar", "Trigger_Color", "Trigger_Filter",
     "Trigger_Gag", "Trigger_Paragraph", "Trigger_Script", "Trigger_Send", "Trigger_Sound",
     "Trigger_Spawn", "Trigger_Speech", "Trigger_Stat", "Trigger_Style", "Trigger_Toast", "Triggers",
@@ -40,22 +46,49 @@ IMPLEMENTED_SETTING_OWNERS = {
 IMPLEMENTED_SETTING_IDENTIFIERS = {
     "Character.Aliases", "Character.KeyboardMacros2", "Character.Triggers",
     "Connections.Aliases", "Connections.KeyboardMacros2", "Connections.Logging", "Connections.Triggers",
-    "Global.ScriptStartup", "Server.Aliases", "Server.KeyboardMacros2", "Server.Triggers",
+    "Global.ScriptDebug", "Global.ScriptStartup", "Server.Aliases", "Server.KeyboardMacros2", "Server.Triggers",
 }
 IMPLEMENTED_SCRIPT_MEMBERS = {
     "App.Aliases", "App.BuildNumber", "App.ConfigPath", "App.NewTrigger", "App.OutputDebugHTML",
     "App.OutputDebugText", "App.PlaySound", "App.StopSounds", "App.Triggers", "App.Version",
+    "App.BuildDate", "App.CreateInterval", "App.CreateTimeout", "App.ForwardDNSLookup", "App.IsAddress",
+    "App.New_Socket", "App.New_SocketServer", "App.ReverseDNSLookup",
+    "App.NewWindow", "App.NewWindow_FixedText", "App.NewWindow_Graphics", "App.NewWindow_Text", "App.SetOnNewWindow",
     "App.Windows", "App.Worlds", "ArrayUInt.Count", "ArrayUInt.Item", "Beip.App", "Beip.Window",
     "Connection.Display", "Connection.IsConnected", "Connection.IsLogging", "Connection.Receive",
     "Connection.Send", "Connection.Transmit", "Connection.Window_Main", "TextWindowLine.HTMLString",
+    "Connection.Character", "Connection.Log", "Connection.Puppet", "Connection.Reconnect", "Connection.World",
+    "Connection.SetOnConnect", "Connection.SetOnDisconnect", "Connection.SetOnDisplay", "Connection.SetOnGMCP",
+    "Connection.SetOnReceive", "Connection.SetOnSend",
     "TextWindowLine.Length", "TextWindowLine.String", "Window_Input.Get", "Window_Input.GetSelEnd",
-    "Window_Input.GetSelStart", "Window_Input.Length", "Window_Input.Set", "Window_Input.SetSel",
+    "TextWindowLine.BgColor", "TextWindowLine.Blink", "TextWindowLine.Bold", "TextWindowLine.Color",
+    "TextWindowLine.Delete", "TextWindowLine.Flash", "TextWindowLine.FlashMode", "TextWindowLine.Insert",
+    "TextWindowLine.Italic", "TextWindowLine.Strikeout", "TextWindowLine.Underline",
+    "Timer.Active", "Timer.UserData",
+    "Socket.Close", "Socket.Connect", "Socket.IsConnected", "Socket.Send", "Socket.SetFlag",
+    "Socket.SetOnConnect", "Socket.SetOnDisconnect", "Socket.SetOnReceive", "Socket.UserData",
+    "SocketServer.Shutdown",
+    "Docking.Dock", "Log.FileName", "Log.Write", "Log.WriteLine",
+    "Window_FixedText.Clear", "Window_FixedText.CursorX", "Window_FixedText.CursorY",
+    "Window_FixedText.Events", "Window_FixedText.Properties", "Window_FixedText.Write",
+    "Window_Graphics.Clear", "Window_Graphics.Events", "Window_Graphics.GetPixel", "Window_Graphics.Height",
+    "Window_Graphics.LineTo", "Window_Graphics.MoveTo", "Window_Graphics.Properties", "Window_Graphics.SetPen",
+    "Window_Graphics.SetPixel", "Window_Graphics.Text", "Window_Graphics.Width",
+    "Window_Events.SetOnClose", "Window_Events.SetOnKey", "Window_Events.SetOnMouseMove",
+    "Window_Input.GetSelStart", "Window_Input.Length", "Window_Input.Prefix", "Window_Input.Set", "Window_Input.SetSel", "Window_Input.Title",
     "Window_Main.Activity", "Window_Main.AddImportantActivity", "Window_Main.Close",
     "Window_Main.Connection", "Window_Main.DeleteVariable", "Window_Main.GetVariable",
     "Window_Main.History", "Window_Main.Input", "Window_Main.Output", "Window_Main.Run",
-    "Window_Main.RunFile", "Window_Main.SetVariable", "Window_Main.Title", "Window_Main.UserData",
+    "Window_Main.CreateDialogConnect", "Window_Main.RunFile", "Window_Main.SetOnActivate", "Window_Main.SetOnClose",
+    "Window_Main.GetInput", "Window_Main.GetSpawnTabs", "Window_Main.SetOnCommand", "Window_Main.SetVariable", "Window_Main.Title", "Window_Main.TitlePrefix", "Window_Main.UserData",
+    "Window_SpawnTabs.SetOnTabActivate",
     "Window_Properties.Title", "Window_Text.Add", "Window_Text.Create", "Window_Text.Paused",
-    "Window_Text.Write", "Window_Text.WriteHTML", "Windows.Count", "Windows.Item",
+    "Window_Text.CreateHTML", "Window_Text.Properties", "Window_Text.SetOnPause", "Window_Text.Write", "Window_Text.WriteHTML", "Windows.Count", "Windows.Item",
+    "WebView.AddToInputHistory", "WebView.ClearOnDisplay", "WebView.ClearOnDisplayCapture",
+    "WebView.ClearOnGMCP", "WebView.CloseWindow", "WebView.Display", "WebView.GetPropertyString",
+    "WebView.IsConnected", "WebView.ProcessAliases", "WebView.Receive", "WebView.Send",
+    "WebView.SendGMCP", "WebView.SetOnConnect", "WebView.SetOnDisconnect", "WebView.SetOnDisplay",
+    "WebView.SetOnDisplayCapture", "WebView.SetOnGMCP", "WebView.SetOnReceive", "WebView.SetOnSend",
 }
 
 
@@ -171,13 +204,24 @@ def declared_surface_items() -> list[dict]:
                 status = "implemented" if name in IMPLEMENTED_PROTOCOLS else "partial" if name in PARTIAL_PROTOCOLS else "planned"
             elif category == "trigger-action":
                 status = "implemented"
-            elif category == "window-dialog" and name in {"Aliases", "Triggers", "Macros"}:
-                status = "partial"
+            elif category == "window-dialog":
+                if name in IMPLEMENTED_WINDOWS:
+                    status = "implemented"
+                elif name in {"Aliases", "Triggers", "Macros"} | PARTIAL_WINDOWS:
+                    status = "partial"
             entry = item(category, name, "UPSTREAM_INVENTORY.md", 1, f"Observable {category} surface: {name}", status)
             if category == "trigger-action":
                 entry["differentialFixture"] = "AutomationTests; LegacyConfigTests; pinned v331 Connection.cpp/Root.prp semantics"
             if category == "protocol" and name in {"Telnet", "BINARY", "EOR"}:
                 entry["differentialFixture"] = "TelnetParserTests; Tests/Golden/windows-v331-session.trace.json"
+            if category == "protocol" and name in {"MCP", "MCMP", "Client.Media"}:
+                entry["differentialFixture"] = (
+                    "MCPParserTests; ClientMediaTests; "
+                    "Documentation/Evidence/M5/win11-dev/windows-mcp-trace.json; "
+                    "Windows Client.Media differential pending"
+                )
+            if category == "protocol" and name == "WebView":
+                entry["differentialFixture"] = "WebViewProtocolTests; WorkspacePreferencesTests WebKit bridge conformance; Windows differential pending"
             result.append(entry)
     return result
 

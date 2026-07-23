@@ -2,11 +2,13 @@ import BeipCore
 import Foundation
 
 @objc public protocol ScriptServiceProtocol {
-    func evaluate(_ source: NSString, hostJSON: NSString, reply: @escaping (NSString?, NSString?, NSString?) -> Void)
-    func call(_ function: NSString, arguments: [NSString], hostJSON: NSString, reply: @escaping (NSString?, NSString?, NSString?) -> Void)
-    func callTrigger(_ function: NSString, ranges: [NSNumber], lineJSON: NSString, hostJSON: NSString, reply: @escaping (NSString?, NSString?, NSString?) -> Void)
-    func reset(reply: @escaping () -> Void)
-    func helpTypes(reply: @escaping ([NSString]) -> Void)
+    func evaluate(_ source: NSString, hostJSON: NSString, reply: @escaping @Sendable (NSString?, NSString?, NSString?) -> Void)
+    func call(_ function: NSString, arguments: [NSString], hostJSON: NSString, reply: @escaping @Sendable (NSString?, NSString?, NSString?) -> Void)
+    func callTrigger(_ function: NSString, ranges: [NSNumber], lineJSON: NSString, hostJSON: NSString, reply: @escaping @Sendable (NSString?, NSString?, NSString?) -> Void)
+    func dispatchConnectionEvent(_ event: NSString, arguments: [NSString], lineJSON: NSString, hostJSON: NSString, reply: @escaping @Sendable (NSString?, NSString?, NSString?) -> Void)
+    func drainOutputs(reply: @escaping @Sendable (NSString?) -> Void)
+    func reset(reply: @escaping @Sendable () -> Void)
+    func helpTypes(reply: @escaping @Sendable ([NSString]) -> Void)
 }
 
 public actor ScriptServiceClient {
@@ -14,6 +16,8 @@ public actor ScriptServiceClient {
     private var connectionGeneration: UUID?
     private var pending: [UUID: CheckedContinuation<ScriptEvaluation, Never>] = [:]
     private var watchdogs: [UUID: Task<Void, Never>] = [:]
+    private var outputPoller: Task<Void, Never>?
+    private var asyncOutputHandler: (@MainActor @Sendable ([ScriptOutput]) -> Void)?
     /// Matches the three-second watchdog before the Windows client exposes
     /// its script-abort UI. A fresh XPC connection gives macOS a recoverable
     /// boundary even though JavaScriptCore cannot interrupt a tight loop.
@@ -21,26 +25,44 @@ public actor ScriptServiceClient {
 
     public init() {}
 
+    public func startAsyncOutputDelivery(
+        _ handler: @escaping @MainActor @Sendable ([ScriptOutput]) -> Void
+    ) {
+        asyncOutputHandler = handler
+        guard outputPoller == nil else { return }
+        outputPoller = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .milliseconds(50))
+                } catch {
+                    return
+                }
+                await self?.pollAsyncOutputs()
+            }
+        }
+    }
+
+    public func stopAsyncOutputDelivery() {
+        outputPoller?.cancel()
+        outputPoller = nil
+        asyncOutputHandler = nil
+    }
+
     public func evaluate(_ source: String, host: ScriptHostSnapshot = .init()) async -> ScriptEvaluation {
         let id = UUID()
         let connection = activeConnection()
         return await withCheckedContinuation { continuation in
             register(continuation, id: id)
-            let proxy = connection.remoteObjectProxyWithErrorHandler { error in
-                Task { self.complete(id: id, result: .init(error: error.localizedDescription)) }
-            }
+            let proxy = connection.remoteObjectProxyWithErrorHandler(makeErrorHandler(id: id))
             guard let service = proxy as? ScriptServiceProtocol else {
                 complete(id: id, result: .init(error: "Unable to create the BeipMU script service proxy."))
                 return
             }
-            service.evaluate(source as NSString, hostJSON: Self.encodeHost(host) as NSString) { value, error, outputs in
-                let result = ScriptEvaluation(
-                    value: value as String?,
-                    error: error as String?,
-                    outputs: Self.decodeOutputs(outputs as String?)
-                )
-                Task { self.complete(id: id, result: result) }
-            }
+            service.evaluate(
+                source as NSString,
+                hostJSON: Self.encodeHost(host) as NSString,
+                reply: makeEvaluationReply(id: id)
+            )
         }
     }
 
@@ -49,21 +71,17 @@ public actor ScriptServiceClient {
         let connection = activeConnection()
         return await withCheckedContinuation { continuation in
             register(continuation, id: id)
-            let proxy = connection.remoteObjectProxyWithErrorHandler { error in
-                Task { self.complete(id: id, result: .init(error: error.localizedDescription)) }
-            }
+            let proxy = connection.remoteObjectProxyWithErrorHandler(makeErrorHandler(id: id))
             guard let service = proxy as? ScriptServiceProtocol else {
                 complete(id: id, result: .init(error: "Unable to create the BeipMU script service proxy."))
                 return
             }
-            service.call(function as NSString, arguments: arguments.map { $0 as NSString }, hostJSON: Self.encodeHost(host) as NSString) { value, error, outputs in
-                let result = ScriptEvaluation(
-                    value: value as String?,
-                    error: error as String?,
-                    outputs: Self.decodeOutputs(outputs as String?)
-                )
-                Task { self.complete(id: id, result: result) }
-            }
+            service.call(
+                function as NSString,
+                arguments: arguments.map { $0 as NSString },
+                hostJSON: Self.encodeHost(host) as NSString,
+                reply: makeEvaluationReply(id: id)
+            )
         }
     }
 
@@ -78,9 +96,7 @@ public actor ScriptServiceClient {
         let flattened = ranges.flatMap { [$0.location, NSMaxRange($0)] }.map(NSNumber.init(value:))
         return await withCheckedContinuation { continuation in
             register(continuation, id: id)
-            let proxy = connection.remoteObjectProxyWithErrorHandler { error in
-                Task { self.complete(id: id, result: .init(error: error.localizedDescription)) }
-            }
+            let proxy = connection.remoteObjectProxyWithErrorHandler(makeErrorHandler(id: id))
             guard let service = proxy as? ScriptServiceProtocol else {
                 complete(id: id, result: .init(error: "Unable to create the BeipMU script service proxy."))
                 return
@@ -89,15 +105,34 @@ public actor ScriptServiceClient {
                 function as NSString,
                 ranges: flattened,
                 lineJSON: Self.encodeLine(line) as NSString,
-                hostJSON: Self.encodeHost(host) as NSString
-            ) { value, error, outputs in
-                let result = ScriptEvaluation(
-                    value: value as String?,
-                    error: error as String?,
-                    outputs: Self.decodeOutputs(outputs as String?)
-                )
-                Task { self.complete(id: id, result: result) }
+                hostJSON: Self.encodeHost(host) as NSString,
+                reply: makeEvaluationReply(id: id)
+            )
+        }
+    }
+
+    public func dispatchConnectionEvent(
+        _ event: String,
+        arguments: [String] = [],
+        line: RenderedLine? = nil,
+        host: ScriptHostSnapshot = .init()
+    ) async -> ScriptEvaluation {
+        let id = UUID()
+        let connection = activeConnection()
+        return await withCheckedContinuation { continuation in
+            register(continuation, id: id)
+            let proxy = connection.remoteObjectProxyWithErrorHandler(makeErrorHandler(id: id))
+            guard let service = proxy as? ScriptServiceProtocol else {
+                complete(id: id, result: .init(error: "Unable to create the BeipMU script service proxy."))
+                return
             }
+            service.dispatchConnectionEvent(
+                event as NSString,
+                arguments: arguments.map { $0 as NSString },
+                lineJSON: Self.encodeOptionalLine(line) as NSString,
+                hostJSON: Self.encodeHost(host) as NSString,
+                reply: makeEvaluationReply(id: id)
+            )
         }
     }
 
@@ -110,7 +145,25 @@ public actor ScriptServiceClient {
     }
 
     public func invalidate() {
+        outputPoller?.cancel()
+        outputPoller = nil
         terminate(reason: "Scripting service connection was invalidated.")
+    }
+
+    private func pollAsyncOutputs() async {
+        guard connection != nil, let asyncOutputHandler else { return }
+        let outputs = await withCheckedContinuation { continuation in
+            let proxy = activeConnection().remoteObjectProxyWithErrorHandler(
+                makeDrainErrorHandler(continuation: continuation)
+            )
+            guard let service = proxy as? ScriptServiceProtocol else {
+                continuation.resume(returning: [])
+                return
+            }
+            service.drainOutputs(reply: makeDrainReply(continuation: continuation))
+        }
+        guard !outputs.isEmpty else { return }
+        await asyncOutputHandler(outputs)
     }
 
     private func activeConnection() -> NSXPCConnection {
@@ -118,12 +171,14 @@ public actor ScriptServiceClient {
         let connection = NSXPCConnection(serviceName: "org.beipmu.BeipMU.ScriptService")
         let generation = UUID()
         connection.remoteObjectInterface = NSXPCInterface(with: ScriptServiceProtocol.self)
-        connection.interruptionHandler = { [weak self] in
-            Task { await self?.connectionFailed(generation: generation, reason: "Scripting service was interrupted; the runtime was reset.") }
-        }
-        connection.invalidationHandler = { [weak self] in
-            Task { await self?.connectionFailed(generation: generation, reason: "Scripting service was invalidated; the runtime was reset.") }
-        }
+        connection.interruptionHandler = makeConnectionFailureHandler(
+            generation: generation,
+            reason: "Scripting service was interrupted; the runtime was reset."
+        )
+        connection.invalidationHandler = makeConnectionFailureHandler(
+            generation: generation,
+            reason: "Scripting service was invalidated; the runtime was reset."
+        )
         connection.resume()
         self.connection = connection
         connectionGeneration = generation
@@ -157,6 +212,49 @@ public actor ScriptServiceClient {
         terminate(reason: reason)
     }
 
+    /// NSXPC invokes these blocks on its private queues. Building them from a
+    /// nonisolated context prevents Swift from attaching this actor's executor
+    /// to an Objective-C callback that must first hop back through `Task`.
+    private nonisolated func makeErrorHandler(id: UUID) -> @Sendable (Error) -> Void {
+        { [weak self] error in
+            Task { await self?.complete(id: id, result: .init(error: error.localizedDescription)) }
+        }
+    }
+
+    private nonisolated func makeEvaluationReply(
+        id: UUID
+    ) -> @Sendable (NSString?, NSString?, NSString?) -> Void {
+        { [weak self] value, error, outputs in
+            let result = ScriptEvaluation(
+                value: value as String?,
+                error: error as String?,
+                outputs: Self.decodeOutputs(outputs as String?)
+            )
+            Task { await self?.complete(id: id, result: result) }
+        }
+    }
+
+    private nonisolated func makeConnectionFailureHandler(
+        generation: UUID,
+        reason: String
+    ) -> @Sendable () -> Void {
+        { [weak self] in
+            Task { await self?.connectionFailed(generation: generation, reason: reason) }
+        }
+    }
+
+    private nonisolated func makeDrainErrorHandler(
+        continuation: CheckedContinuation<[ScriptOutput], Never>
+    ) -> @Sendable (Error) -> Void {
+        { _ in continuation.resume(returning: []) }
+    }
+
+    private nonisolated func makeDrainReply(
+        continuation: CheckedContinuation<[ScriptOutput], Never>
+    ) -> @Sendable (NSString?) -> Void {
+        { source in continuation.resume(returning: Self.decodeOutputs(source as String?)) }
+    }
+
     private func terminate(reason: String) {
         let oldConnection = connection
         connection = nil
@@ -187,5 +285,10 @@ public actor ScriptServiceClient {
         guard let data = try? JSONEncoder().encode(line),
               let source = String(data: data, encoding: .utf8) else { return "{}" }
         return source
+    }
+
+    private static func encodeOptionalLine(_ line: RenderedLine?) -> String {
+        guard let line else { return "null" }
+        return encodeLine(line)
     }
 }

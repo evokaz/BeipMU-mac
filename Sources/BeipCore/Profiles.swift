@@ -19,6 +19,7 @@ public struct ServerProfile: Identifiable, Sendable, Hashable, Codable {
     public var prompts: Bool
     public var mcp: Bool
     public var mcmp: Bool
+    public var gmcpWebViewPolicy: ServerWebViewPolicy?
     public var sendNAWSOnResize: Bool
     public var limitTelnetCharset: Bool
 
@@ -35,6 +36,7 @@ public struct ServerProfile: Identifiable, Sendable, Hashable, Codable {
         prompts: Bool = false,
         mcp: Bool = false,
         mcmp: Bool = false,
+        gmcpWebViewPolicy: ServerWebViewPolicy = .ask,
         sendNAWSOnResize: Bool = false,
         limitTelnetCharset: Bool = false
     ) {
@@ -50,6 +52,7 @@ public struct ServerProfile: Identifiable, Sendable, Hashable, Codable {
         self.prompts = prompts
         self.mcp = mcp
         self.mcmp = mcmp
+        self.gmcpWebViewPolicy = gmcpWebViewPolicy
         self.sendNAWSOnResize = sendNAWSOnResize
         self.limitTelnetCharset = limitTelnetCharset
     }

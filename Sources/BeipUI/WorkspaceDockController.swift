@@ -1,4 +1,5 @@
 import AppKit
+import BeipCore
 
 @MainActor
 final class WorkspaceDockController: NSObject, NSWindowDelegate, NSSplitViewDelegate, NSTextViewDelegate {
@@ -103,6 +104,54 @@ final class WorkspaceDockController: NSObject, NSWindowDelegate, NSSplitViewDele
         diagnosticsTextView.string = value
     }
 
+    func dockPane(
+        _ pane: WorkspacePaneKind,
+        view: NSView,
+        title: String,
+        side: WebViewDockSide,
+        fraction: Double = 0.72,
+        onUndock: (() -> Void)? = nil
+    ) {
+        precondition(!WorkspacePaneKind.allCases.contains(pane), "Built-in workspace panes cannot be dynamically replaced.")
+        paneViews[pane] = Self.wrapped(view, title: title, onUndock: onUndock)
+        placement = .right
+        rebuild(currentLayout.inserting(pane, side: side, fraction: fraction))
+        onLayoutChange?(currentLayout)
+        onPlacementChange?(placement, thickness)
+    }
+
+    @discardableResult
+    func restorePane(
+        _ pane: WorkspacePaneKind,
+        view: NSView,
+        title: String,
+        onUndock: (() -> Void)? = nil
+    ) -> Bool {
+        guard currentLayout.panes.contains(pane) else { return false }
+        paneViews[pane] = Self.wrapped(view, title: title, onUndock: onUndock)
+        rebuild(currentLayout)
+        return true
+    }
+
+    func undockPane(_ pane: WorkspacePaneKind) {
+        guard paneViews.removeValue(forKey: pane) != nil || currentLayout.panes.contains(pane) else { return }
+        let next = currentLayout.removing(pane) ?? .mainOnly
+        placement = next == .mainOnly ? .hidden : .right
+        rebuild(next)
+        onLayoutChange?(currentLayout)
+        onPlacementChange?(placement, thickness)
+    }
+
+    /// Releases a dynamic pane's live view while retaining its saved position.
+    /// A placeholder occupies the node until the corresponding session surface
+    /// is restored and calls `dockPane` again.
+    func releasePane(_ pane: WorkspacePaneKind) {
+        guard paneViews.removeValue(forKey: pane) != nil, currentLayout.panes.contains(pane) else { return }
+        rebuild(currentLayout)
+    }
+
+    func containsPane(_ pane: WorkspacePaneKind) -> Bool { currentLayout.panes.contains(pane) }
+
     func applyTheme(_ palette: WorkspaceThemePalette) {
         notesTextView.textColor = palette.foreground
         notesTextView.backgroundColor = palette.background
@@ -192,14 +241,14 @@ final class WorkspaceDockController: NSObject, NSWindowDelegate, NSSplitViewDele
     private func build(_ node: WorkspaceLayoutNode, path: [WorkspaceLayoutBranch]) -> NSView {
         switch node {
         case let .pane(kind):
-            return kind == .main ? mainView : paneViews[kind]!
+            return kind == .main ? mainView : view(for: kind)
         case let .tabs(panes, selected):
             let controller = NSTabViewController()
             controller.tabStyle = .segmentedControlOnTop
             for (index, pane) in panes.enumerated() {
                 let child = NSViewController()
                 child.title = pane.title
-                child.view = paneViews[pane]!
+                child.view = view(for: pane)
                 controller.addChild(child)
                 tabLocations[pane] = (controller, index)
             }
@@ -217,6 +266,17 @@ final class WorkspaceDockController: NSObject, NSWindowDelegate, NSSplitViewDele
             splitPaths[ObjectIdentifier(split)] = path
             return split
         }
+    }
+
+    private func view(for pane: WorkspacePaneKind) -> NSView {
+        if let existing = paneViews[pane] { return existing }
+        let placeholder = Self.wrapped(
+            NSTextField(wrappingLabelWithString: "This saved pane is waiting for its session content."),
+            title: pane.title
+        )
+        placeholder.setAccessibilityLabel("Unavailable saved pane: \(pane.title)")
+        paneViews[pane] = placeholder
+        return placeholder
     }
 
     private func applyDividerPositions(in view: NSView) {
@@ -276,7 +336,7 @@ final class WorkspaceDockController: NSObject, NSWindowDelegate, NSSplitViewDele
         floatingPanel = panel
     }
 
-    private static func wrapped(_ content: NSView, title: String) -> NSView {
+    private static func wrapped(_ content: NSView, title: String, onUndock: (() -> Void)? = nil) -> NSView {
         let root = NSView()
         let label = NSTextField(labelWithString: title)
         label.font = .systemFont(ofSize: 12, weight: .semibold)
@@ -285,15 +345,27 @@ final class WorkspaceDockController: NSObject, NSWindowDelegate, NSSplitViewDele
         content.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(label)
         root.addSubview(content)
-        NSLayoutConstraint.activate([
+        var constraints = [
             label.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 8),
-            label.trailingAnchor.constraint(lessThanOrEqualTo: root.trailingAnchor, constant: -8),
             label.topAnchor.constraint(equalTo: root.topAnchor, constant: 7),
             content.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             content.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             content.topAnchor.constraint(equalTo: label.bottomAnchor, constant: 5),
             content.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-        ])
+        ]
+        if let onUndock {
+            let button = DockPanePopOutButton(action: onUndock)
+            button.translatesAutoresizingMaskIntoConstraints = false
+            root.addSubview(button)
+            constraints += [
+                label.trailingAnchor.constraint(lessThanOrEqualTo: button.leadingAnchor, constant: -8),
+                button.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -8),
+                button.centerYAnchor.constraint(equalTo: label.centerYAnchor),
+            ]
+        } else {
+            constraints.append(label.trailingAnchor.constraint(lessThanOrEqualTo: root.trailingAnchor, constant: -8))
+        }
+        NSLayoutConstraint.activate(constraints)
         return root
     }
 
@@ -306,5 +378,52 @@ final class WorkspaceDockController: NSObject, NSWindowDelegate, NSSplitViewDele
             view.topAnchor.constraint(equalTo: container.topAnchor),
             view.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
+    }
+}
+
+@MainActor
+private final class DockPanePopOutButton: NSButton {
+    private let handler: () -> Void
+
+    init(action: @escaping () -> Void) {
+        handler = action
+        super.init(frame: .zero)
+        title = "Pop Out"
+        bezelStyle = .inline
+        controlSize = .small
+        target = self
+        self.action = #selector(performAction)
+        setAccessibilityLabel("Move pane to a separate window")
+    }
+
+    required init?(coder: NSCoder) { nil }
+    @objc private func performAction() { handler() }
+}
+
+@MainActor
+final class DockSurfaceAccessoryViewController: NSTitlebarAccessoryViewController {
+    var onDockRequest: ((WebViewDockSide) -> Void)?
+
+    override init(nibName nibNameOrNil: NSNib.Name?, bundle nibBundleOrNil: Bundle?) {
+        super.init(nibName: nibNameOrNil, bundle: nibBundleOrNil)
+        let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 92, height: 24), pullsDown: true)
+        popup.addItem(withTitle: "Dock…")
+        for side in WebViewDockSide.allCases {
+            let item = NSMenuItem(title: side.rawValue.capitalized, action: #selector(dock(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = side.rawValue
+            popup.menu?.addItem(item)
+        }
+        popup.setAccessibilityLabel("Dock window")
+        view = popup
+        layoutAttribute = .right
+    }
+
+    convenience init() { self.init(nibName: nil, bundle: nil) }
+    required init?(coder: NSCoder) { nil }
+
+    @objc private func dock(_ sender: NSMenuItem) {
+        guard let value = sender.representedObject as? String, let side = WebViewDockSide(rawValue: value) else { return }
+        onDockRequest?(side)
     }
 }

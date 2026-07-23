@@ -42,6 +42,8 @@ targets:
     platform: macOS
     sources:
       - path: ScriptService
+        excludes:
+          - Info.plist
     dependencies:
       - package: BeipModules
         product: BeipScriptRuntime
@@ -49,7 +51,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.beipmu.BeipMU.ScriptService
         PRODUCT_NAME: BeipScriptService
-        GENERATE_INFOPLIST_FILE: YES
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: ScriptService/Info.plist
         CODE_SIGN_STYLE: Automatic
         ENABLE_HARDENED_RUNTIME: NO
         SKIP_INSTALL: YES

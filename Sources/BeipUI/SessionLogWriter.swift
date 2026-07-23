@@ -40,6 +40,8 @@ final class SessionLogWriter {
     func append(_ line: RenderedLine) throws { try write(renderer.line(line)) }
     func appendTyped(_ text: String, at date: Date = Date()) throws { try write(renderer.typed(text, at: date)) }
     func appendSent(_ text: String, at date: Date = Date()) throws { try write(renderer.sent(text, at: date)) }
+    func appendScript(_ text: String) throws { try write(text) }
+    func appendScriptLine(_ text: String) throws { try write(renderer.line(.init(text: text))) }
 
     func stop() throws {
         guard handle != nil else { return }

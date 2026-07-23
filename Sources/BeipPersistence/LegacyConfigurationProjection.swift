@@ -45,9 +45,11 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
     /// runtime. The source document remains lossless for all other OM fields.
     public struct Scripting: Sendable, Equatable {
         public var startupPath: String
+        public var debugEnabled: Bool
 
-        public init(startupPath: String = "") {
+        public init(startupPath: String = "", debugEnabled: Bool = false) {
             self.startupPath = startupPath
+            self.debugEnabled = debugEnabled
         }
     }
 
@@ -55,15 +57,18 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
         public var profile: ServerProfile
         public var characters: [CharacterProfile]
         public var automation: Automation
+        public var restoreLogAssignments: [Int: String]
 
         public init(
             profile: ServerProfile,
             characters: [CharacterProfile],
-            automation: Automation = .init()
+            automation: Automation = .init(),
+            restoreLogAssignments: [Int: String] = [:]
         ) {
             self.profile = profile
             self.characters = characters
             self.automation = automation
+            self.restoreLogAssignments = restoreLogAssignments
         }
     }
 
@@ -141,7 +146,10 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
             tcpKeepAlive: document.rootBool("TCP_KeepAlive") ?? true,
             tcpNoDelay: document.rootBool("TCP_NoDelay") ?? true
         )
-        scripting = .init(startupPath: document.rootValue("ScriptStartup") ?? "")
+        scripting = .init(
+            startupPath: document.rootValue("ScriptStartup") ?? "",
+            debugEnabled: document.rootBool("ScriptDebug") ?? false
+        )
         let loggingNodes = connections.properties(named: "Logging")
         logging = Self.loggingOptions(from: loggingNodes)
         loggingPath = loggingNodes?.value("Path") ?? ""
@@ -172,11 +180,13 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
                 prompts: children.bool("Prompts") ?? false,
                 mcp: children.bool("MCP") ?? false,
                 mcmp: children.bool("MCMP") ?? false,
+                gmcpWebViewPolicy: children.value("GMCP_WebView").flatMap(Int.init).flatMap(ServerWebViewPolicy.init(rawValue:)) ?? .ask,
                 sendNAWSOnResize: children.bool("NAWSOnResize") ?? false,
                 limitTelnetCharset: children.bool("LimitTelnetCharset") ?? false
             )
             let characterNodes = children.firstBlock(named: "Characters")?.children ?? []
-            let characters = characterNodes.namedBlocks().map { characterName, properties in
+            let namedCharacters = characterNodes.namedBlocks()
+            let characters = namedCharacters.map { characterName, properties in
                 let puppetNodes = properties.firstBlock(named: "Puppets")?.children ?? []
                 let puppets = puppetNodes.namedBlocks().map { puppetName, puppetProperties in
                     PuppetProfile(
@@ -205,7 +215,16 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
             for (characterName, properties) in characterNodes.namedBlocks() {
                 serverAutomation.characters[characterName.folding(options: [.caseInsensitive], locale: .current)] = Self.scope(from: properties)
             }
-            return Server(profile: profile, characters: characters, automation: serverAutomation)
+            let restoreLogAssignments: [Int: String] = Dictionary(uniqueKeysWithValues: namedCharacters.compactMap { characterName, properties in
+                guard let index = properties.value("RestoreLogIndex").flatMap(Int.init), index >= 0 else { return nil }
+                return (index, "\(name) - \(characterName)")
+            })
+            return Server(
+                profile: profile,
+                characters: characters,
+                automation: serverAutomation,
+                restoreLogAssignments: restoreLogAssignments
+            )
         }
     }
 
@@ -288,6 +307,7 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
         try result.upsertValue(Self.flag(settings.tcpKeepAlive), at: ["TCP_KeepAlive"], quoted: false)
         try result.upsertValue(Self.flag(settings.tcpNoDelay), at: ["TCP_NoDelay"], quoted: false)
         try result.upsertValue(scripting.startupPath, at: ["ScriptStartup"])
+        try result.upsertValue(Self.flag(scripting.debugEnabled), at: ["ScriptDebug"], quoted: false)
 
         for server in servers {
             let base = ["Connections", "Shortcuts", server.profile.name]
@@ -303,6 +323,7 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
             ] {
                 try result.upsertValue(Self.flag(enabled), at: base + [name], quoted: false)
             }
+            try result.upsertValue(String((server.profile.gmcpWebViewPolicy ?? .ask).rawValue), at: base + ["GMCP_WebView"], quoted: false)
             for character in server.characters {
                 let characterBase = base + ["Characters", character.name]
                 try result.upsertValue(character.connectText, at: characterBase + ["Connect"])

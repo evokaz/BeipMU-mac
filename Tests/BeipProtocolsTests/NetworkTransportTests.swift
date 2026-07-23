@@ -143,6 +143,141 @@ final class NetworkTransportTests: XCTestCase {
         XCTAssertEqual(lines.last?.runs.last?.style.foreground, RGBColor(red: 0, green: 205, blue: 0))
     }
 
+    func testConcurrentScriptedSessionsKeepTrafficAndStateIsolated() async throws {
+        let firstServer = try ScriptedMUServer()
+        let secondServer = try ScriptedMUServer()
+        let firstPort = try await firstServer.start()
+        let secondPort = try await secondServer.start()
+        defer {
+            firstServer.stop()
+            secondServer.stop()
+        }
+
+        let firstSession = SessionActor(transport: NetworkTransport(), processor: MUDProtocolPipeline())
+        let secondSession = SessionActor(transport: NetworkTransport(), processor: MUDProtocolPipeline())
+        let firstRecorder = SessionEventRecorder()
+        let secondRecorder = SessionEventRecorder()
+        let firstLine = expectation(description: "first isolated line")
+        let secondLine = expectation(description: "second isolated line")
+        let firstDisconnected = expectation(description: "first isolated disconnect")
+        let secondDisconnected = expectation(description: "second isolated disconnect")
+
+        let firstEvents = await firstSession.events()
+        let secondEvents = await secondSession.events()
+        let firstEventTask = Task {
+            for await event in firstEvents {
+                await firstRecorder.append(event)
+                if case let .renderedLine(line) = event, line.text == "alpha" { firstLine.fulfill() }
+                if case .state(.disconnected) = event { firstDisconnected.fulfill(); return }
+            }
+        }
+        let secondEventTask = Task {
+            for await event in secondEvents {
+                await secondRecorder.append(event)
+                if case let .renderedLine(line) = event, line.text == "beta" { secondLine.fulfill() }
+                if case .state(.disconnected) = event { secondDisconnected.fulfill(); return }
+            }
+        }
+        defer {
+            firstEventTask.cancel()
+            secondEventTask.cancel()
+        }
+
+        await firstSession.connect(.init(server: .init(name: "first", host: "127.0.0.1", port: firstPort)))
+        await secondSession.connect(.init(server: .init(name: "second", host: "127.0.0.1", port: secondPort)))
+        let firstScript = MUServerScript(actions: [
+            .init(send: "alpha\n", chunks: [1, 2, 3]),
+            .init(expect: "one\r\n"),
+            .init(disconnect: true),
+        ])
+        let secondScript = MUServerScript(actions: [
+            .init(send: "beta\n", chunks: [2, 1, 2]),
+            .init(expect: "two\r\n"),
+            .init(disconnect: true),
+        ])
+        let firstScriptTask = Task { try await firstServer.run(firstScript) }
+        let secondScriptTask = Task { try await secondServer.run(secondScript) }
+
+        await fulfillment(of: [firstLine, secondLine], timeout: 3)
+        await firstSession.send("one")
+        await secondSession.send("two")
+        await fulfillment(of: [firstDisconnected, secondDisconnected], timeout: 3)
+        try await firstScriptTask.value
+        try await secondScriptTask.value
+
+        let firstLines = await firstRecorder.renderedLines()
+        let secondLines = await secondRecorder.renderedLines()
+        XCTAssertEqual(firstLines.map(\.text), ["alpha"])
+        XCTAssertEqual(secondLines.map(\.text), ["beta"])
+        XCTAssertFalse(firstLines.contains { $0.text == "beta" })
+        XCTAssertFalse(secondLines.contains { $0.text == "alpha" })
+    }
+
+    func testScriptedServerRoutesFragmentedWebViewAndMediaGMCPIntoPortableStates() async throws {
+        func gmcpAction(package: String, payload: String) -> MUServerAction {
+            let data = Data([255, 250, 201]) + Data("\(package) \(payload)".utf8) + Data([255, 240])
+            return .init(
+                sendHex: data.map { String(format: "%02x", $0) }.joined(),
+                chunks: [1, 2, data.count - 3]
+            )
+        }
+
+        let server = try ScriptedMUServer()
+        let port = try await server.start()
+        defer { server.stop() }
+        let session = SessionActor(transport: NetworkTransport(), processor: MUDProtocolPipeline())
+        let recorder = SessionEventRecorder()
+        let messages = expectation(description: "fragmented WebView and media GMCP")
+        messages.expectedFulfillmentCount = 3
+        let disconnected = expectation(description: "fragmented GMCP disconnect")
+        let stream = await session.events()
+        let eventTask = Task {
+            for await event in stream {
+                await recorder.append(event)
+                if case .gmcp = event { messages.fulfill() }
+                if case .state(.disconnected) = event { disconnected.fulfill(); return }
+            }
+        }
+        defer { eventTask.cancel() }
+
+        await session.connect(.init(server: .init(name: "gmcp", host: "127.0.0.1", port: port)))
+        let script = MUServerScript(actions: [
+            gmcpAction(
+                package: "WebView.Open",
+                payload: #"{"id":"status","source":"<b>Ready</b>","dock":"right"}"#
+            ),
+            gmcpAction(
+                package: "Client.Media.Default",
+                payload: #"{"url":"https://media.example/base/"}"#
+            ),
+            gmcpAction(
+                package: "Client.Media.Play",
+                payload: #"{"name":"theme.ogg","volume":75}"#
+            ),
+            .init(disconnect: true),
+        ])
+        let scriptTask = Task { try await server.run(script) }
+        await fulfillment(of: [messages, disconnected], timeout: 3)
+        try await scriptTask.value
+
+        let received = await recorder.gmcpMessages()
+        XCTAssertEqual(received.map(\.package), ["WebView.Open", "Client.Media.Default", "Client.Media.Play"])
+        var webView = WebViewProtocolState()
+        guard case let .open(request) = try webView.consume(received[0]) else {
+            return XCTFail("missing WebView open")
+        }
+        XCTAssertEqual(request.id, "status")
+        XCTAssertEqual(request.source, "<b>Ready</b>")
+        XCTAssertEqual(request.dock, .right)
+        var media = ClientMediaState()
+        XCTAssertTrue(try media.consume(received[1]).isEmpty)
+        guard case let .play(item) = try media.consume(received[2]).first else {
+            return XCTFail("missing Client.Media play")
+        }
+        XCTAssertEqual(item.source.absoluteString, "https://media.example/base/theme.ogg")
+        XCTAssertEqual(item.volume, 0.75, accuracy: 0.0001)
+    }
+
     func testTLSWithCertificateVerificationEnabledRejectsSelfSignedServer() async throws {
         let server = try FakeTCPServer(tlsIdentity: try testTLSIdentity())
         let port = try await server.start()
@@ -367,6 +502,13 @@ private actor SessionEventRecorder {
         events.compactMap {
             guard case let .renderedLine(line) = $0 else { return nil }
             return line
+        }
+    }
+
+    func gmcpMessages() -> [GMCPMessage] {
+        events.compactMap {
+            guard case let .gmcp(message) = $0 else { return nil }
+            return message
         }
     }
 

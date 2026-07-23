@@ -21,10 +21,18 @@ app="$derived_data/Build/Products/Release/BeipMU.app"
 test -d "$app"
 codesign --force --deep --sign - "$app"
 mkdir -p "$distribution"
-zip_path="$distribution/BeipMU-macOS-universal.zip"
-checksum_path="$zip_path.sha256"
-ditto -c -k --keepParent "$app" "$zip_path"
-shasum -a 256 "$zip_path" > "$checksum_path"
+zip_name="BeipMU-macOS-universal.zip"
+checksum_name="$zip_name.sha256"
+zip_path="$distribution/$zip_name"
+checksum_path="$distribution/$checksum_name"
+staging=$(mktemp -d "${TMPDIR:-/tmp}/beipmu-release.XXXXXX")
+trap 'rm -rf "$staging"' EXIT HUP INT TERM
+ditto "$app" "$staging/BeipMU.app"
+cp "$repo_dir/LICENSE" "$staging/LICENSE"
+cp "$repo_dir/Documentation/DISTRIBUTION.md" "$staging/INSTALL.md"
+rm -f "$zip_path" "$checksum_path"
+ditto -c -k --norsrc --noextattr --noqtn --noacl "$staging" "$zip_path"
+(cd "$distribution" && shasum -a 256 "$zip_name" > "$checksum_name")
 
 echo "Created $zip_path"
 echo "Created $checksum_path"

@@ -28,6 +28,7 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
     private var hostField: NSTextField?
     private var portField: NSTextField?
     private var encodingPopup: NSPopUpButton?
+    private var webViewPolicyPopup: NSPopUpButton?
     private var connectField: NSTextField?
     private var passwordField: NSSecureTextField?
     private var idleMinutesField: NSTextField?
@@ -256,8 +257,14 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
         encoding.selectItem(withTitle: server.encoding.rawValue)
         encoding.setAccessibilityIdentifier("worldEncoding")
         nameField = name; hostField = host; portField = port; encodingPopup = encoding
+        let webViewPolicy = NSPopUpButton()
+        webViewPolicy.addItems(withTitles: ServerWebViewPolicy.allCases.map(\.title))
+        webViewPolicy.selectItem(withTitle: (server.gmcpWebViewPolicy ?? .ask).title)
+        webViewPolicy.setAccessibilityIdentifier("worldWebViewPolicy")
+        webViewPolicyPopup = webViewPolicy
         detailStack.addArrangedSubview(grid([
             ("Name:", name), ("Host:", host), ("Port:", port), ("Encoding:", encoding),
+            ("Server WebViews:", webViewPolicy),
         ]))
         addCheck("tls", "Use TLS", server.usesTLS)
         addCheck("verify", "Verify TLS certificate", server.verifiesCertificate)
@@ -352,7 +359,7 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
     }
 
     private func clearControls() {
-        nameField = nil; hostField = nil; portField = nil; encodingPopup = nil
+        nameField = nil; hostField = nil; portField = nil; encodingPopup = nil; webViewPolicyPopup = nil
         connectField = nil; passwordField = nil; idleMinutesField = nil; idleTextField = nil
         receivePrefixField = nil; sendPrefixField = nil; checks = [:]
     }
@@ -428,6 +435,9 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
                         server.profile.prompts = checked("prompts")
                         server.profile.mcp = checked("mcp")
                         server.profile.mcmp = checked("mcmp")
+                        server.profile.gmcpWebViewPolicy = ServerWebViewPolicy.allCases.first {
+                            $0.title == self.webViewPolicyPopup?.titleOfSelectedItem
+                        } ?? .ask
                         server.profile.sendNAWSOnResize = checked("naws")
                         server.profile.limitTelnetCharset = checked("charset")
                     }

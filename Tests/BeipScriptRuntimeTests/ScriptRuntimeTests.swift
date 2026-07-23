@@ -1,5 +1,6 @@
 import BeipCore
 import BeipScriptRuntime
+import BeipTestSupport
 import XCTest
 
 final class ScriptRuntimeTests: XCTestCase {
@@ -110,7 +111,7 @@ final class ScriptRuntimeTests: XCTestCase {
         XCTAssertEqual(result.outputs, [
             .init(kind: .debugText, value: "one"),
             .init(kind: .setVariable, value: #"{"name":"x","value":"two"}"#),
-            .init(kind: .send, value: "three"),
+            .init(kind: .transmit, value: "three"),
             .init(kind: .playSound, value: "four"),
         ])
     }
@@ -122,5 +123,341 @@ final class ScriptRuntimeTests: XCTestCase {
 
         XCTAssertTrue(result.error?.contains("HWND is not supported on macOS") == true)
         XCTAssertTrue(help?.contains("IsConnected") == true)
+    }
+
+    func testTimeoutRunsAsynchronouslyAndPreservesUserData() async throws {
+        let runtime = ScriptRuntime()
+        let result = await runtime.evaluate(
+            "app.CreateTimeout(10, function(value) { app.OutputDebugText('timeout:' + value); }, 'payload')"
+        )
+        XCTAssertNil(result.error)
+        XCTAssertTrue(result.outputs.isEmpty)
+
+        try await Task.sleep(for: .milliseconds(80))
+        let outputs = await runtime.drainAsyncOutputs()
+
+        XCTAssertEqual(outputs, [
+            .init(kind: .debugText, value: "timeout:payload")
+        ])
+    }
+
+    func testIntervalStopsWhenCallbackReturnsTrueAndKillIsIdempotent() async throws {
+        let runtime = ScriptRuntime()
+        let created = await runtime.evaluate(
+            "var ticks = 0; var timer = app.CreateInterval(5, function() { ticks++; app.OutputDebugText(ticks); return ticks === 2; }); timer.Active"
+        )
+        XCTAssertEqual(created.value, "true")
+
+        try await Task.sleep(for: .milliseconds(100))
+        let outputs = await runtime.drainAsyncOutputs()
+        let state = await runtime.evaluate("timer.Active + '|' + timers.Count")
+        let killed = await runtime.evaluate("timer.Kill(); timer.Kill()")
+
+        XCTAssertEqual(outputs.map(\.value), ["1", "2"])
+        XCTAssertEqual(state.value, "false|0")
+        XCTAssertNil(killed.error)
+    }
+
+    func testAddressValidationAndAsynchronousDNSCallbacks() async throws {
+        let runtime = ScriptRuntime()
+        let validation = await runtime.evaluate(
+            "[app.IsAddress('127.0.0.1'), app.isAddress('::1'), app.IsAddress('not an address')].join('|')"
+        )
+        XCTAssertEqual(validation.value, "true|true|false")
+
+        let lookup = await runtime.evaluate(
+            "app.ForwardDNSLookup('localhost', function(result, tag) { app.OutputDebugText(tag + ':' + (result.length > 0)); }, 'dns')"
+        )
+        XCTAssertNil(lookup.error)
+
+        for _ in 0..<50 {
+            try await Task.sleep(for: .milliseconds(20))
+            let outputs = await runtime.drainAsyncOutputs()
+            if !outputs.isEmpty {
+                XCTAssertEqual(outputs, [.init(kind: .debugText, value: "dns:true")])
+                return
+            }
+        }
+        XCTFail("DNS callback did not complete")
+    }
+
+    func testNativeSocketConnectSendReceiveAndDisconnectCallbacks() async throws {
+        let server = try ScriptedMUServer()
+        let port = try await server.start()
+        let serverTask = Task {
+            try await server.run(.init(actions: [
+                .init(expect: "ping"),
+                .init(send: "pong", disconnect: true)
+            ]))
+        }
+        let runtime = ScriptRuntime()
+        let setup = await runtime.evaluate(
+            """
+            var socket = app.New_Socket();
+            socket.UserData = 'marker';
+            socket.SetOnConnect(function(value) { app.OutputDebugText('connect:' + value.UserData); });
+            socket.SetOnReceive(function(value, text) { app.OutputDebugText('receive:' + text); });
+            socket.SetOnDisconnect(function(value) { app.OutputDebugText('disconnect:' + value.IsConnected()); });
+            socket.Connect('127.0.0.1', \(port));
+            """
+        )
+        XCTAssertNil(setup.error)
+
+        var observed: [ScriptOutput] = []
+        for _ in 0..<100 {
+            try await Task.sleep(for: .milliseconds(20))
+            observed.append(contentsOf: await runtime.drainAsyncOutputs())
+            if observed.contains(where: { $0.value == "connect:marker" }) { break }
+        }
+        XCTAssertTrue(observed.contains(.init(kind: .debugText, value: "connect:marker")))
+        let connected = await runtime.evaluate("socket.IsConnected()")
+        XCTAssertEqual(connected.value, "true")
+
+        let sent = await runtime.evaluate("socket.Send('ping')")
+        XCTAssertNil(sent.error)
+        try await serverTask.value
+        for _ in 0..<100 {
+            try await Task.sleep(for: .milliseconds(20))
+            observed.append(contentsOf: await runtime.drainAsyncOutputs())
+            if observed.contains(where: { $0.value == "disconnect:false" }) { break }
+        }
+        server.stop()
+
+        XCTAssertTrue(observed.contains(.init(kind: .debugText, value: "receive:pong")))
+        XCTAssertTrue(observed.contains(.init(kind: .debugText, value: "disconnect:false")))
+    }
+
+    func testTextWindowLineMutationAndRichDisplaySurface() async {
+        let runtime = ScriptRuntime()
+        let result = await runtime.evaluate(
+            """
+            var line = window.Output.Create('Hello');
+            var suffix = window.Output.Create(' world');
+            line.Insert(5, suffix);
+            line.Delete(0, 1);
+            line.Bold(0, 4);
+            line.Color(5, 10, 255);
+            window.Output.Add(line);
+            [line.String, line.Length, line.HTMLString.indexOf('font-weight:bold') >= 0, line.HTMLString.indexOf('rgb(255,0,0)') >= 0].join('|');
+            """
+        )
+
+        XCTAssertEqual(result.value, "ello world|10|true|true")
+        XCTAssertNil(result.error)
+        XCTAssertEqual(result.outputs.count, 1)
+        XCTAssertEqual(result.outputs.first?.kind, .displayHTML)
+        XCTAssertTrue(result.outputs.first?.value.contains("<p>") == true)
+    }
+
+    func testBuildConnectionAndLogProxiesReflectHostSnapshot() async {
+        let runtime = ScriptRuntime()
+        let host = ScriptHostSnapshot(
+            buildDate: "2026-07-22T08:00:00Z",
+            worlds: [.init(name: "Lambda", info: "Test", host: "lambda.test:8888")],
+            activeWorld: "Lambda",
+            activeCharacter: "Ada",
+            window: .init(connected: false, logging: true, logFileName: "/tmp/lambda.log")
+        )
+        let result = await runtime.evaluate(
+            """
+            var line = window.Output.Create('rich');
+            window.Connection.Log.Write('raw');
+            window.Connection.Log.WriteLine(line);
+            var reconnect = window.Connection.Reconnect();
+            [app.BuildDate.getUTCFullYear(), window.Connection.World.Name, window.Connection.Character.Name, window.Connection.Puppet, window.Connection.Log.FileName, reconnect].join('|');
+            """,
+            host: host
+        )
+
+        XCTAssertEqual(result.value, "2026|Lambda|Ada||/tmp/lambda.log|true")
+        XCTAssertEqual(result.outputs, [
+            .init(kind: .logWrite, value: "raw"),
+            .init(kind: .logWriteLine, value: "rich"),
+            .init(kind: .reconnect, value: "")
+        ])
+    }
+
+    func testPersistentConnectionHooksReceiveEventsAndCanMutateDisplayLines() async {
+        let runtime = ScriptRuntime()
+        let setup = await runtime.evaluate(
+            """
+            window.Connection.SetOnConnect(function(tag) { app.OutputDebugText('connected:' + tag); }, 'C');
+            window.Connection.SetOnReceive(function(text, tag) { app.OutputDebugText(tag + ':' + text); }, 'R');
+            window.Connection.SetOnGMCP(function(text) { app.OutputDebugText('gmcp:' + text); });
+            window.Connection.SetOnDisplay(function(line) { line.Delete(0, 1); line.Bold(0, line.Length); });
+            """
+        )
+        XCTAssertNil(setup.error)
+
+        let connected = await runtime.dispatchConnectionEvent("connect")
+        let received = await runtime.dispatchConnectionEvent("receive", arguments: ["hello"])
+        let gmcp = await runtime.dispatchConnectionEvent("gmcp", arguments: ["Char.Vitals {}"])
+        let displayed = await runtime.dispatchConnectionEvent("display", line: .init(text: "Hello"))
+
+        XCTAssertEqual(connected.outputs, [.init(kind: .debugText, value: "connected:C")])
+        XCTAssertEqual(received.outputs, [.init(kind: .debugText, value: "R:hello")])
+        XCTAssertEqual(gmcp.outputs, [.init(kind: .debugText, value: "gmcp:Char.Vitals {}")])
+        struct ChangedLine: Decodable { var text: String; var html: String }
+        let changed = displayed.value
+            .flatMap { $0.data(using: .utf8) }
+            .flatMap { try? JSONDecoder().decode(ChangedLine.self, from: $0) }
+        XCTAssertEqual(changed?.text, "ello")
+        XCTAssertTrue(changed?.html.contains("font-weight:bold") == true)
+    }
+
+    func testInputAndMainWindowMutablePropertiesReplayToNativeHost() async {
+        let runtime = ScriptRuntime()
+        let host = ScriptHostSnapshot(window: .init(
+            input: "look",
+            inputPrefix: "say ",
+            inputTitle: "Command",
+            titlePrefix: "[AFK] "
+        ))
+        let result = await runtime.evaluate(
+            """
+            var before = [window.Input.Prefix, window.Input.Title, window.TitlePrefix].join('|');
+            window.Input.Prefix = 'pose ';
+            window.Input.Title = 'Roleplay';
+            window.TitlePrefix = '[IC] ';
+            var opened = window.CreateDialogConnect();
+            before + '|' + opened;
+            """,
+            host: host
+        )
+
+        XCTAssertEqual(result.value, "say |Command|[AFK] |true")
+        XCTAssertEqual(result.outputs, [
+            .init(kind: .setInputPrefix, value: "pose "),
+            .init(kind: .setInputTitle, value: "Roleplay"),
+            .init(kind: .setTitlePrefix, value: "[IC] "),
+            .init(kind: .openConnectDialog, value: "")
+        ])
+    }
+
+    func testScriptWindowFactoriesEmitOrderedNativeOperationsAndKeepSynchronousState() async throws {
+        let runtime = ScriptRuntime()
+        let result = await runtime.evaluate(
+            """
+            var text = app.NewWindow_Text(400, 250);
+            text.Properties.Title = 'Notes'; text.Write('plain'); text.WriteHTML('<b>rich</b>'); text.Dock(2);
+            var fixed = app.NewWindow_FixedText(40, 10);
+            fixed.CursorX = 3; fixed.CursorY = 2; fixed.Write('status'); fixed.Clear();
+            var graphics = app.NewWindow_Graphics(320, 200);
+            graphics.Clear(255); graphics.SetPixel(4, 5, 65280); graphics.SetPen(16711680, 2); graphics.MoveTo(1, 2); graphics.LineTo(8, 9); graphics.Text(10, 11, 'map');
+            [graphics.Width, graphics.Height, graphics.GetPixel(4, 5), fixed.CursorX, fixed.CursorY].join('|');
+            """
+        )
+
+        XCTAssertEqual(result.value, "320|200|65280|0|0")
+        XCTAssertNil(result.error)
+        let operations = try result.outputs.map { output -> ScriptWindowOperation in
+            XCTAssertEqual(output.kind, .scriptWindow)
+            return try JSONDecoder().decode(ScriptWindowOperation.self, from: Data(output.value.utf8))
+        }
+        XCTAssertEqual(operations.filter { $0.action == "create" }.map(\.kind), ["text", "fixed", "graphics"])
+        XCTAssertTrue(operations.contains { $0.kind == "text" && $0.action == "html" })
+        XCTAssertTrue(operations.contains { $0.kind == "fixed" && $0.action == "writeAt" && $0.numbers == [3, 2] })
+        XCTAssertTrue(operations.contains { $0.kind == "graphics" && $0.action == "line" })
+    }
+
+    func testMainWindowLifecycleAndCommandHooksPersist() async {
+        let runtime = ScriptRuntime()
+        _ = await runtime.evaluate(
+            """
+            window.SetOnCommand(function(command, parameters, tag) { app.OutputDebugText(tag + ':' + command + ':' + parameters); }, 'cmd');
+            window.SetOnActivate(function(tag, active) { app.OutputDebugText(tag + ':' + active); }, 'active');
+            window.SetOnClose(function(tag) { app.OutputDebugText(tag); }, 'closed');
+            """
+        )
+
+        let command = await runtime.dispatchConnectionEvent("window:command", arguments: ["echo", "hello world"])
+        let activate = await runtime.dispatchConnectionEvent("window:activate", arguments: ["true"])
+        let close = await runtime.dispatchConnectionEvent("window:close")
+
+        XCTAssertEqual(command.outputs, [.init(kind: .debugText, value: "cmd:echo:hello world")])
+        XCTAssertEqual(activate.outputs, [.init(kind: .debugText, value: "active:true")])
+        XCTAssertEqual(close.outputs, [.init(kind: .debugText, value: "closed")])
+    }
+
+    func testNewMainWindowFactoryAndGlobalHook() async {
+        let runtime = ScriptRuntime()
+        let created = await runtime.evaluate(
+            "app.SetOnNewWindow(function(tag) { app.OutputDebugText('new:' + tag); }, 'window'); app.NewWindow()"
+        )
+        let callback = await runtime.dispatchConnectionEvent("app:newWindow")
+
+        XCTAssertEqual(created.outputs, [.init(kind: .newMainWindow, value: "")])
+        XCTAssertEqual(callback.outputs, [.init(kind: .debugText, value: "new:window")])
+    }
+
+    func testSpawnTabActivationHookUsesNamedGroup() async {
+        let runtime = ScriptRuntime()
+        let setup = await runtime.evaluate(
+            "var tabs = window.GetSpawnTabs('Chat'); tabs.SetOnTabActivate(function(name, tag) { app.OutputDebugText(tag + ':' + name); }, 'tab'); window.GetSpawnTabs('Missing') === null",
+            host: .init(spawnTabGroups: ["Chat"])
+        )
+        let callback = await runtime.dispatchConnectionEvent("spawnTabs:Chat", arguments: ["Public"])
+
+        XCTAssertEqual(setup.value, "true")
+        XCTAssertEqual(callback.outputs, [.init(kind: .debugText, value: "tab:Public")])
+    }
+
+    func testGetInputReturnsNamedSecondaryInputProxyAndReplaysChanges() async throws {
+        let runtime = ScriptRuntime()
+        let result = await runtime.evaluate(
+            """
+            var input = window.GetInput('Input — say ');
+            var before = [input.Get(), input.Prefix, input.Title, input.Length].join('|');
+            input.Set('hello'); input.Prefix = 'pose '; input.Title = 'Roleplay';
+            before + '|' + (window.GetInput('Missing') === null);
+            """,
+            host: .init(secondaryInputs: [.init(title: "Input — say ", prefix: "say ", text: "hi")])
+        )
+
+        XCTAssertEqual(result.value, "hi|say |Input — say |2|true")
+        let operations = try result.outputs.map {
+            try JSONDecoder().decode(ScriptWindowOperation.self, from: Data($0.value.utf8))
+        }
+        XCTAssertEqual(operations.map(\.action), ["set", "prefix", "title"])
+        XCTAssertTrue(result.outputs.allSatisfy { $0.kind == .secondaryInput })
+    }
+
+    func testScriptWindowCloseKeyAndPointerEventsDispatchWithUserData() async throws {
+        let runtime = ScriptRuntime()
+        let setup = await runtime.evaluate(
+            """
+            var graphics = app.NewWindow_Graphics(100, 100);
+            graphics.Events.SetOnClose(function(tag) { app.OutputDebugText('close:' + tag); }, 'C');
+            graphics.Events.SetOnKey(function(key, tag) { app.OutputDebugText('key:' + key + ':' + tag); }, 'K');
+            graphics.Events.SetOnMouseMove(function(x, y, tag) { app.OutputDebugText('move:' + x + ',' + y + ':' + tag); }, 'M');
+            """
+        )
+        let create = try setup.outputs
+            .map { try JSONDecoder().decode(ScriptWindowOperation.self, from: Data($0.value.utf8)) }
+            .first { $0.action == "create" }
+        let prefix = "scriptWindow:\(create?.identifier ?? ""):"
+
+        let close = await runtime.dispatchConnectionEvent(prefix + "close")
+        let key = await runtime.dispatchConnectionEvent(prefix + "key", arguments: ["36"])
+        let move = await runtime.dispatchConnectionEvent(prefix + "mouseMove", arguments: ["12", "34"])
+
+        XCTAssertEqual(close.outputs.first?.value, "close:C")
+        XCTAssertEqual(key.outputs.first?.value, "key:36:K")
+        XCTAssertEqual(move.outputs.first?.value, "move:12,34:M")
+    }
+
+    func testScriptTextWindowPauseCallbackTracksNativeScrollState() async throws {
+        let runtime = ScriptRuntime()
+        let setup = await runtime.evaluate(
+            "var text = app.NewWindow_Text(); text.SetOnPause(function(paused) { app.OutputDebugText('paused:' + paused); });"
+        )
+        let create = try setup.outputs
+            .map { try JSONDecoder().decode(ScriptWindowOperation.self, from: Data($0.value.utf8)) }
+            .first { $0.action == "create" }
+        let paused = await runtime.dispatchConnectionEvent("scriptWindow:\(create?.identifier ?? ""):pause", arguments: ["true"])
+        let state = await runtime.evaluate("text.Paused")
+
+        XCTAssertEqual(paused.outputs, [.init(kind: .debugText, value: "paused:true")])
+        XCTAssertEqual(state.value, "true")
     }
 }

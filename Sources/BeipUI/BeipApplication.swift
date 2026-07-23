@@ -54,6 +54,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     @objc func newWindow(_ sender: Any?) {
         let controller = makeController()
         controller.showWindow(sender)
+        controller.startDeviceMediaAuditIfRequested()
     }
 
     @objc func newTab(_ sender: Any?) {
@@ -155,6 +156,12 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     @objc func disconnect(_ sender: Any?) { activeController?.disconnect() }
     @objc func logging(_ sender: Any?) { activeController?.showLoggingControls() }
     @objc func statistics(_ sender: Any?) { activeController?.showConnectionStatistics() }
+    @objc func debugNetwork(_ sender: Any?) { activeController?.showNetworkDebugger() }
+    @objc func debugAliases(_ sender: Any?) { activeController?.showAutomationDebugger(.aliases) }
+    @objc func debugTriggers(_ sender: Any?) { activeController?.showAutomationDebugger(.triggers) }
+    @objc func debugTimers(_ sender: Any?) { activeController?.showAutomationDebugger(.timers) }
+    @objc func debugScripts(_ sender: Any?) { activeController?.showScriptDebugger() }
+    @objc func inspectRestoreLog(_ sender: Any?) { activeController?.showRestoreInformation() }
     @objc func clear(_ sender: Any?) { activeController?.clearOutput() }
     @objc func find(_ sender: Any?) { activeController?.showFindDialog() }
     @objc func pauseOutput(_ sender: Any?) { activeController?.toggleOutputPause() }
@@ -175,6 +182,8 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     @objc func toggleMute(_ sender: Any?) { activeController?.toggleMute() }
     @objc func showNotes(_ sender: Any?) { activeController?.showCharacterNotes() }
     @objc func showDiagnostics(_ sender: Any?) { activeController?.showSessionDiagnostics() }
+    @objc func showAtlas(_ sender: Any?) { activeController?.showAtlas() }
+    @objc func showHelp(_ sender: Any?) { activeController?.showEmbeddedHelp() }
     @objc func layoutTabbedRight(_ sender: Any?) { activeController?.setWorkspaceLayout(.tabbedRight) }
     @objc func layoutSplitSidebars(_ sender: Any?) { activeController?.setWorkspaceLayout(.splitSidebars) }
     @objc func layoutStackedRight(_ sender: Any?) { activeController?.setWorkspaceLayout(.stackedRight) }
@@ -339,6 +348,17 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         addShortcutItem(to: connectionMenu, action: .disconnect, selector: #selector(disconnect(_:)))
         addShortcutItem(to: connectionMenu, action: .logging, selector: #selector(logging(_:)), title: "Logging…")
         connectionMenu.addItem(withTitle: "Statistics…", action: #selector(statistics(_:)), keyEquivalent: "")
+        let debuggers = NSMenu(title: "Debuggers")
+        debuggers.addItem(withTitle: "Network…", action: #selector(debugNetwork(_:)), keyEquivalent: "")
+        debuggers.addItem(withTitle: "Aliases…", action: #selector(debugAliases(_:)), keyEquivalent: "")
+        debuggers.addItem(withTitle: "Triggers…", action: #selector(debugTriggers(_:)), keyEquivalent: "")
+        debuggers.addItem(withTitle: "Timers…", action: #selector(debugTimers(_:)), keyEquivalent: "")
+        debuggers.addItem(withTitle: "Scripts…", action: #selector(debugScripts(_:)), keyEquivalent: "")
+        debuggers.addItem(.separator())
+        debuggers.addItem(withTitle: "Inspect Restore.dat", action: #selector(inspectRestoreLog(_:)), keyEquivalent: "")
+        let debuggersItem = NSMenuItem(title: "Debuggers", action: nil, keyEquivalent: "")
+        debuggersItem.submenu = debuggers
+        connectionMenu.addItem(debuggersItem)
         connectionMenu.addItem(.separator())
         connectionMenu.addItem(withTitle: "Worlds & Characters…", action: #selector(manageProfiles(_:)), keyEquivalent: "")
 
@@ -378,6 +398,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         viewMenu.addItem(withTitle: "Check Spelling", action: #selector(toggleSpellChecking(_:)), keyEquivalent: "")
         viewMenu.addItem(.separator())
         viewMenu.addItem(withTitle: "Mute Current Tab", action: #selector(toggleMute(_:)), keyEquivalent: "")
+        viewMenu.addItem(withTitle: "Atlas Map…", action: #selector(showAtlas(_:)), keyEquivalent: "")
         let panes = NSMenu(title: "Workspace Panes")
         panes.addItem(withTitle: "Character Notes", action: #selector(showNotes(_:)), keyEquivalent: "")
         panes.addItem(withTitle: "Session Diagnostics", action: #selector(showDiagnostics(_:)), keyEquivalent: "")
@@ -412,6 +433,12 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         windowMenu.addItem(.separator())
         windowMenu.addItem(withTitle: "Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
         NSApplication.shared.windowsMenu = windowMenu
+
+        let helpItem = NSMenuItem()
+        main.addItem(helpItem)
+        let helpMenu = NSMenu(title: "Help")
+        helpItem.submenu = helpMenu
+        helpMenu.addItem(withTitle: "BeipMU Help", action: #selector(showHelp(_:)), keyEquivalent: "?")
         applyKeyboardShortcuts()
     }
 

@@ -26,6 +26,7 @@ final class SessionStatisticsWindowController: NSWindowController, NSWindowDeleg
         super.init(window: panel)
         panel.delegate = self
         configureContent(in: panel)
+        panel.initialFirstResponder = serverValue
     }
 
     required init?(coder: NSCoder) { nil }

@@ -63,6 +63,25 @@ final class ScriptService: NSObject, ScriptServiceProtocol, @unchecked Sendable 
         }
     }
 
+    func dispatchConnectionEvent(_ event: NSString, arguments: [NSString], lineJSON: NSString, hostJSON: NSString, reply: @escaping (NSString?, NSString?, NSString?) -> Void) {
+        let event = event as String
+        let arguments = arguments.map { $0 as String }
+        let line = decodeOptionalLine(lineJSON as String)
+        let host = decodeHost(hostJSON as String)
+        let reply = EvaluationReply(reply)
+        Task {
+            let result = await runtime.dispatchConnectionEvent(event, arguments: arguments, line: line, host: host)
+            reply.call(result.value as NSString?, result.error as NSString?, encodedOutputs(result.outputs))
+        }
+    }
+
+    func drainOutputs(reply: @escaping (NSString?) -> Void) {
+        let reply = EvaluationReply { _, _, outputs in reply(outputs) }
+        Task {
+            reply.call(nil, nil, encodedOutputs(await runtime.drainAsyncOutputs()))
+        }
+    }
+
     func reset(reply: @escaping () -> Void) {
         let reply = ResetReply(reply)
         Task {
@@ -97,6 +116,11 @@ final class ScriptService: NSObject, ScriptServiceProtocol, @unchecked Sendable 
         guard let data = source.data(using: .utf8),
               let line = try? JSONDecoder().decode(RenderedLine.self, from: data) else { return .init(text: "") }
         return line
+    }
+
+    private func decodeOptionalLine(_ source: String) -> RenderedLine? {
+        guard source != "null", let data = source.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(RenderedLine.self, from: data)
     }
 }
 

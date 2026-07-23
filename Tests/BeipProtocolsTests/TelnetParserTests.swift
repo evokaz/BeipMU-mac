@@ -78,6 +78,30 @@ final class TelnetParserTests: XCTestCase {
         }
     }
 
+    func testSeededTelnetPropertyMatrixIsInvariantAcrossRandomPartitions() {
+        let bytes = Data([255, 251, 0])
+            + Data("\u{1b}[31mred\u{1b}[0m\r\nPrompt> ".utf8)
+            + Data([255, 249, 255, 250, 201])
+            + Data("Char.Vitals {\"hp\":7}".utf8)
+            + Data([255, 240])
+            + Data("done\n".utf8)
+        var whole = TelnetParser()
+        let expected = whole.consume(bytes)
+
+        for seed in 0..<128 {
+            var random = SeededRandom(seed: UInt64(seed + 1))
+            var parser = TelnetParser()
+            var actual: [TelnetParser.Event] = []
+            var offset = 0
+            while offset < bytes.count {
+                let width = min(bytes.count - offset, random.nextInt(upperBound: 9) + 1)
+                actual += parser.consume(Data(bytes[offset..<(offset + width)]))
+                offset += width
+            }
+            XCTAssertEqual(actual, expected, "seed \(seed)")
+        }
+    }
+
     func testGMCPNegotiationAndFrame() {
         var parser = TelnetParser()
         let reply = parser.consume(Data([255, 251, 201]))
@@ -223,6 +247,24 @@ private extension Data {
 }
 
 final class ANSIParserTests: XCTestCase {
+    func testSeededANSIPropertyMatrixPreservesUnicodeText() {
+        let codes = [0, 1, 2, 3, 4, 5, 7, 8, 9, 22, 23, 24, 25, 27, 28, 29, 30, 37, 40, 47, 90, 97]
+        let tokens = ["alpha", "βeta", "雪", "🙂", "<&>"]
+        var random = SeededRandom(seed: 0xB31F_331)
+        for iteration in 0..<256 {
+            var source = ""
+            var expected = ""
+            for _ in 0..<(random.nextInt(upperBound: 12) + 1) {
+                let token = tokens[random.nextInt(upperBound: tokens.count)]
+                source += "\u{1b}[\(codes[random.nextInt(upperBound: codes.count)])m\(token)"
+                expected += token
+            }
+            source += "\u{1b}[0m"
+            var parser = ANSIParser()
+            XCTAssertEqual(parser.parse(source).text, expected, "iteration \(iteration)")
+        }
+    }
+
     func testSixteenAndTrueColor() {
         var parser = ANSIParser()
         let line = parser.parse("normal \u{1b}[31mred\u{1b}[38;2;1;2;3mrgb\u{1b}[0m end")
@@ -320,6 +362,16 @@ final class ANSIParserTests: XCTestCase {
         var literalParser = ANSIParser(options: .init(preventInvisible: false))
         let literal = literalParser.parse("\u{1b}[31;41mhidden")
         XCTAssertEqual(literal.runs[0].style.foreground, literal.runs[0].style.background)
+    }
+}
+
+private struct SeededRandom {
+    private var state: UInt64
+    init(seed: UInt64) { state = seed }
+
+    mutating func nextInt(upperBound: Int) -> Int {
+        state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+        return Int(state % UInt64(upperBound))
     }
 }
 

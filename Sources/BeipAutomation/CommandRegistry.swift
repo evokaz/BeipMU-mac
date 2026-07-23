@@ -39,6 +39,13 @@ public enum CommandOutcome: Sendable, Equatable {
     case unsetVariable(String)
     case gmcp(GMCPMessage)
     case gmcpDump(Bool)
+    case mediaControl(MediaControl)
+    case tileMap(Bool)
+    case switchSpawnTab(group: String, title: String)
+    case mapAddRoom(name: String, outward: String, returnCommand: String)
+    case mapAddExit(outward: String, returnCommand: String)
+    case mapGuessLocation
+    case mapLook
     case disconnect(all: Bool)
     case reconnect(all: Bool)
     case connect(address: String, character: String?)
@@ -56,6 +63,7 @@ public enum CommandOutcome: Sendable, Equatable {
     case newTab
     case newInput(prefix: String, unique: Bool)
     case newEdit(EditWindowOptions)
+    case webView(WebViewOpenRequest)
     case silence
     case removeLast
     case wall(String)
@@ -74,12 +82,18 @@ public enum CommandOutcome: Sendable, Equatable {
     case resetScript
     case cancelCapture
     case debugAutomation(DebugAutomationKind)
+    case debugNetwork
+    case restoreInfo
     case invoke(name: String, arguments: [String], rawArguments: String)
     case unimplemented(String)
     case notACommand
 
     public enum LogHistory: Sendable, Equatable {
         case none, all, window
+    }
+
+    public enum MediaControl: Sendable, Equatable {
+        case flush, info
     }
 
     public enum DelayAction: Sendable, Equatable {
@@ -180,6 +194,9 @@ public struct CommandRegistry: Sendable {
         case "newedit":
             do { return .newEdit(try parseEditWindowOptions(String(rawArguments))) }
             catch { return .display("Command error: \(error.localizedDescription)") }
+        case "webview":
+            do { return .webView(try parseWebViewOptions(String(rawArguments))) }
+            catch { return .display("Command error: \(error.localizedDescription)") }
         case "silence": return .silence
         case "removelast": return .removeLast
         case "wall":
@@ -248,6 +265,36 @@ public struct CommandRegistry: Sendable {
             if arguments.count == 1, arguments[0].lowercased() == "dump_on" { return .gmcpDump(true) }
             if arguments.count == 1, arguments[0].lowercased() == "dump_off" { return .gmcpDump(false) }
             return .display("GMCP No parameter specified, available options are dump_on and dump_off")
+        case "mcmp":
+            if arguments.count == 1, arguments[0].caseInsensitiveCompare("flush") == .orderedSame { return .mediaControl(.flush) }
+            if arguments.count == 1, arguments[0].caseInsensitiveCompare("info") == .orderedSame { return .mediaControl(.info) }
+            return .display("MCMP No parameter specified, available options are flush and info")
+        case "tilemap":
+            guard arguments.count == 1 else {
+                return .display("Usage: '/tilemap on/off' to enable/disable tilemap tag parsing")
+            }
+            switch arguments[0].lowercased() {
+            case "on": return .tileMap(true)
+            case "off": return .tileMap(false)
+            default: return .display("Usage: '/tilemap on/off' to enable/disable tilemap tag parsing")
+            }
+        case "switchtab":
+            guard arguments.count == 2 else {
+                return .display("Expected 'tab group' and 'tab name' as parameters")
+            }
+            return .switchSpawnTab(group: arguments[0], title: arguments[1])
+        case "map_addroom":
+            guard arguments.count == 3 else {
+                return .display("Command is in the form of <room name> <exit to get there> <exit to get back>")
+            }
+            return .mapAddRoom(name: arguments[0], outward: arguments[1], returnCommand: arguments[2])
+        case "map_addexit":
+            guard arguments.count == 2 else {
+                return .display("Command is in the form of <exit to get there> <exit to get back>")
+            }
+            return .mapAddExit(outward: arguments[0], returnCommand: arguments[1])
+        case "map_guesslocation": return .mapGuessLocation
+        case "map_look": return .mapLook
         case "script", "@":
             guard !rawArguments.isEmpty else { return .display("Usage: /\(command) <JavaScript>") }
             return .script(String(rawArguments))
@@ -257,6 +304,8 @@ public struct CommandRegistry: Sendable {
         case "debugaliases": return .debugAutomation(.aliases)
         case "debugtriggers": return .debugAutomation(.triggers)
         case "debugtimers": return .debugAutomation(.timers)
+        case "debugnetwork": return .debugNetwork
+        case "restoreinfo": return .restoreInfo
         case "roll": return roll(arguments.first)
         case "help", "?":
             if arguments.count == 1 { return .openCommandHelp(arguments[0]) }
@@ -353,6 +402,66 @@ public struct CommandRegistry: Sendable {
             case "append": options.append = value
             default: throw EditOptionError("Unknown attribute: \(name)")
             }
+        }
+    }
+
+    private func parseWebViewOptions(_ source: String) throws -> WebViewOpenRequest {
+        var request = WebViewOpenRequest()
+        for (name, value) in try parseAttributes(source) {
+            switch name {
+            case "url":
+                guard let url = URL(string: value), let scheme = url.scheme?.lowercased(), ["http", "https", "file"].contains(scheme) else {
+                    throw EditOptionError("Invalid URL")
+                }
+                request.url = url
+                request.source = nil
+            case "source": request.source = value; request.url = nil
+            case "position":
+                let values = value.split(separator: ",", omittingEmptySubsequences: false).compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+                guard values.count == 4, values[2] > 0, values[3] > 0 else { throw EditOptionError("Invalid rect") }
+                request.frame = .init(x: values[0], y: values[1], width: values[2], height: values[3])
+            case "state":
+                guard value.caseInsensitiveCompare("maximized") == .orderedSame else { throw EditOptionError("Unknown window state: \(value)") }
+                request.maximized = true
+            default: throw EditOptionError("Unknown attribute: \(name)")
+            }
+        }
+        return request
+    }
+
+    private func parseAttributes(_ source: String) throws -> [(String, String)] {
+        var result: [(String, String)] = []
+        var index = source.startIndex
+        func skipWhitespace() {
+            while index < source.endIndex, source[index].isWhitespace { index = source.index(after: index) }
+        }
+        while true {
+            skipWhitespace()
+            guard index < source.endIndex else { return result }
+            let nameStart = index
+            while index < source.endIndex, !source[index].isWhitespace, source[index] != "=" { index = source.index(after: index) }
+            let name = String(source[nameStart..<index]).lowercased()
+            guard !name.isEmpty else { throw EditOptionError("Missing attribute name") }
+            skipWhitespace()
+            guard index < source.endIndex, source[index] == "=" else { throw EditOptionError("Missing '=' after attribute: \(name)") }
+            index = source.index(after: index)
+            skipWhitespace()
+            guard index < source.endIndex else { throw EditOptionError("Missing value for attribute: \(name)") }
+            let raw: String
+            if source[index] == "\"" || source[index] == "'" {
+                let quote = source[index]
+                index = source.index(after: index)
+                let start = index
+                while index < source.endIndex, source[index] != quote { index = source.index(after: index) }
+                guard index < source.endIndex else { throw EditOptionError("Unterminated quoted value for attribute: \(name)") }
+                raw = String(source[start..<index])
+                index = source.index(after: index)
+            } else {
+                let start = index
+                while index < source.endIndex, !source[index].isWhitespace { index = source.index(after: index) }
+                raw = String(source[start..<index])
+            }
+            result.append((name, try decodeXMLEntities(raw)))
         }
     }
 
@@ -471,7 +580,7 @@ public struct CommandRegistry: Sendable {
     /// Plain-text equivalent of the release-visible v331 help page. The UI
     /// adds styling, but keeping this content here makes headless output exact
     /// and testable.
-    private static let commandHelp = """
+    public static let commandHelp = """
     BeipMU - Command Line Help
     Scripting
     /@ $ - Run an immediate script, $ can span multiple lines of text

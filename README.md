@@ -56,6 +56,51 @@ checks are reproducible with `Scripts/benchmark-workspace.sh` and
 `Scripts/profile-app-soak.sh`; native UI
 comparisons run through `Scripts/test-ui.sh`.
 
+Milestone 4 is complete, including hierarchical aliases, macros, triggers and
+their portable v331 actions, deterministic delays, logging/autolog/restore,
+native automation/debug panels, and the isolated JavaScriptCore runtime.
+
+Milestone 5 is in progress. Its first vertical slice adds incremental
+`beip.stats`, `beip.id` avatars, typed `room.info`, Hex/Base64/compressed
+tilemap decoding with zoomable native panes, `/tilemap`, and a native image
+viewer. Its second slice adds rich standalone/grouped trigger spawns with
+targeted clear, ShowTab/unread state, close/reorder, `/switchtab`, accessible
+controls, and per-profile restoration. Its third slice turns `.atlas` into a
+lossless read/write model and accessible native editor with every planned map
+object, selection, pan/zoom, undo/redo/find, location tracking, path/speed-run,
+`room.info`, per-profile view restoration, all four map commands, contextual
+property editing, clipboard fragments, and PNG/PDF export. Its fourth
+slice adds authenticated MCP 2.1 negotiation and bundled status/ping/client/
+SimpleEdit packages, native SimpleEdit upload, profile-gated Client.Media
+download/cache/play/loop/stop, `/mcmp`, `/silence`, and complete per-tab local
+mute behavior. Its fifth slice adds `/webview`, per-world GMCP WebView policy,
+validated URL/source/update/close requests, accessible native WebKit windows,
+and the documented page client bridge with connection, text, alias, history,
+display/capture, property, and GMCP callbacks. Its sixth slice
+completes all 157 portable v331 scripting members: timers, DNS, native TCP
+clients/listeners, live connection/window hooks, mutable rich lines, logging
+and profile proxies, named inputs/spawn tabs, and accessible native
+text/fixed/graphics windows. ActiveX/COM and HWND remain the two declared
+Windows-only exceptions. Its seventh slice generalizes the recursive dock tree
+for live WebViews and standalone/grouped spawns, adds safe per-world URL-pane
+restoration, floating Dock controls and embedded Pop Out controls, selectable
+speech voices, a native offline help window, and additional hostile-page,
+clipboard, persistence, and accessibility tests. Windows advanced-surface
+captures and the final release-wide audit remain. Its eighth slice completes
+the portable debugger set, adds repair-capable `/restoreinfo`, honors native
+contrast/non-color/transparency/motion settings, and adds deterministic
+keyboard accessibility, seeded parser/persistence properties, concurrent and
+fragmented fake-server sessions, and the signed universal release package.
+All 226 Swift tests, six XCUITests, six visual baselines, performance/leak
+gates, and 750 generated parity rows pass. Versioned `/debugnetwork`,
+`/restoreinfo`, `/stats`, rich stats, tilemap, atlas/map, image-pane, and
+reproducible WebView-crash evidence was captured from the designated
+`win11-dev` VM; successful Client.Media Windows replay and
+assisted VoiceOver/audio/device gates pass on the latest Apple-silicon device,
+with macOS 14 Intel accepted as an explicit assumption for this task. The
+remaining Windows capture and release-wide replay gates still block Milestone 5
+completion.
+
 This is an executable foundation rather than a parity release. Milestone status
 is recorded in `Documentation/MILESTONES.md`; remaining compatibility work and
 its required differential evidence are tracked in `Documentation/PARITY.md`.

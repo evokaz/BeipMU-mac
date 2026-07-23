@@ -62,6 +62,45 @@ final class LegacyConfigTests: XCTestCase {
         XCTAssertEqual(document.value(at: ["Connections", "Shortcuts", "LambdaMOO", "Host"]), "lambda.moo.mud.org:8888")
     }
 
+    func testSeededConfigParseSaveParsePropertyPreservesUnknownFields() throws {
+        var random = PersistenceSeededRandom(seed: 0xC0FF_EE33_1)
+        for iteration in 0..<96 {
+            let token = String(format: "%08X", random.next())
+            let source = """
+            Version=331
+            FutureRoot_\(iteration)="\(token)"
+            Connections {
+              FutureConnections_\(iteration)="keep-\(token)"
+              Shortcuts {
+                World_\(iteration) {
+                  Host="127.0.0.1:\(8_000 + random.nextInt(upperBound: 1_000))"
+                  FutureServer="\(token)"
+                  Characters {
+                    Hero { Connect="connect hero" FutureCharacter="\(token)" }
+                  }
+                }
+              }
+            }
+            """
+            let original = try LegacyConfigurationDocument(source: source)
+            let projection = try LegacyConfigurationProjection(document: original)
+            let firstSave = try projection.applying(to: original)
+            let reparsed = try LegacyConfigurationProjection(document: firstSave)
+            let secondSave = try reparsed.applying(to: firstSave)
+
+            XCTAssertEqual(firstSave.serialized(), secondSave.serialized(), "iteration \(iteration)")
+            XCTAssertEqual(firstSave.value(at: ["FutureRoot_\(iteration)"]), token)
+            XCTAssertEqual(
+                firstSave.value(at: ["Connections", "Shortcuts", "World_\(iteration)", "FutureServer"]),
+                token
+            )
+            XCTAssertEqual(
+                firstSave.value(at: ["Connections", "Shortcuts", "World_\(iteration)", "Characters", "Hero", "FutureCharacter"]),
+                token
+            )
+        }
+    }
+
     func testTargetedReplacementPreservesUnknownText() throws {
         var document = try LegacyConfigurationDocument(source: fixture)
         try document.setValue("example.org:1234", at: ["Connections", "Shortcuts", "LambdaMOO", "Host"])
@@ -124,6 +163,7 @@ final class LegacyConfigTests: XCTestCase {
         XCTAssertEqual(projection.servers[0].characters.first?.name, "Golden")
         XCTAssertEqual(projection.servers[0].characters.first?.connectText, "connect golden")
         XCTAssertTrue(projection.servers[0].characters.first?.autoConnect == true)
+        XCTAssertEqual(projection.servers[0].restoreLogAssignments[0], "GoldenFixture - Golden")
     }
 
     func testProjectionLoadsHierarchicalAliasesAndOrderedTriggers() async throws {
@@ -346,6 +386,7 @@ final class LegacyConfigTests: XCTestCase {
         Version=331
         TCP_KeepAlive=false
         ScriptStartup="scripts/start.js"
+        ScriptDebug=true
         Connections {
           ConnectTimeout=12000
           ConnectRetry=3
@@ -360,6 +401,7 @@ final class LegacyConfigTests: XCTestCase {
               Pueblo=true
               MCP=true
               MCMP=true
+              GMCP_WebView=1
               NAWSOnResize=true
               LimitTelnetCharset=true
               Characters {
@@ -394,6 +436,7 @@ final class LegacyConfigTests: XCTestCase {
         XCTAssertFalse(projection.settings.tcpKeepAlive)
         XCTAssertTrue(projection.settings.tcpNoDelay)
         XCTAssertEqual(projection.scripting.startupPath, "scripts/start.js")
+        XCTAssertTrue(projection.scripting.debugEnabled)
         let server = try XCTUnwrap(projection.servers.first)
         XCTAssertEqual(server.profile.host, "::1")
         XCTAssertEqual(server.profile.port, 7777)
@@ -403,6 +446,7 @@ final class LegacyConfigTests: XCTestCase {
         XCTAssertTrue(server.profile.pueblo)
         XCTAssertTrue(server.profile.mcp)
         XCTAssertTrue(server.profile.mcmp)
+        XCTAssertEqual(server.profile.gmcpWebViewPolicy, .allow)
         XCTAssertTrue(server.profile.sendNAWSOnResize)
         XCTAssertTrue(server.profile.limitTelnetCharset)
         let character = try XCTUnwrap(server.characters.first)
@@ -493,10 +537,12 @@ final class LegacyConfigTests: XCTestCase {
         let document = try LegacyConfigurationDocument(source: source)
         var projection = try LegacyConfigurationProjection(document: document)
         projection.scripting.startupPath = "scripts/startup.js"
+        projection.scripting.debugEnabled = true
 
         let updated = try projection.applying(to: document)
 
         XCTAssertEqual(updated.value(at: ["ScriptStartup"]), "scripts/startup.js")
+        XCTAssertEqual(updated.value(at: ["ScriptDebug"]), "true")
         XCTAssertEqual(updated.value(at: ["Future"]), "keep")
     }
 
@@ -1013,6 +1059,54 @@ final class LegacyConfigTests: XCTestCase {
         XCTAssertEqual(try RestoreLogCodec.read(repaired.repairedData, bufferSize: 80), [[records[0]]])
     }
 
+    func testRestoreLogInspectionReportsUsageAndAtomicallyRepairsCorruption() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RestoreInspection-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("Restore.dat")
+        let record = RestoreLogRecord(kind: .received, windowsFileTime: 1, payload: Data("valid".utf8))
+        var data = try RestoreLogCodec.write([[record], []], bufferSize: 80)
+        data[80 + 4] = 1 // Claim one trailing byte in the second empty ring buffer.
+        try data.write(to: url)
+
+        let inspection = try RestoreLogStore.inspectRepairing(from: url, bufferSize: 80)
+
+        XCTAssertEqual(inspection.bufferSize, 80)
+        XCTAssertEqual(inspection.buffers.count, 2)
+        XCTAssertEqual(inspection.buffers[0].recordCount, 1)
+        XCTAssertEqual(inspection.buffers[0].usedBytes, 17)
+        XCTAssertFalse(inspection.buffers[0].wasRepaired)
+        XCTAssertTrue(inspection.buffers[1].wasRepaired)
+        XCTAssertEqual(try RestoreLogStore.load(from: url, bufferSize: 80), [[record], []])
+    }
+
+    func testSeededCorruptRestorePropertyAlwaysRepairsToReadableBuffers() throws {
+        let records = (0..<12).map { index in
+            RestoreLogRecord(
+                kind: index.isMultiple(of: 2) ? .received : .sent,
+                windowsFileTime: UInt64(index + 1),
+                payload: Data("record-\(index)".utf8)
+            )
+        }
+        let pristine = try RestoreLogCodec.write(
+            [Array(records[0..<4]), Array(records[4..<8]), Array(records[8..<12])],
+            bufferSize: 128
+        )
+        var random = PersistenceSeededRandom(seed: 0x331_BADC_0DE)
+        for iteration in 0..<192 {
+            var damaged = pristine
+            for _ in 0..<(random.nextInt(upperBound: 12) + 1) {
+                let index = random.nextInt(upperBound: damaged.count)
+                damaged[index] = damaged[index] ^ UInt8(truncatingIfNeeded: random.next())
+            }
+            let repaired = try RestoreLogCodec.repair(damaged, bufferSize: 128)
+            XCTAssertNoThrow(try RestoreLogCodec.read(repaired.repairedData, bufferSize: 128), "iteration \(iteration)")
+            let stable = try RestoreLogCodec.repair(repaired.repairedData, bufferSize: 128)
+            XCTAssertTrue(stable.repairedBufferIndices.isEmpty, "iteration \(iteration)")
+        }
+    }
+
     func testWindowsV331GoldenRestoreLogIsReadable() throws {
         let url = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -1025,5 +1119,22 @@ final class LegacyConfigTests: XCTestCase {
         let combinedPayload = logs[0].reduce(into: Data()) { $0.append($1.payload) }
         XCTAssertNotNil(combinedPayload.range(of: Data("Golden prompt> ".utf8)))
         XCTAssertNotNil(combinedPayload.range(of: Data("Golden room".utf8)))
+    }
+}
+
+private struct PersistenceSeededRandom {
+    private var state: UInt64
+
+    init(seed: UInt64) {
+        state = seed
+    }
+
+    mutating func next() -> UInt64 {
+        state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+        return state
+    }
+
+    mutating func nextInt(upperBound: Int) -> Int {
+        Int(next() % UInt64(upperBound))
     }
 }

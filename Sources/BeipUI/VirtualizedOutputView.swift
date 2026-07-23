@@ -44,6 +44,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     private var imageCache: [URL: NSImage] = [:]
     private var imageTasks: [URL: Task<Void, Never>] = [:]
     private var animationTimer: Timer?
+    private var displayOptions = AccessibilityDisplayOptions.current
     private let horizontalInset: CGFloat = 9
     private let verticalInset: CGFloat = 7
     var canvasBackgroundColor = NSColor(calibratedWhite: 0.05, alpha: 1) {
@@ -60,11 +61,19 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         setAccessibilityElement(true)
         setAccessibilityRole(.textArea)
         setAccessibilityLabel("MU star output")
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(accessibilityDisplayOptionsChanged(_:)),
+            name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+            object: nil
+        )
     }
 
     required init?(coder: NSCoder) { nil }
 
     var itemCount: Int { storage.count - head }
+    var isBlinkTimerActive: Bool { blinkTimer != nil }
+    var isAnimationTimerActive: Bool { animationTimer != nil }
     var selectedRangeIsEmpty: Bool { anchor == nil || anchor == focus }
     var selectedItemID: UUID? { focus.flatMap { item(at: $0.item)?.id } }
     var firstVisibleItemID: UUID? {
@@ -156,6 +165,23 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         renderedItemCount = 0
         updateDocumentHeight()
         updateBlinkTimer()
+        needsDisplay = true
+    }
+
+    func applyAccessibilityDisplayOptions(_ options: AccessibilityDisplayOptions) {
+        guard options != displayOptions else { return }
+        displayOptions = options
+        if options.reduceMotion {
+            blinkTimer?.invalidate()
+            blinkTimer = nil
+            blinkVisible = true
+            animationTimer?.invalidate()
+            animationTimer = nil
+            resetAnimationsToFirstFrame()
+        } else {
+            updateBlinkTimer()
+            updateAnimationTimer()
+        }
         needsDisplay = true
     }
 
@@ -484,7 +510,12 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     private func drawMarker(for item: Item, in rect: NSRect) {
         guard markedItems.contains(item.id) else { return }
         NSColor.systemYellow.setFill()
-        NSRect(x: 1, y: rect.minY + 1, width: 4, height: max(3, rect.height - 2)).fill()
+        let marker = NSRect(x: 1, y: rect.minY + 1, width: 4, height: max(3, rect.height - 2))
+        marker.fill()
+        if displayOptions.differentiateWithoutColor || displayOptions.increaseContrast {
+            NSColor.labelColor.setStroke()
+            NSBezierPath(rect: marker).stroke()
+        }
     }
 
     private func drawAssets(
@@ -541,6 +572,12 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     }
 
     private func updateAnimationTimer() {
+        if displayOptions.reduceMotion {
+            animationTimer?.invalidate()
+            animationTimer = nil
+            resetAnimationsToFirstFrame()
+            return
+        }
         let hasAnimation = imageCache.values.contains { image in
             image.representations.contains { representation in
                 guard let bitmap = representation as? NSBitmapImageRep else { return false }
@@ -569,6 +606,16 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
             }
         }
         if advanced { needsDisplay = true }
+    }
+
+    private func resetAnimationsToFirstFrame() {
+        for image in imageCache.values {
+            for case let bitmap as NSBitmapImageRep in image.representations {
+                if (bitmap.value(forProperty: .frameCount) as? Int ?? 1) > 1 {
+                    bitmap.setProperty(.currentFrame, withValue: 0)
+                }
+            }
+        }
     }
 
     private func approximatePoint(
@@ -704,6 +751,12 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     }
 
     private func updateBlinkTimer() {
+        if displayOptions.reduceMotion {
+            blinkTimer?.invalidate()
+            blinkTimer = nil
+            blinkVisible = true
+            return
+        }
         if blinkingItemCount > 0, blinkTimer == nil {
             blinkTimer = Timer.scheduledTimer(withTimeInterval: 0.55, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated {
@@ -732,5 +785,9 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
 
     private func postSelectionAccessibilityChange() {
         NSAccessibility.post(element: self, notification: .selectedTextChanged)
+    }
+
+    @objc private func accessibilityDisplayOptionsChanged(_ notification: Notification) {
+        applyAccessibilityDisplayOptions(.current)
     }
 }

@@ -25,7 +25,7 @@ let package = Package(
         .target(
             name: "BeipScriptRuntime",
             dependencies: ["BeipCore"],
-            linkerSettings: [.linkedFramework("JavaScriptCore")]
+            linkerSettings: [.linkedFramework("JavaScriptCore"), .linkedFramework("Network")]
         ),
         .target(
             name: "BeipUI",
@@ -53,7 +53,7 @@ let package = Package(
         .testTarget(name: "BeipProtocolsTests", dependencies: ["BeipProtocols", "BeipCore", "BeipTestSupport"]),
         .testTarget(name: "BeipPersistenceTests", dependencies: ["BeipPersistence", "BeipCore"]),
         .testTarget(name: "BeipAutomationTests", dependencies: ["BeipAutomation", "BeipCore"]),
-        .testTarget(name: "BeipScriptRuntimeTests", dependencies: ["BeipScriptRuntime"]),
+        .testTarget(name: "BeipScriptRuntimeTests", dependencies: ["BeipScriptRuntime", "BeipTestSupport"]),
         .testTarget(name: "BeipUITests", dependencies: ["BeipUI"]),
     ]
 )

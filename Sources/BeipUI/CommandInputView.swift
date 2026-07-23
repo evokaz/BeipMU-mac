@@ -82,6 +82,10 @@ final class CommandInputView: NSTextView {
         text = conversion.apply(to: string)
     }
 
+    func addToHistory(_ value: String) {
+        commandHistory.record(value)
+    }
+
     override func paste(_ sender: Any?) {
         guard let pasted = NSPasteboard.general.string(forType: .string) else { return }
         let normalized = pasted.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")

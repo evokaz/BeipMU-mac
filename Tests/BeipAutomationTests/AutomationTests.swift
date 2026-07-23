@@ -425,6 +425,56 @@ final class AutomationTests: XCTestCase {
     func testCommandCompatibilityFormsPreservePayloads() {
         let registry = CommandRegistry()
         XCTAssertEqual(registry.parse("/gmcp dump_on", variables: [:]), .gmcpDump(true))
+        XCTAssertEqual(registry.parse("/tilemap on", variables: [:]), .tileMap(true))
+        XCTAssertEqual(registry.parse("/tilemap OFF", variables: [:]), .tileMap(false))
+        XCTAssertEqual(
+            registry.parse("/tilemap maybe", variables: [:]),
+            .display("Usage: '/tilemap on/off' to enable/disable tilemap tag parsing")
+        )
+        XCTAssertEqual(
+            registry.parse(#"/switchtab "Chat Channels" Public"#, variables: [:]),
+            .switchSpawnTab(group: "Chat Channels", title: "Public")
+        )
+        XCTAssertEqual(
+            registry.parse("/switchtab only-one", variables: [:]),
+            .display("Expected 'tab group' and 'tab name' as parameters")
+        )
+        XCTAssertEqual(
+            registry.parse(#"/map_addroom "Crossroads Hotelry" east west"#, variables: [:]),
+            .mapAddRoom(name: "Crossroads Hotelry", outward: "east", returnCommand: "west")
+        )
+        XCTAssertEqual(
+            registry.parse("/map_addexit north south", variables: [:]),
+            .mapAddExit(outward: "north", returnCommand: "south")
+        )
+        XCTAssertEqual(registry.parse("/map_guesslocation", variables: [:]), .mapGuessLocation)
+        XCTAssertEqual(registry.parse("/map_look", variables: [:]), .mapLook)
+        XCTAssertEqual(
+            registry.parse(#"/webview url="https://example.com/page" position="10,20,640,480" state="maximized""#, variables: [:]),
+            .webView(.init(
+                url: URL(string: "https://example.com/page"),
+                frame: .init(x: 10, y: 20, width: 640, height: 480),
+                maximized: true
+            ))
+        )
+        XCTAssertEqual(
+            registry.parse(#"/webview source="&lt;h1&gt;Hello&lt;/h1&gt;""#, variables: [:]),
+            .webView(.init(source: "<h1>Hello</h1>"))
+        )
+        XCTAssertEqual(
+            registry.parse(#"/webview position="bad""#, variables: [:]),
+            .display("Command error: Invalid rect")
+        )
+        XCTAssertEqual(registry.parse("/mcmp flush", variables: [:]), .mediaControl(.flush))
+        XCTAssertEqual(registry.parse("/mcmp INFO", variables: [:]), .mediaControl(.info))
+        XCTAssertEqual(
+            registry.parse("/mcmp", variables: [:]),
+            .display("MCMP No parameter specified, available options are flush and info")
+        )
+        XCTAssertEqual(
+            registry.parse("/map_addroom missing", variables: [:]),
+            .display("Command is in the form of <room name> <exit to get there> <exit to get back>")
+        )
         XCTAssertEqual(
             registry.parse(#"/@ app.OutputDebugText("hello world")"#, variables: [:]),
             .script(#"app.OutputDebugText("hello world")"#)
@@ -436,6 +486,8 @@ final class AutomationTests: XCTestCase {
         XCTAssertEqual(registry.parse("/debugaliases", variables: [:]), .debugAutomation(.aliases))
         XCTAssertEqual(registry.parse("/debugtriggers", variables: [:]), .debugAutomation(.triggers))
         XCTAssertEqual(registry.parse("/debugtimers", variables: [:]), .debugAutomation(.timers))
+        XCTAssertEqual(registry.parse("/debugnetwork", variables: [:]), .debugNetwork)
+        XCTAssertEqual(registry.parse("/restoreinfo", variables: [:]), .restoreInfo)
         guard case let .display(help) = registry.parse("/help", variables: [:]) else {
             return XCTFail("missing command help")
         }

@@ -37,7 +37,7 @@ public enum ProtocolOutput: Sendable, Hashable {
     case line(RenderedLine)
     case prompt(RenderedLine)
     case gmcp(GMCPMessage)
-    case mcp(String)
+    case mcp(MCPMessage)
     case encoding(TextEncoding)
     case requestNAWS
     case diagnostic(String)
@@ -49,6 +49,7 @@ public protocol ByteStreamProcessor: Sendable {
     mutating func setTerminalType(_ value: String)
     mutating func consume(_ data: Data) -> [ProtocolOutput]
     mutating func encode(_ text: String) throws -> Data
+    mutating func encodeMCP(_ message: MCPMessage) -> [Data]
     mutating func windowSizeChanged(columns: UInt16, rows: UInt16) -> Data?
     mutating func manualWindowSize(columns: UInt16, rows: UInt16) -> Data?
 }
@@ -56,6 +57,7 @@ public protocol ByteStreamProcessor: Sendable {
 public extension ByteStreamProcessor {
     mutating func resetFormatting() {}
     mutating func setTerminalType(_ value: String) {}
+    mutating func encodeMCP(_ message: MCPMessage) -> [Data] { [] }
     mutating func windowSizeChanged(columns: UInt16, rows: UInt16) -> Data? { nil }
     mutating func manualWindowSize(columns: UInt16, rows: UInt16) -> Data? {
         windowSizeChanged(columns: columns, rows: rows)
@@ -69,7 +71,7 @@ public enum SessionEvent: Sendable, Hashable {
     case prompt(RenderedLine)
     case renderedLine(RenderedLine)
     case gmcp(GMCPMessage)
-    case mcp(String)
+    case mcp(MCPMessage)
     case encoding(TextEncoding)
     case activity(important: Bool)
     case log(String)
@@ -165,6 +167,10 @@ public actor SessionActor {
 
     public func receiveGMCP(_ message: GMCPMessage) {
         eventContinuation?.yield(.gmcp(message))
+    }
+
+    public func sendMCP(_ message: MCPMessage) async {
+        for data in processor.encodeMCP(message) { await transmit(data) }
     }
 
     public func ping(_ text: String) async {

@@ -24,6 +24,19 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
         var children: [Trigger]
     }
 
+    private final class SimpleEditUploadState {
+        let reference: String
+        let type: String
+        let original: String
+        var lastUploaded: String?
+
+        init(reference: String, type: String, original: String) {
+            self.reference = reference
+            self.type = type
+            self.original = original
+        }
+    }
+
     private let profileLibrary: ProfileLibrary
     private let output = OutputTextView()
     private let input = CommandInputView()
@@ -36,6 +49,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
     private let triggerEngine = TriggerEngine()
     private let speechSynthesizer = AVSpeechSynthesizer()
     private var scriptSounds: [NSSound] = []
+    private var scriptWindows: [String: ScriptWindowController] = [:]
     private var suppressNextSessionActivity = false
     private var dockController: WorkspaceDockController!
     private var variables: [String: String] = [:]
@@ -54,19 +68,39 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
     private var triggerStatisticsWindows: [String: TriggerStatisticsWindowController] = [:]
     private var triggerStatistics: [String: TriggerStatisticStore] = [:]
     private var triggerSpawnWindows: [String: TriggerSpawnWindowController] = [:]
+    private var triggerSpawnTabGroups: [String: TriggerSpawnTabGroupWindowController] = [:]
+    private var suppressSpawnPersistence = false
+    private var gmcpState = AdvancedGMCPState()
+    private var mediaState = ClientMediaState()
+    private let mediaController = ClientMediaController()
+    private var mcpStatusWindow: MCPStatusWindowController?
+    private var webViewState = WebViewProtocolState()
+    private var webViewWindows: [String: WebViewWindowController] = [:]
+    private var nextUnnamedWebViewID = 1
+    private var gmcpStatisticsWindows: [String: GMCPStatisticsWindowController] = [:]
+    private var tileMapWindows: [String: TileMapWindowController] = [:]
+    private var imageViewerWindow: ImageViewerWindowController?
+    private var atlasWindow: AtlasWindowController?
+    private var suppressAtlasPersistence = false
     private var automationEditors: [AutomationEditorWindowController] = []
     private var automationDebugWindows: [CommandOutcome.DebugAutomationKind: AutomationDebugWindowController] = [:]
+    private var networkDebugWindow: NetworkDebugWindowController?
+    private var scriptDebugWindow: ScriptDebugWindowController?
+    private var scriptDebugEntries: [ScriptDebugWindowController.Entry] = []
+    private var helpWindow: EmbeddedHelpWindowController?
     private var spawnCapture: SpawnCapture?
     private var statisticsTask: Task<Void, Never>?
     private var logWriters: [URL: ActiveLog] = [:]
     private var localEcho = true
     private var terminalType = "Beip"
     private var gmcpDumpEnabled = false
+    private var tileMapsEnabled = true
     private var hasPendingPrompt = false
     private var unreadCount = 0
     private var lastFindQuery = ""
     private var preferences = WorkspacePreferencesStore.load()
     private var baseWindowTitle = "Untitled"
+    private var scriptTitlePrefix = ""
     private var isMuted = false
     private var connectionStateText = "Disconnected"
     private weak var taskbarView: NSStackView?
@@ -82,6 +116,40 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
     var dockPlacement: WorkspaceDockPlacement { dockController?.placement ?? preferences.dockPlacement }
     var legacyDockPlacement: WorkspaceDockPlacement? { dockController?.legacyPlacement }
     var activeLogCount: Int { logWriters.count }
+
+    func startDeviceMediaAuditIfRequested() {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["BEIPMU_DEVICE_MEDIA_AUDIT"] == "1" else { return }
+
+        if let source = environment["BEIPMU_DEVICE_MEDIA_URL"].flatMap(URL.init(string:)) {
+            let item = ClientMediaItem(
+                name: "device-audit",
+                source: source,
+                volume: 1,
+                loops: 1,
+                continues: false
+            )
+            appendClient("Device audit: downloading Client.Media from \(source.absoluteString)")
+            mediaController.apply(.play(item))
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(1))
+                guard let self else { return }
+                appendClient("Device audit: \(mediaController.information)")
+            }
+        }
+
+        let phrase = environment["BEIPMU_DEVICE_SPEECH_TEXT"]
+            ?? "BeipMU selected speech voice device audit."
+        let utterance = AVSpeechUtterance(string: phrase)
+        if let identifier = preferences.speechVoiceIdentifier,
+           let voice = AVSpeechSynthesisVoice(identifier: identifier) {
+            utterance.voice = voice
+            appendClient("Device audit: speaking with \(voice.name), \(voice.language).")
+        } else {
+            appendClient("Device audit: speaking with the system default voice.")
+        }
+        speechSynthesizer.speak(utterance)
+    }
 
     func usesWorkspaceLayout(_ layout: WorkspaceLayoutNode) -> Bool {
         dockController?.currentLayout.hasSameTopology(as: layout) == true
@@ -99,10 +167,22 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
         window.setAccessibilityIdentifier("mainWindow")
         window.minSize = NSSize(width: 520, height: 360)
         super.init(window: window)
+        Task { [weak self, scriptService] in
+            await scriptService.startAsyncOutputDelivery { [weak self] outputs in
+                self?.applyScriptEvaluation(.init(outputs: outputs), showValue: false)
+            }
+        }
+        mediaController.onError = { [weak self] message in self?.appendError(message) }
         if preferences.logging == SessionLogOptions() {
             preferences.logging = profileLibrary.workspace.projection.logging
         }
         window.delegate = self
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(accessibilityDisplayOptionsChanged(_:)),
+            name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+            object: nil
+        )
         configureUI(in: window)
         if ProcessInfo.processInfo.environment["BEIPMU_UI_TESTING"] == "1" {
             window.center()
@@ -119,15 +199,36 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
     required init?(coder: NSCoder) { nil }
 
     func windowWillClose(_ notification: Notification) {
+        Task { [weak self, scriptService] in
+            guard let self else { return }
+            applyScriptEvaluation(
+                await scriptService.dispatchConnectionEvent("window:close", host: scriptHostSnapshot),
+                showValue: false
+            )
+        }
         dockController?.prepareForOwnerClose()
         secondaryInputWindows.forEach { $0.close() }
         editWindows.forEach { $0.close() }
         statisticsTask?.cancel()
         statisticsWindow?.close()
         triggerStatisticsWindows.values.forEach { $0.close() }
-        triggerSpawnWindows.values.forEach { $0.close() }
+        saveSpawnSurfacePreferences()
+        closeSpawnSurfaces()
+        gmcpStatisticsWindows.values.forEach { $0.close() }
+        tileMapWindows.values.forEach { $0.close() }
+        imageViewerWindow?.close()
+        mcpStatusWindow?.close()
+        closeWebViews()
+        mediaController.flush()
+        scriptWindows.values.forEach { $0.close() }
+        scriptWindows.removeAll()
+        saveAtlasSurfacePreferences()
+        closeAtlasSurface()
         automationDebugWindows.values.forEach { $0.close() }
+        networkDebugWindow?.close()
+        scriptDebugWindow?.close()
         stopAllLogs(announcing: false)
+        Task { [scriptService] in await scriptService.stopAsyncOutputDelivery() }
         sessionTask?.cancel()
         if let session { Task { await session.disconnect() } }
         onClose?()
@@ -144,6 +245,23 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
         activityLabel.stringValue = ""
         updateWindowTitle()
         Self.updateDockBadge()
+        Task { [weak self, scriptService] in
+            guard let self else { return }
+            applyScriptEvaluation(
+                await scriptService.dispatchConnectionEvent("window:activate", arguments: ["true"], host: scriptHostSnapshot),
+                showValue: false
+            )
+        }
+    }
+
+    func windowDidResignKey(_ notification: Notification) {
+        Task { [weak self, scriptService] in
+            guard let self else { return }
+            applyScriptEvaluation(
+                await scriptService.dispatchConnectionEvent("window:activate", arguments: ["false"], host: scriptHostSnapshot),
+                showValue: false
+            )
+        }
     }
 
     func showConnectDialog() {
@@ -258,6 +376,12 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
 
     func toggleMute() {
         isMuted.toggle()
+        mediaController.isMuted = isMuted
+        if isMuted {
+            scriptSounds.forEach { $0.stop() }
+            scriptSounds.removeAll()
+            speechSynthesizer.stopSpeaking(at: .immediate)
+        }
         updateWindowTitle()
         appendClient(isMuted ? "This tab is muted." : "This tab is unmuted.")
     }
@@ -272,6 +396,9 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
 
     func prepareForApplicationTermination() {
         dockController?.prepareForOwnerClose()
+        saveSpawnSurfacePreferences()
+        saveAtlasSurfacePreferences()
+        mediaController.flush()
         stopAllLogs(announcing: false)
     }
 
@@ -398,6 +525,24 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
         let startupScript = NSTextField(string: profileLibrary.workspace.projection.scripting.startupPath)
         startupScript.placeholderString = "Optional JavaScript file path"
         startupScript.setAccessibilityIdentifier("scriptStartupPath")
+        let scriptDebug = NSButton(checkboxWithTitle: "Enable script debugging", target: nil, action: nil)
+        scriptDebug.state = profileLibrary.workspace.projection.scripting.debugEnabled ? .on : .off
+        scriptDebug.setAccessibilityIdentifier("scriptDebugEnabled")
+        let voices = AVSpeechSynthesisVoice.speechVoices().sorted {
+            if $0.language == $1.language { return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            return $0.language < $1.language
+        }
+        let speechVoice = NSPopUpButton()
+        speechVoice.addItem(withTitle: "System Default")
+        for voice in voices {
+            speechVoice.addItem(withTitle: "\(voice.name) — \(voice.language)")
+            speechVoice.lastItem?.representedObject = voice.identifier
+        }
+        if let identifier = preferences.speechVoiceIdentifier,
+           let index = speechVoice.itemArray.firstIndex(where: { $0.representedObject as? String == identifier }) {
+            speechVoice.selectItem(at: index)
+        }
+        speechVoice.setAccessibilityIdentifier("speechVoice")
         let grid = NSGridView(views: [
             [NSTextField(labelWithString: "History lines:"), historyLimit],
             [NSView(), timestamps],
@@ -405,11 +550,13 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
             [NSView(), sticky],
             [NSView(), spelling],
             [NSTextField(labelWithString: "Startup script:"), startupScript],
+            [NSView(), scriptDebug],
+            [NSTextField(labelWithString: "Speech voice:"), speechVoice],
         ])
         grid.column(at: 0).xPlacement = .trailing
         grid.column(at: 1).width = 230
         grid.rowSpacing = 8
-        grid.frame = NSRect(x: 0, y: 0, width: 400, height: 160)
+        grid.frame = NSRect(x: 0, y: 0, width: 440, height: 225)
         alert.accessoryView = grid
         let finish: (NSApplication.ModalResponse) -> Void = { [weak self] response in
             guard response == .alertFirstButtonReturn, let self else { return }
@@ -418,11 +565,15 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
             self.preferences.usesFanFoldBackgrounds = fanFold.state == .on
             self.preferences.stickyInput = sticky.state == .on
             self.preferences.checksSpelling = spelling.state == .on
+            self.preferences.speechVoiceIdentifier = speechVoice.selectedItem?.representedObject as? String
             self.applyPreferences()
             self.savePreferences()
             do {
                 try self.profileLibrary.mutate {
-                    $0.updateScripting { $0.startupPath = startupScript.stringValue }
+                    $0.updateScripting {
+                        $0.startupPath = startupScript.stringValue
+                        $0.debugEnabled = scriptDebug.state == .on
+                    }
                 }
             } catch {
                 self.appendError("Unable to save startup script setting: \(error.localizedDescription)")
@@ -430,6 +581,14 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
         }
         if let window { alert.beginSheetModal(for: window, completionHandler: finish) }
         else { finish(alert.runModal()) }
+    }
+
+    func showEmbeddedHelp(topic: String? = nil) {
+        let controller = helpWindow ?? EmbeddedHelpWindowController()
+        helpWindow = controller
+        controller.show(topic: topic)
+        controller.showWindow(self)
+        controller.window?.makeKeyAndOrderFront(self)
     }
 
     func showAutomationEditor(_ kind: AutomationEditorWindowController.Kind) {
@@ -461,6 +620,88 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
                 let entries = await delayScheduler.entries()
                 automationDebugWindows[.timers]?.showTimerEntries(entries)
             }
+        }
+    }
+
+    func showNetworkDebugger() {
+        if let networkDebugWindow {
+            networkDebugWindow.showWindow(nil)
+            networkDebugWindow.window?.makeKeyAndOrderFront(nil)
+            networkDebugWindow.focusInitialControl()
+            return
+        }
+        let controller = NetworkDebugWindowController(title: baseWindowTitle)
+        controller.onClose = { [weak self] in self?.networkDebugWindow = nil }
+        networkDebugWindow = controller
+        controller.showWindow(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
+        controller.focusInitialControl()
+    }
+
+    func showScriptDebugger() {
+        if let scriptDebugWindow {
+            scriptDebugWindow.showWindow(nil)
+            scriptDebugWindow.window?.makeKeyAndOrderFront(nil)
+            scriptDebugWindow.focusInitialControl()
+            return
+        }
+        let controller = ScriptDebugWindowController(title: baseWindowTitle)
+        controller.onClose = { [weak self] in self?.scriptDebugWindow = nil }
+        controller.onReset = { [weak self, scriptService] in
+            Task {
+                await scriptService.reset()
+                await MainActor.run {
+                    self?.recordScriptDebug(.init(kind: .runtime, message: "Runtime reset."))
+                }
+            }
+        }
+        scriptDebugWindow = controller
+        controller.replace(with: scriptDebugEntries)
+        controller.showWindow(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
+        controller.focusInitialControl()
+    }
+
+    func showRestoreInformation() {
+        appendClient("Live Restore.dat information… running CheckAndRepair first")
+        guard let configurationURL = profileLibrary.workspace.sourceURL else {
+            appendError("Restore.dat is unavailable until a Config.txt file is open.")
+            return
+        }
+        let restoreURL = configurationURL.deletingLastPathComponent().appendingPathComponent("Restore.dat")
+        guard FileManager.default.fileExists(atPath: restoreURL.path) else {
+            appendClient("CheckAndRepair complete\nBuffer Size: 0kb   Total Buffers: 0\nSummary complete.")
+            return
+        }
+        let document = profileLibrary.workspace.document
+        let sizeInKB = document.value(at: ["Connections", "Logging", "RestoreBufferSizeCurrent"])
+            .flatMap(Int.init)
+            ?? document.value(at: ["Connections", "Logging", "RestoreBufferSize"]).flatMap(Int.init)
+            ?? 64
+        let bufferSize = sizeInKB * 1_024
+        guard bufferSize >= 20 else {
+            appendError("Restore.dat has an invalid configured buffer size: \(sizeInKB)kb.")
+            return
+        }
+        do {
+            let inspection = try RestoreLogStore.inspectRepairing(from: restoreURL, bufferSize: bufferSize)
+            let assignments = profileLibrary.workspace.projection.servers.reduce(into: [Int: String]()) {
+                $0.merge($1.restoreLogAssignments) { current, _ in current }
+            }
+            var lines = [
+                "CheckAndRepair complete",
+                "Buffer Size: \(inspection.bufferSize / 1_024)kb   Total Buffers: \(inspection.buffers.count)",
+            ]
+            lines += inspection.buffers.map { buffer in
+                let owner = assignments[buffer.index] ?? "Unassigned"
+                let percent = inspection.bufferSize == 0 ? 0 : buffer.usedBytes * 100 / inspection.bufferSize
+                let repaired = buffer.wasRepaired ? "   Repaired" : ""
+                return "\(buffer.index)  \(owner) - Used: \(buffer.usedBytes)  \(percent)% - Records: \(buffer.recordCount)\(repaired)"
+            }
+            lines.append("Summary complete.")
+            appendClient(lines.joined(separator: "\n"))
+        } catch {
+            appendError("Unable to inspect Restore.dat: \(error.localizedDescription)")
         }
     }
 
@@ -631,6 +872,12 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
         dockController?.applyTheme(palette)
         secondaryInputWindows.forEach { $0.applyTheme(palette) }
         editWindows.forEach { $0.applyTheme(palette) }
+        mcpStatusWindow?.applyTheme(palette)
+        webViewWindows.values.forEach { $0.applyTheme(palette) }
+    }
+
+    @objc private func accessibilityDisplayOptionsChanged(_ notification: Notification) {
+        applyThemeSettings(preferences.theme)
     }
 
     func showInputPrefixDialog() {
@@ -709,6 +956,12 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
             owner.addChildWindow(child, ordered: .above)
         }
         controller.window?.makeKeyAndOrderFront(nil)
+    }
+
+    func showAtlas() {
+        let controller = ensureAtlasWindow()
+        controller.showWindow(self)
+        controller.window?.makeKeyAndOrderFront(self)
     }
 
     func applyInputConversion(_ conversion: InputConversion) {
@@ -824,6 +1077,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
         dockController.onLayoutChange = { [weak self] layout in
             guard let self else { return }
             self.preferences.workspaceLayout = layout
+            self.preferences.workspaceLayouts[self.notesKey] = layout
             self.savePreferences()
         }
         dockController.onNotesChange = { [weak self] notes in
@@ -840,7 +1094,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
         ])
         if preferences.dockPlacement == .floating {
             dockController.apply(placement: .floating, thickness: preferences.dockThickness)
-        } else if let layout = preferences.workspaceLayout {
+        } else if let layout = preferences.workspaceLayouts[notesKey] ?? preferences.workspaceLayout {
             dockController.apply(layout: layout)
         } else {
             dockController.apply(placement: preferences.dockPlacement, thickness: preferences.dockThickness)
@@ -854,6 +1108,13 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
         character: CharacterProfile? = nil,
         policy: ConnectionPolicy = .init()
     ) {
+        preferences.workspaceLayouts[notesKey] = dockController.currentLayout
+        savePreferences()
+        saveSpawnSurfacePreferences()
+        closeSpawnSurfaces()
+        saveAtlasSurfacePreferences()
+        closeAtlasSurface()
+        closeWebViews()
         sessionTask?.cancel()
         if let session { Task { await session.disconnect() } }
         currentServer = server
@@ -865,12 +1126,22 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
         keyboardMacroGroups = profileLibrary.workspace.projection.macroGroups(for: server, character: character)
         aliasesEchoResults = profileLibrary.workspace.projection.automation.aliases.echo
         aliasesProcessCommands = profileLibrary.workspace.projection.automation.aliases.processCommands
+        gmcpState.reset()
+        mediaState.reset()
+        mediaController.flush()
         baseWindowTitle = character.map { "\($0.name) @ \(server.name)" } ?? server.name
         updateWindowTitle()
         dockController.setNotes(preferences.characterNotes[notesKey] ?? "")
+        if let layout = preferences.workspaceLayouts[notesKey] ?? preferences.workspaceLayout {
+            dockController.apply(layout: layout)
+        }
+        restoreSpawnSurfacePreferences()
+        restoreAtlasSurfacePreferences()
+        restoreWebViewPreferences()
         refreshDiagnostics()
         var processor = MUDProtocolPipeline(
             encoding: server.encoding,
+            mcp: server.mcp,
             pueblo: server.pueblo,
             limitTelnetCharset: server.limitTelnetCharset
         )
@@ -937,24 +1208,55 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
             case let .failed(message): connectionStateText = "Failed"; stateLabel.stringValue = connectionStateText; stateLabel.textColor = .systemRed; appendError(message)
             }
             refreshDiagnostics()
+            if case .connected = state { webViewWindows.values.forEach { $0.connectionChanged(connected: true) } }
+            if case .disconnected = state { webViewWindows.values.forEach { $0.connectionChanged(connected: false) } }
+            if case .failed = state { webViewWindows.values.forEach { $0.connectionChanged(connected: false) } }
+            if case .connected = state {
+                applyScriptEvaluation(await scriptService.dispatchConnectionEvent("connect", host: scriptHostSnapshot), showValue: false)
+            }
+            if case .disconnected = state {
+                applyScriptEvaluation(await scriptService.dispatchConnectionEvent("disconnect", host: scriptHostSnapshot), showValue: false)
+            }
+            if case .failed = state {
+                applyScriptEvaluation(await scriptService.dispatchConnectionEvent("disconnect", host: scriptHostSnapshot), showValue: false)
+            }
         case let .renderedLine(line):
-            let presentation = await applyTriggers(to: line)
+            webViewWindows.values.forEach { $0.observeReceived(line.text) }
+            let hookedLine = await applyScriptDisplayHook(to: gmcpState.decorate(line))
+            let presentation = await applyTriggers(to: hookedLine)
+            let webViewGag = webViewWindows.values.reduce(false) { $1.observeDisplay(presentation.line) || $0 }
+            _ = atlasWindow?.observeOutput(presentation.line.text)
             suppressNextSessionActivity = presentation.suppressActivity
             if hasPendingPrompt { output.removeLastLine(); hasPendingPrompt = false }
-            if !presentation.gagDisplay { output.append(presentation.line) }
+            if !presentation.gagDisplay, !webViewGag {
+                output.append(presentation.line)
+                offerImages(in: presentation.line)
+            }
             if presentation.line.source != .localEcho && !presentation.gagLog { appendToLogs(presentation.line) }
         case let .prompt(line):
-            let presentation = await applyTriggers(to: line)
+            webViewWindows.values.forEach { $0.observeReceived(line.text) }
+            let hookedLine = await applyScriptDisplayHook(to: gmcpState.decorate(line))
+            let presentation = await applyTriggers(to: hookedLine)
+            let webViewGag = webViewWindows.values.reduce(false) { $1.observeDisplay(presentation.line) || $0 }
+            _ = atlasWindow?.observeOutput(presentation.line.text)
             if hasPendingPrompt { output.removeLastLine() }
-            if !presentation.gagDisplay {
+            if !presentation.gagDisplay, !webViewGag {
                 output.append(presentation.line, terminator: "")
+                offerImages(in: presentation.line)
                 hasPendingPrompt = true
             } else {
                 hasPendingPrompt = false
             }
             if !presentation.gagLog { appendToLogs(presentation.line) }
-        case let .gmcp(message): activityLabel.stringValue = "GMCP: \(message.package)"
-        case let .mcp(message): activityLabel.stringValue = "MCP: \(message)"
+        case let .gmcp(message):
+            webViewWindows.values.forEach { $0.observeGMCP(message) }
+            let raw = message.payload.isEmpty ? message.package : "\(message.package) \(message.payload)"
+            applyScriptEvaluation(
+                await scriptService.dispatchConnectionEvent("gmcp", arguments: [raw], host: scriptHostSnapshot),
+                showValue: false
+            )
+            handleAdvancedGMCP(message)
+        case let .mcp(message): handleMCP(message)
         case let .encoding(encoding): appendClient("Charset negotiated: \(encoding.rawValue)")
         case let .error(message): appendError(message)
         case let .log(message): appendClient(message)
@@ -966,7 +1268,18 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
             updateWindowTitle()
             if important { NSApplication.shared.requestUserAttention(.informationalRequest) }
             Self.updateDockBadge()
-        case .received, .sent: break
+        case let .received(data):
+            networkDebugWindow?.append(data, received: true)
+            applyScriptEvaluation(
+                await scriptService.dispatchConnectionEvent(
+                    "receive",
+                    arguments: [String(decoding: data, as: UTF8.self)],
+                    host: scriptHostSnapshot
+                ),
+                showValue: false
+            )
+        case let .sent(data):
+            networkDebugWindow?.append(data, received: false)
         }
     }
 
@@ -1010,13 +1323,72 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
 
     private func submitLine(_ line: String) {
         appendTypedToLogs(line)
-        processInput(line)
+        guard line.hasPrefix("/") else { processInput(line); return }
+        let body = String(line.dropFirst())
+        let split = body.firstIndex(where: { $0.isWhitespace })
+        let command = split.map { String(body[..<$0]) } ?? body
+        let parameters = split.map { body[$0...].trimmingCharacters(in: .whitespacesAndNewlines) } ?? ""
+        Task { [weak self, scriptService] in
+            guard let self else { return }
+            applyScriptEvaluation(
+                await scriptService.dispatchConnectionEvent(
+                    "window:command",
+                    arguments: [command, parameters],
+                    host: scriptHostSnapshot
+                ),
+                showValue: false
+            )
+            processInput(line)
+        }
     }
 
     private func sendToSession(_ text: String) {
         guard let session else { appendError("Not connected."); return }
+        Task { [weak self, scriptService] in
+            guard let self else { return }
+            let result = await scriptService.dispatchConnectionEvent("send", arguments: [text], host: scriptHostSnapshot)
+            applyScriptEvaluation(result, showValue: false)
+            transmitToSession(text, session: session)
+        }
+    }
+
+    private func transmitToSession(_ text: String, session explicitSession: SessionActor? = nil) {
+        guard let session = explicitSession ?? session else { appendError("Not connected."); return }
         appendSentToLogs(text)
+        webViewWindows.values.forEach { $0.observeSent(text) }
         Task { await session.send(text) }
+    }
+
+    private func receiveFromScript(_ text: String) {
+        guard let session else { appendError("Not connected."); return }
+        Task { [weak self, scriptService] in
+            guard let self else { return }
+            let result = await scriptService.dispatchConnectionEvent("receive", arguments: [text], host: scriptHostSnapshot)
+            applyScriptEvaluation(result, showValue: false)
+            await session.receive(text)
+        }
+    }
+
+    private func applyScriptDisplayHook(to line: RenderedLine) async -> RenderedLine {
+        let result = await scriptService.dispatchConnectionEvent("display", line: line, host: scriptHostSnapshot)
+        applyScriptEvaluation(.init(error: result.error, outputs: result.outputs), showValue: false)
+        struct ChangedLine: Decodable { var text: String; var html: String }
+        guard let value = result.value,
+              let data = value.data(using: .utf8),
+              let changed = try? JSONDecoder().decode(ChangedLine.self, from: data) else { return line }
+        if changed.text == line.text, !changed.html.contains("<span") { return line }
+        var parser = MUDProtocolPipeline(encoding: .utf8, pueblo: true, puebloActive: true)
+        for event in parser.consume(Data((changed.html + "\n").utf8)) {
+            if case var .line(parsed) = event {
+                parsed.source = line.source
+                parsed.timestamp = line.timestamp
+                return parsed
+            }
+        }
+        var changedLine = line
+        changedLine.text = changed.text
+        changedLine.runs = []
+        return changedLine
     }
 
     private func appendToLogs(_ line: RenderedLine) {
@@ -1335,10 +1707,18 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
                     suppressActivity = true
                 case let .sound(path):
                     if !isMuted, let sound = NSSound(contentsOf: URL(fileURLWithPath: path), byReference: true) {
+                        scriptSounds.removeAll { !$0.isPlaying }
+                        scriptSounds.append(sound)
                         sound.play()
                     }
                 case let .speech(text):
-                    if !isMuted { speechSynthesizer.speak(.init(string: text)) }
+                    if !isMuted {
+                        let utterance = AVSpeechUtterance(string: text)
+                        if let identifier = preferences.speechVoiceIdentifier {
+                            utterance.voice = AVSpeechSynthesisVoice(identifier: identifier)
+                        }
+                        speechSynthesizer.speak(utterance)
+                    }
                 case let .script(function, ranges, callbackLine):
                     let result = await scriptService.callTrigger(
                         function,
@@ -1461,6 +1841,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
     private func processInput(_ text: String) {
         switch commandRegistry.parse(text, variables: variables) {
         case .notACommand:
+            _ = atlasWindow?.recordTypedExit(text)
             processAliasedInput(text)
         case let .send(value):
             sendToSession(value)
@@ -1497,6 +1878,57 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
         case let .gmcpDump(enabled):
             gmcpDumpEnabled = enabled
             appendClient("GMCP dump \(enabled ? "enabled" : "disabled").")
+        case let .mediaControl(action):
+            switch action {
+            case .flush:
+                if mediaState.isActive {
+                    for event in mediaState.flush() { mediaController.apply(event) }
+                    mediaController.flush()
+                }
+            case .info:
+                if mediaState.isActive {
+                    appendClient(mediaState.information)
+                    appendClient(mediaController.information)
+                } else {
+                    appendError("MCMP not active")
+                }
+            }
+        case let .tileMap(enabled):
+            tileMapsEnabled = enabled
+            appendClient("TileMap tag parsing \(enabled ? "ON" : "OFF")")
+        case let .switchSpawnTab(group, title):
+            guard let controller = triggerSpawnTabGroups[group] else {
+                appendError("Tab group not found")
+                return
+            }
+            if !controller.selectTab(named: title) { appendError("Tab not found") }
+        case let .mapAddRoom(name, outward, returnCommand):
+            guard let atlasWindow, atlasWindow.editor.currentLocation != nil else {
+                appendError("The map doesn't currently know your location")
+                return
+            }
+            if !atlasWindow.addRoomAndExit(name: name, outward: outward, returnCommand: returnCommand) {
+                appendError("The room could not be added")
+            }
+        case let .mapAddExit(outward, returnCommand):
+            guard let atlasWindow, atlasWindow.editor.currentLocation != nil else {
+                appendError("The map doesn't currently know your location")
+                return
+            }
+            if !atlasWindow.addDirectionalExit(outward: outward, returnCommand: returnCommand) {
+                appendError("Unknown direction or no room in that direction")
+            }
+        case .mapGuessLocation:
+            guard let atlasWindow else { appendError("No map"); return }
+            if atlasWindow.guessLocation(in: output.retainedLines.map(\.text)) == nil {
+                appendError("Unable to determine current location")
+            }
+        case .mapLook:
+            guard let description = atlasWindow?.lookDescription() else {
+                appendError("The map doesn't currently know your location")
+                return
+            }
+            appendClient(description)
         case let .disconnect(all):
             let controllers = all ? Self.openControllers : [self]
             for controller in controllers { controller.disconnect() }
@@ -1606,7 +2038,12 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
             NSApplication.shared.sendAction(#selector(ApplicationDelegate.newTab(_:)), to: nil, from: nil)
         case let .newInput(prefix, unique): showNewInputWindow(prefix: prefix, unique: unique)
         case let .newEdit(options): showNewEditWindow(options: options)
+        case let .webView(request): openWebView(request)
         case .silence:
+            mediaController.stop(name: nil)
+            scriptSounds.forEach { $0.stop() }
+            scriptSounds.removeAll()
+            speechSynthesizer.stopSpeaking(at: .immediate)
             appendClient("Stopped local sound playback.")
         case .removeLast: output.removeLastLine()
         case let .wall(value):
@@ -1669,9 +2106,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
                 }
             }
         case let .openCommandHelp(topic):
-            var components = URLComponents(string: "https://github.com/BeipDev/BeipMU/blob/master/Documentation/CommandLine.md")
-            components?.fragment = topic
-            if let url = components?.url { NSWorkspace.shared.open(url) }
+            showEmbeddedHelp(topic: topic)
         case .resetScript:
             Task { await scriptService.reset(); appendClient("Scripting runtime reset.") }
         case .cancelCapture:
@@ -1679,10 +2114,13 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
             else { spawnCapture = nil; appendClient("Spawn capture cancelled.") }
         case let .debugAutomation(kind):
             showAutomationDebugger(kind)
+        case .debugNetwork:
+            showNetworkDebugger()
+        case .restoreInfo:
+            showRestoreInformation()
         case let .invoke(name, arguments, _):
             switch name {
             case "tabcolor": setTabColor(arguments.first)
-            case "switchtab": switchSessionTab(named: arguments.last)
             default: appendClient("/\(name) is registered; its target surface is completed in a later milestone.")
             }
         case let .unimplemented(command): appendError("/\(command) is recognized but not implemented in this milestone.")
@@ -1704,7 +2142,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
         let activity = unreadCount > 0 ? "● " : ""
         let mute = isMuted ? " 🔇" : ""
         let logging = logWriters.isEmpty ? "" : " 📝"
-        window?.title = activity + baseWindowTitle + mute + logging
+        window?.title = activity + scriptTitlePrefix + baseWindowTitle + mute + logging
         tabButton.title = (isMuted ? "Muted" : baseWindowTitle) + logging
     }
 
@@ -1716,17 +2154,6 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
         }
         tabButton.bezelColor = color
         appendClient("Tab color set to \(value).")
-    }
-
-    private func switchSessionTab(named name: String?) {
-        guard let name, let window,
-              let match = window.tabbedWindows?.first(where: {
-                  $0.title.localizedCaseInsensitiveContains(name)
-              }) else {
-            appendError("Tab not found: \(name ?? "")")
-            return
-        }
-        match.makeKeyAndOrderFront(nil)
     }
 
     private func applyPreferences() {
@@ -1889,6 +2316,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
         return .init(
             buildNumber: LegacyConfigurationProjection.currentWindowsVersion,
             version: LegacyConfigurationProjection.currentWindowsVersion,
+            buildDate: Self.applicationBuildDate,
             configPath: profileLibrary.workspace.sourceURL?.path ?? "",
             worlds: worlds,
             aliases: projection.automation.aliases.aliases.map {
@@ -1897,11 +2325,21 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
             triggers: projection.automation.triggers.triggers.map {
                 .init(description: $0.description, matchText: $0.match.text)
             },
+            activeWorld: currentServer?.name,
+            activeCharacter: currentCharacter?.name,
+            spawnTabGroups: triggerSpawnTabGroups.keys.sorted(),
+            secondaryInputs: secondaryInputWindows.map {
+                .init(title: $0.logicalTitle, prefix: $0.prefix, text: $0.input.text)
+            },
             window: .init(
                 title: window?.title ?? baseWindowTitle,
                 input: input.text,
+                inputPrefix: preferences.inputPrefix,
+                inputTitle: input.accessibilityLabel(),
+                titlePrefix: scriptTitlePrefix,
                 connected: session != nil,
                 logging: !logWriters.isEmpty,
+                logFileName: logWriters.keys.sorted { $0.path < $1.path }.first?.path,
                 variables: variables
             )
         )
@@ -1910,8 +2348,12 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
     private func applyScriptEvaluation(_ result: ScriptEvaluation, showValue: Bool) {
         for output in result.outputs {
             switch output.kind {
-            case .debugText: appendClient("Script: \(output.value)")
-            case .debugHTML: appendClient("Script HTML: \(output.value)")
+            case .debugText:
+                recordScriptDebug(.init(kind: .text, message: output.value))
+                appendClient("Script: \(output.value)")
+            case .debugHTML:
+                recordScriptDebug(.init(kind: .html, message: output.value))
+                appendClient("Script HTML: \(output.value)")
             case .display: appendClient(output.value)
             case .displayHTML:
                 var parser = MUDProtocolPipeline(encoding: .utf8, pueblo: true, puebloActive: true)
@@ -1919,9 +2361,9 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
                     if case let .line(line) = event { self.output.append(line) }
                 }
             case .send: sendToSession(output.value)
+            case .transmit: transmitToSession(output.value)
             case .receive:
-                guard let session else { appendError("Not connected."); continue }
-                Task { await session.receive(output.value) }
+                receiveFromScript(output.value)
             case .setInput:
                 input.text = output.value
             case .setVariable:
@@ -1958,10 +2400,110 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
                 scriptSounds.forEach { $0.stop() }
                 scriptSounds.removeAll()
                 speechSynthesizer.stopSpeaking(at: .immediate)
+            case .scriptError:
+                recordScriptDebug(.init(kind: .error, message: output.value), revealForError: true)
+                appendError(output.value)
+            case .reconnect:
+                guard let session else { appendError("No previous connection to reconnect."); continue }
+                Task { await session.reconnect() }
+            case .logWrite, .logWriteLine:
+                var failures: [(URL, Error)] = []
+                for (url, log) in logWriters {
+                    do {
+                        if output.kind == .logWrite { try log.writer.appendScript(output.value) }
+                        else { try log.writer.appendScriptLine(output.value) }
+                    } catch {
+                        failures.append((url, error))
+                    }
+                }
+                removeFailedLogs(failures)
+            case .setInputPrefix:
+                preferences.inputPrefix = output.value
+                input.behavior = .init(prefix: output.value, isSticky: preferences.stickyInput)
+                savePreferences()
+            case .setInputTitle:
+                input.setAccessibilityLabel(output.value)
+            case .setTitlePrefix:
+                scriptTitlePrefix = output.value
+                updateWindowTitle()
+            case .openConnectDialog:
+                showConnectDialog()
+            case .scriptWindow:
+                guard let data = output.value.data(using: .utf8),
+                      let operation = try? JSONDecoder().decode(ScriptWindowOperation.self, from: data) else {
+                    appendError("Invalid script-window operation.")
+                    continue
+                }
+                let controller: ScriptWindowController
+                if let existing = scriptWindows[operation.identifier] {
+                    controller = existing
+                } else {
+                    guard operation.action == "create" else { continue }
+                    controller = .init(operation: operation)
+                    controller.onClose = { [weak self] in self?.scriptWindows.removeValue(forKey: operation.identifier) }
+                    controller.onEvent = { [weak self, scriptService] event, arguments in
+                        guard let self else { return }
+                        Task {
+                            self.applyScriptEvaluation(
+                                await scriptService.dispatchConnectionEvent(
+                                    "scriptWindow:\(operation.identifier):\(event)",
+                                    arguments: arguments,
+                                    host: self.scriptHostSnapshot
+                                ),
+                                showValue: false
+                            )
+                        }
+                    }
+                    scriptWindows[operation.identifier] = controller
+                    controller.showWindow(self)
+                    controller.window?.makeKeyAndOrderFront(nil)
+                }
+                controller.apply(operation, relativeTo: window)
+            case .newMainWindow:
+                NSApplication.shared.sendAction(#selector(ApplicationDelegate.newWindow(_:)), to: nil, from: nil)
+                Task { [weak self, scriptService] in
+                    guard let self else { return }
+                    applyScriptEvaluation(
+                        await scriptService.dispatchConnectionEvent("app:newWindow", host: scriptHostSnapshot),
+                        showValue: false
+                    )
+                }
+            case .secondaryInput:
+                guard let data = output.value.data(using: .utf8),
+                      let operation = try? JSONDecoder().decode(ScriptWindowOperation.self, from: data),
+                      let value = operation.strings.first,
+                      let controller = secondaryInputWindows.first(where: { $0.logicalTitle == operation.identifier }) else { continue }
+                controller.applyScript(action: operation.action, value: value)
             }
         }
-        if let error = result.error { appendError(error) }
+        if let error = result.error {
+            recordScriptDebug(.init(kind: .error, message: error), revealForError: true)
+            appendError(error)
+        }
         else if showValue, let value = result.value { appendClient(value) }
+    }
+
+    private func recordScriptDebug(
+        _ entry: ScriptDebugWindowController.Entry,
+        revealForError: Bool = false
+    ) {
+        scriptDebugEntries.append(entry)
+        if scriptDebugEntries.count > 1_000 {
+            scriptDebugEntries.removeFirst(scriptDebugEntries.count - 1_000)
+        }
+        scriptDebugWindow?.append(entry)
+        if revealForError,
+           profileLibrary.workspace.projection.scripting.debugEnabled,
+           scriptDebugWindow == nil {
+            showScriptDebugger()
+        }
+    }
+
+    private static var applicationBuildDate: String? {
+        guard let executable = Bundle.main.executableURL,
+              let values = try? executable.resourceValues(forKeys: [.contentModificationDateKey]),
+              let date = values.contentModificationDate else { return nil }
+        return ISO8601DateFormatter().string(from: date)
     }
 
     private func updateTriggerStatistic(_ update: TriggerStatisticUpdate) {
@@ -1992,22 +2534,191 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
         let title = action.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? "Trigger Spawn" : action.title
         let group = action.tabGroup.trimmingCharacters(in: .whitespacesAndNewlines)
-        let key = group.isEmpty ? title : group + "\u{1F}" + title
-        let panelTitle = group.isEmpty ? title : "\(group) — \(title)"
-        let controller: TriggerSpawnWindowController
-        if let existing = triggerSpawnWindows[key] {
-            controller = existing
+        if group.isEmpty {
+            let controller = spawnWindow(named: title)
+            if startsCapture, action.clear { controller.clear() }
+            controller.append(line)
+            presentSpawnWindow(controller, title: title)
         } else {
-            controller = .init(title: panelTitle)
-            controller.onClose = { [weak self] in self?.triggerSpawnWindows.removeValue(forKey: key) }
-            triggerSpawnWindows[key] = controller
+            let controller = spawnTabGroup(named: group)
+            controller.deliver(
+                line,
+                to: title,
+                clear: startsCapture && action.clear,
+                showTab: startsCapture && action.showTab
+            )
+            presentSpawnTabGroup(controller, title: group)
         }
-        if startsCapture, action.clear { controller.clear() }
-        controller.append(line)
-        controller.showWindow(self)
         if startsCapture, !action.captureUntil.isEmpty {
             spawnCapture = .init(title: title, action: action, children: children)
         }
+    }
+
+    private func spawnWindow(named title: String) -> TriggerSpawnWindowController {
+        if let existing = triggerSpawnWindows[title] { return existing }
+        let controller = TriggerSpawnWindowController(title: title)
+        controller.onAction = { [weak self] action in self?.perform(action) }
+        controller.onClose = { [weak self] in
+            guard let self else { return }
+            self.dockController.undockPane(.spawn(title))
+            self.triggerSpawnWindows.removeValue(forKey: title)
+            self.saveSpawnSurfacePreferences()
+        }
+        controller.onDockRequest = { [weak self, weak controller] side in
+            guard let self, let controller else { return }
+            self.dockSpawnWindow(controller, title: title, side: side)
+        }
+        controller.window?.setFrameAutosaveName("BeipMUSpawn.\((notesKey + "." + title).safeFilename)")
+        triggerSpawnWindows[title] = controller
+        saveSpawnSurfacePreferences()
+        return controller
+    }
+
+    private func spawnTabGroup(named title: String) -> TriggerSpawnTabGroupWindowController {
+        if let existing = triggerSpawnTabGroups[title] { return existing }
+        let controller = TriggerSpawnTabGroupWindowController(title: title)
+        controller.onAction = { [weak self] action in self?.perform(action) }
+        controller.onStructureChange = { [weak self] in self?.saveSpawnSurfacePreferences() }
+        controller.onTabActivate = { [weak self, scriptService] tab in
+            guard let self else { return }
+            Task {
+                self.applyScriptEvaluation(
+                    await scriptService.dispatchConnectionEvent(
+                        "spawnTabs:\(title)",
+                        arguments: [tab],
+                        host: self.scriptHostSnapshot
+                    ),
+                    showValue: false
+                )
+            }
+        }
+        controller.onClose = { [weak self] in
+            guard let self else { return }
+            self.dockController.undockPane(.spawnTabs(title))
+            self.triggerSpawnTabGroups.removeValue(forKey: title)
+            self.saveSpawnSurfacePreferences()
+        }
+        controller.onDockRequest = { [weak self, weak controller] side in
+            guard let self, let controller else { return }
+            self.dockSpawnTabGroup(controller, title: title, side: side)
+        }
+        controller.window?.setFrameAutosaveName("BeipMUSpawnTabs.\((notesKey + "." + title).safeFilename)")
+        triggerSpawnTabGroups[title] = controller
+        saveSpawnSurfacePreferences()
+        return controller
+    }
+
+    private func saveSpawnSurfacePreferences() {
+        guard !suppressSpawnPersistence else { return }
+        let standalone = triggerSpawnWindows.keys.sorted()
+        let groups = triggerSpawnTabGroups.sorted { $0.key < $1.key }.map { title, controller in
+            SpawnTabGroupPreferences(title: title, tabs: controller.tabTitles, selectedTab: controller.selectedTitle)
+        }
+        let state = SpawnSurfacePreferences(standaloneWindows: standalone, tabGroups: groups)
+        if standalone.isEmpty, groups.isEmpty { preferences.spawnSurfaces.removeValue(forKey: notesKey) }
+        else { preferences.spawnSurfaces[notesKey] = state }
+        savePreferences()
+    }
+
+    private func presentSpawnWindow(_ controller: TriggerSpawnWindowController, title: String) {
+        guard !controller.isDocked else { return }
+        let pane = WorkspacePaneKind.spawn(title)
+        let view = controller.contentViewForDocking()
+        if !dockController.restorePane(
+            pane,
+            view: view,
+            title: title,
+            onUndock: { [weak self, weak controller] in
+                guard let self, let controller else { return }
+                self.dockController.undockPane(pane)
+                controller.showFloating(self)
+            }
+        ) {
+            controller.showFloating(self)
+        }
+    }
+
+    private func presentSpawnTabGroup(_ controller: TriggerSpawnTabGroupWindowController, title: String) {
+        guard !controller.isDocked else { return }
+        let pane = WorkspacePaneKind.spawnTabs(title)
+        let view = controller.contentViewForDocking()
+        if !dockController.restorePane(
+            pane,
+            view: view,
+            title: title,
+            onUndock: { [weak self, weak controller] in
+                guard let self, let controller else { return }
+                self.dockController.undockPane(pane)
+                controller.showFloating(self)
+            }
+        ) {
+            controller.showFloating(self)
+        }
+    }
+
+    private func dockSpawnWindow(_ controller: TriggerSpawnWindowController, title: String, side: WebViewDockSide) {
+        let pane = WorkspacePaneKind.spawn(title)
+        dockController.dockPane(
+            pane,
+            view: controller.contentViewForDocking(),
+            title: title,
+            side: side,
+            onUndock: { [weak self, weak controller] in
+                guard let self, let controller else { return }
+                self.dockController.undockPane(pane)
+                controller.showFloating(self)
+            }
+        )
+    }
+
+    private func dockSpawnTabGroup(_ controller: TriggerSpawnTabGroupWindowController, title: String, side: WebViewDockSide) {
+        let pane = WorkspacePaneKind.spawnTabs(title)
+        dockController.dockPane(
+            pane,
+            view: controller.contentViewForDocking(),
+            title: title,
+            side: side,
+            onUndock: { [weak self, weak controller] in
+                guard let self, let controller else { return }
+                self.dockController.undockPane(pane)
+                controller.showFloating(self)
+            }
+        )
+    }
+
+    private func restoreSpawnSurfacePreferences() {
+        guard let state = preferences.spawnSurfaces[notesKey] else { return }
+        suppressSpawnPersistence = true
+        defer { suppressSpawnPersistence = false }
+        for title in state.standaloneWindows where !title.isEmpty {
+            presentSpawnWindow(spawnWindow(named: title), title: title)
+        }
+        for saved in state.tabGroups where !saved.title.isEmpty {
+            let group = spawnTabGroup(named: saved.title)
+            for title in saved.tabs where !title.isEmpty {
+                group.ensureTab(named: title, selected: title == saved.selectedTab)
+            }
+            if !group.tabTitles.isEmpty { presentSpawnTabGroup(group, title: saved.title) }
+        }
+    }
+
+    private func closeSpawnSurfaces() {
+        suppressSpawnPersistence = true
+        let windows = Array(triggerSpawnWindows)
+        let groups = Array(triggerSpawnTabGroups)
+        triggerSpawnWindows.removeAll()
+        triggerSpawnTabGroups.removeAll()
+        for (title, controller) in windows {
+            dockController?.releasePane(.spawn(title))
+            controller.onClose = nil
+            controller.closeSurface()
+        }
+        for (title, controller) in groups {
+            dockController?.releasePane(.spawnTabs(title))
+            controller.onClose = nil
+            controller.closeSurface()
+        }
+        suppressSpawnPersistence = false
     }
 
     private func matchesCaptureEnd(_ expression: String, text: String) -> Bool {
@@ -2017,9 +2728,464 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
         return regex.firstMatch(in: text, range: range) != nil
     }
 
+    private func handleAdvancedGMCP(_ message: GMCPMessage) {
+        activityLabel.stringValue = "GMCP: \(message.package)"
+        if gmcpDumpEnabled {
+            appendClient("GMCP \(message.package) \(message.payload)")
+        }
+        if !tileMapsEnabled, message.package.lowercased().hasPrefix("beip.tilemap.") { return }
+        if handleWebViewGMCP(message) { return }
+        if currentServer?.mcmp == true, message.package.lowercased().hasPrefix("client.media.") {
+            do {
+                for event in try mediaState.consume(message) { mediaController.apply(event) }
+            } catch {
+                appendError(error.localizedDescription)
+            }
+            return
+        }
+        do {
+            for event in try gmcpState.consume(message) {
+                switch event {
+                case let .statisticsPane(title):
+                    guard let pane = gmcpState.statisticsPanes[title] else { continue }
+                    let controller: GMCPStatisticsWindowController
+                    if let existing = gmcpStatisticsWindows[title] {
+                        controller = existing
+                    } else {
+                        controller = .init(title: title)
+                        controller.onClose = { [weak self] in self?.gmcpStatisticsWindows.removeValue(forKey: title) }
+                        gmcpStatisticsWindows[title] = controller
+                    }
+                    controller.update(pane)
+                    controller.showWindow(self)
+                case let .tileMap(name):
+                    guard let map = gmcpState.tileMaps[name] else { continue }
+                    let controller: TileMapWindowController
+                    if let existing = tileMapWindows[name] {
+                        controller = existing
+                    } else {
+                        controller = .init(title: name)
+                        controller.onClose = { [weak self] in self?.tileMapWindows.removeValue(forKey: name) }
+                        tileMapWindows[name] = controller
+                    }
+                    controller.update(map)
+                    controller.showWindow(self)
+                case let .roomInfo(room):
+                    activityLabel.stringValue = room.area.isEmpty ? "Room: \(room.name)" : "Room: \(room.name) — \(room.area)"
+                    let atlas = ensureAtlasWindow()
+                    atlas.integrate(room)
+                    atlas.showWindow(self)
+                case let .transmit(outgoing):
+                    guard let session else { continue }
+                    Task { await session.sendRaw(Self.gmcpFrame(outgoing)) }
+                case .avatarsChanged:
+                    break
+                }
+            }
+        } catch {
+            appendError("GMCP \(message.package): \(error.localizedDescription)")
+        }
+    }
+
+    private func handleWebViewGMCP(_ message: GMCPMessage) -> Bool {
+        let package = message.package.lowercased()
+        guard package == "webview.open" || package == "webview.close" else { return false }
+        do {
+            guard let event = try webViewState.consume(message) else { return false }
+            switch event {
+            case let .close(id):
+                if !id.isEmpty { webViewWindows[id]?.closeSurface() }
+            case let .open(request):
+                switch currentServer?.gmcpWebViewPolicy ?? .ask {
+                case .ignore: return true
+                case .allow: openWebView(request, serverRequested: true)
+                case .ask:
+                    let alert = NSAlert()
+                    alert.messageText = "Allow WebView?"
+                    alert.informativeText = "The server wants to open:\n\n\(request.permissionSummary)"
+                    alert.alertStyle = .informational
+                    alert.addButton(withTitle: "Ignore Once")
+                    alert.addButton(withTitle: "Allow Once")
+                    alert.addButton(withTitle: "Allow All")
+                    alert.addButton(withTitle: "Ignore All")
+                    switch alert.runModal() {
+                    case .alertSecondButtonReturn: openWebView(request, serverRequested: true)
+                    case .alertThirdButtonReturn:
+                        setCurrentServerWebViewPolicy(.allow)
+                        openWebView(request, serverRequested: true)
+                    case NSApplication.ModalResponse(rawValue: NSApplication.ModalResponse.alertThirdButtonReturn.rawValue + 1):
+                        setCurrentServerWebViewPolicy(.ignore)
+                    default: break
+                    }
+                }
+            }
+        } catch {
+            appendError("GMCP \(message.package): \(error.localizedDescription)")
+        }
+        return true
+    }
+
+    private func setCurrentServerWebViewPolicy(_ policy: ServerWebViewPolicy) {
+        guard var server = currentServer else { return }
+        server.gmcpWebViewPolicy = policy
+        currentServer = server
+        do {
+            try profileLibrary.mutate { workspace in
+                try workspace.updateServer(id: server.id) { $0.profile.gmcpWebViewPolicy = policy }
+            }
+        } catch {
+            appendError("Could not save WebView policy: \(error.localizedDescription)")
+        }
+    }
+
+    private func openWebView(_ request: WebViewOpenRequest, serverRequested: Bool = false) {
+        let key: String
+        if request.id.isEmpty {
+            key = "__unnamed_\(nextUnnamedWebViewID)"
+            nextUnnamedWebViewID += 1
+        } else {
+            key = request.id
+        }
+        if let existing = webViewWindows[key] {
+            existing.apply(request, allowsFileNavigation: !serverRequested)
+            presentWebView(existing, key: key, request: request)
+            saveWebViewPreference(request, serverRequested: serverRequested)
+            return
+        }
+        let controller = WebViewWindowController(id: request.id, request: request, allowsFileNavigation: !serverRequested)
+        controller.onClose = { [weak self, weak controller] in
+            guard let self, let controller else { return }
+            self.dockController.undockPane(.webView(key))
+            self.webViewWindows = self.webViewWindows.filter { $0.value !== controller }
+            self.removeWebViewPreference(id: request.id)
+        }
+        controller.onCommand = { [weak self, weak controller] command in
+            guard let self, let controller else { return nil }
+            return try self.handleWebViewBridge(command, from: controller)
+        }
+        controller.onDockRequest = { [weak self, weak controller] side in
+            guard let self, let controller else { return }
+            self.dockWebView(controller, key: key, side: side)
+        }
+        webViewWindows[key] = controller
+        controller.applyTheme(preferences.theme.palette)
+        presentWebView(controller, key: key, request: request)
+        saveWebViewPreference(request, serverRequested: serverRequested)
+        if serverRequested { appendClient("Server opened WebView: \(request.permissionSummary)") }
+    }
+
+    private func presentWebView(_ controller: WebViewWindowController, key: String, request: WebViewOpenRequest) {
+        let pane = WorkspacePaneKind.webView(key)
+        if let side = request.dock {
+            dockWebView(controller, key: key, side: side)
+        } else {
+            if dockController.containsPane(pane) { dockController.undockPane(pane) }
+            removeWebViewPreference(id: controller.logicalID)
+            controller.showFloating(self)
+        }
+    }
+
+    private func dockWebView(_ controller: WebViewWindowController, key: String, side: WebViewDockSide) {
+        let pane = WorkspacePaneKind.webView(key)
+        let title = controller.logicalID.isEmpty ? "WebView" : controller.logicalID
+        controller.recordDockSide(side)
+        dockController.dockPane(
+            pane,
+            view: controller.contentViewForDocking(),
+            title: title,
+            side: side,
+            onUndock: { [weak self, weak controller] in
+                guard let self, let controller else { return }
+                self.dockController.undockPane(pane)
+                controller.recordDockSide(nil)
+                self.removeWebViewPreference(id: controller.logicalID)
+                controller.showFloating(self)
+            }
+        )
+        saveWebViewPreference(controller.currentRequest, serverRequested: controller.isServerRequested)
+    }
+
+    private func saveWebViewPreference(_ request: WebViewOpenRequest, serverRequested: Bool) {
+        guard let saved = SavedWebViewPane(request), !serverRequested || currentServer?.gmcpWebViewPolicy == .allow else { return }
+        var panes = preferences.webViewPanes[notesKey] ?? []
+        panes.removeAll { $0.id == saved.id }
+        panes.append(saved)
+        preferences.webViewPanes[notesKey] = panes.sorted { $0.id.localizedCaseInsensitiveCompare($1.id) == .orderedAscending }
+        savePreferences()
+    }
+
+    private func removeWebViewPreference(id: String) {
+        guard !id.isEmpty, var panes = preferences.webViewPanes[notesKey] else { return }
+        panes.removeAll { $0.id == id }
+        if panes.isEmpty { preferences.webViewPanes.removeValue(forKey: notesKey) }
+        else { preferences.webViewPanes[notesKey] = panes }
+        savePreferences()
+    }
+
+    private func restoreWebViewPreferences() {
+        guard currentServer?.gmcpWebViewPolicy == .allow else { return }
+        for pane in preferences.webViewPanes[notesKey] ?? [] {
+            openWebView(pane.request, serverRequested: true)
+        }
+    }
+
+    private func handleWebViewBridge(_ command: WebViewBridgeCommand, from controller: WebViewWindowController) throws -> Any? {
+        switch command {
+        case .close: controller.closeSurface(); return true
+        case .isConnected: return connectionStateText == "Connected"
+        case let .send(text, processAliases):
+            if processAliases { processAliasedInput(text) } else { sendToSession(text) }
+            return true
+        case let .receive(text):
+            guard let session else { throw WebViewClientError.notConnected }
+            Task { await session.receive(text) }
+            return true
+        case let .display(text):
+            appendClient(text)
+            return true
+        case let .sendGMCP(package, json):
+            guard let session else { throw WebViewClientError.notConnected }
+            guard !package.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw WebViewClientError.invalidPackage }
+            Task { await session.sendRaw(Self.gmcpFrame(.init(package: package, payload: json))) }
+            return true
+        case let .processAliases(text):
+            guard !aliasGroups.isEmpty else { return text }
+            return try AliasEngine.process(text, groups: aliasGroups, variables: variables).text
+        case let .addToInputHistory(text): input.addToHistory(text); return true
+        case let .property(name):
+            switch name.lowercased() {
+            case "worldname": return currentServer?.name
+            case "charactername": return currentCharacter?.name
+            case "puppetname": return nil
+            case "id": return controller.logicalID
+            default: return nil
+            }
+        }
+    }
+
+    private func closeWebViews() {
+        let values = Array(webViewWindows)
+        webViewWindows.removeAll()
+        for (key, controller) in values {
+            dockController?.releasePane(.webView(key))
+            controller.onClose = nil
+            controller.closeSurface()
+        }
+    }
+
+    private func handleMCP(_ message: MCPMessage) {
+        activityLabel.stringValue = "MCP: \(message.fullName)"
+        switch message.package.lowercased() {
+        case "dns-com-awns-status":
+            guard let text = message[parameter: "text"] else {
+                appendError("MCP status message was missing required parameter 'text'")
+                return
+            }
+            let controller: MCPStatusWindowController
+            if let existing = mcpStatusWindow {
+                controller = existing
+            } else {
+                controller = .init()
+                controller.applyTheme(preferences.theme.palette)
+                controller.onClose = { [weak self] in self?.mcpStatusWindow = nil }
+                mcpStatusWindow = controller
+            }
+            controller.update(text)
+            controller.showWindow(self)
+        case "dns-org-mud-moo-simpleedit":
+            showMCPSimpleEdit(message)
+        default:
+            appendClient("MCP \(message.fullName)")
+        }
+    }
+
+    private func showMCPSimpleEdit(_ message: MCPMessage) {
+        guard let reference = message[parameter: "reference"],
+              let type = message[parameter: "type"],
+              let name = message[parameter: "name"] else {
+            appendError("MCP SimpleEdit message was missing reference, type, or name")
+            return
+        }
+        let text = message.values(for: "content")?.joined(separator: "\n") ?? message[parameter: "content"] ?? ""
+        let state = SimpleEditUploadState(reference: reference, type: type, original: text)
+        let upload: (String) -> Void = { [weak self, state] value in
+            guard state.lastUploaded != value else { return }
+            state.lastUploaded = value
+            self?.sendMCPSimpleEdit(value, state: state)
+        }
+        let controller = EditWindowController(title: name, text: text, checksSpelling: false, onSend: upload)
+        controller.onClose = { [weak self, weak controller, state] in
+            guard let self, let controller else { return }
+            let value = controller.editor.string
+            if value != state.original, value != state.lastUploaded { upload(value) }
+            self.editWindows.removeAll { $0 === controller }
+        }
+        editWindows.append(controller)
+        controller.applyTheme(preferences.theme.palette)
+        controller.showWindow(self)
+        if let owner = window, let child = controller.window { owner.addChildWindow(child, ordered: .above) }
+        controller.window?.makeKeyAndOrderFront(self)
+        appendClient("mcp-simpleedit Editing: \"\(name)\" Type: \(type)")
+    }
+
+    private func sendMCPSimpleEdit(_ text: String, state: SimpleEditUploadState) {
+        guard let session else { appendError("MCP SimpleEdit cannot upload while disconnected"); return }
+        var lines = text.replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map(String.init)
+        if lines.last == "" { lines.removeLast() }
+        let message = MCPMessage(
+            package: "dns-org-mud-moo-simpleedit",
+            message: "set",
+            parameters: ["reference": state.reference, "type": state.type],
+            multiline: lines.isEmpty ? [:] : ["content": lines]
+        )
+        Task { await session.sendMCP(message) }
+        appendClient("mcp-simpleedit Changes uploaded")
+    }
+
+    private func offerImages(in line: RenderedLine) {
+        var urls = line.assets.compactMap { $0.kind == .image ? $0.source : nil }
+        let pattern = #"https?://[^\s<>\"]+\.(?:png|jpe?g|gif|webp)(?:\?[^\s<>\"]*)?"#
+        if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) {
+            let range = NSRange(line.text.startIndex..., in: line.text)
+            urls += regex.matches(in: line.text, range: range).compactMap { match in
+                Range(match.range, in: line.text).flatMap { URL(string: String(line.text[$0])) }
+            }
+        }
+        for url in urls {
+            let viewer: ImageViewerWindowController
+            if let existing = imageViewerWindow {
+                viewer = existing
+            } else {
+                viewer = .init()
+                viewer.onClose = { [weak self] in self?.imageViewerWindow = nil }
+                imageViewerWindow = viewer
+            }
+            viewer.open(url)
+        }
+    }
+
+    private func ensureAtlasWindow() -> AtlasWindowController {
+        if let atlasWindow { return atlasWindow }
+        let controller = AtlasWindowController()
+        controller.onClose = { [weak self, weak controller] in
+            guard let self, let controller, self.atlasWindow === controller else { return }
+            self.atlasWindow = nil
+            if !self.suppressAtlasPersistence {
+                self.preferences.atlasSurfaces.removeValue(forKey: self.notesKey)
+                self.savePreferences()
+            }
+        }
+        controller.onSendCommands = { [weak self] commands in
+            commands.forEach { self?.processInput($0) }
+        }
+        controller.onStateChange = { [weak self] state in
+            guard let self, !self.suppressAtlasPersistence else { return }
+            self.preferences.atlasSurfaces[self.notesKey] = state
+            self.savePreferences()
+        }
+        atlasWindow = controller
+        if let owner = window, let child = controller.window { owner.addChildWindow(child, ordered: .above) }
+        return controller
+    }
+
+    private func saveAtlasSurfacePreferences() {
+        guard let atlasWindow else { return }
+        preferences.atlasSurfaces[notesKey] = atlasWindow.surfacePreferences
+        savePreferences()
+    }
+
+    private func restoreAtlasSurfacePreferences() {
+        guard let state = preferences.atlasSurfaces[notesKey] else { return }
+        let controller = ensureAtlasWindow()
+        do {
+            try controller.restore(state)
+            controller.showWindow(self)
+        } catch {
+            preferences.atlasSurfaces.removeValue(forKey: notesKey)
+            savePreferences()
+            appendError("Atlas restore failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func closeAtlasSurface() {
+        suppressAtlasPersistence = true
+        atlasWindow?.close()
+        atlasWindow = nil
+        suppressAtlasPersistence = false
+    }
+
     private func appendError(_ text: String) {
         let style = TextStyle(foreground: .init(red: 255, green: 80, blue: 80))
         output.append(.init(text: text, runs: [.init(range: 0..<text.utf16.count, style: style)], source: .client))
+    }
+}
+
+private enum WebViewClientError: LocalizedError {
+    case notConnected
+    case invalidPackage
+
+    var errorDescription: String? {
+        switch self {
+        case .notConnected: "WebView client is not connected"
+        case .invalidPackage: "WebView GMCP package is empty"
+        }
+    }
+}
+
+@MainActor
+final class EmbeddedHelpWindowController: NSWindowController {
+    private let search = NSSearchField()
+    private let textView: NSTextView
+
+    init() {
+        let scroll = NSTextView.scrollableTextView()
+        textView = scroll.documentView as! NSTextView
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 680, height: 620),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered, defer: false
+        )
+        super.init(window: window)
+        window.title = "BeipMU Help"
+        window.setFrameAutosaveName("BeipMU.EmbeddedHelp")
+        window.setAccessibilityIdentifier("embeddedHelpWindow")
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
+        textView.setAccessibilityIdentifier("embeddedHelpText")
+        search.placeholderString = "Find a command"
+        search.setAccessibilityIdentifier("embeddedHelpSearch")
+        search.target = self
+        search.action = #selector(searchChanged)
+        let root = NSStackView(views: [search, scroll])
+        root.orientation = .vertical
+        root.spacing = 8
+        root.edgeInsets = .init(top: 10, left: 10, bottom: 10, right: 10)
+        window.contentView = root
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    func show(topic: String?) {
+        search.stringValue = topic ?? ""
+        updateText(topic)
+    }
+
+    @objc private func searchChanged() { updateText(search.stringValue) }
+
+    private func updateText(_ topic: String?) {
+        let query = topic?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        let lines = CommandRegistry.commandHelp.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        if query.isEmpty {
+            textView.string = CommandRegistry.commandHelp
+        } else {
+            let matches = lines.filter { $0.lowercased().contains(query) }
+            textView.string = matches.isEmpty ? "No command help matches ‘\(query)’." : matches.joined(separator: "\n")
+        }
+        textView.scrollToBeginningOfDocument(nil)
     }
 }
 

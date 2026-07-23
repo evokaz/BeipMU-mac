@@ -1,4 +1,6 @@
 import Foundation
+import BeipCore
+import BeipPersistence
 @testable import BeipUI
 import XCTest
 
@@ -15,13 +17,39 @@ final class WorkspacePreferencesTests: XCTestCase {
             stickyInput: true,
             inputPrefix: "say ",
             checksSpelling: false,
+            speechVoiceIdentifier: "com.apple.voice.compact.en-US.Samantha",
             theme: .init(mode: .custom, foregroundHex: "#112233", backgroundHex: "#445566", accentHex: "#778899"),
             logging: .init(logsSentText: true, logsTypedText: true, includesTime: true, wrapWidth: 100),
             dockPlacement: .floating,
             lastDockedPlacement: .left,
             dockThickness: 333,
             workspaceLayout: .splitSidebars,
-            characterNotes: ["example": "Remember the hidden door."]
+            workspaceLayouts: ["world/character": .stackedBottom],
+            characterNotes: ["example": "Remember the hidden door."],
+            spawnSurfaces: [
+                "world/character": .init(
+                    standaloneWindows: ["WHO"],
+                    tabGroups: [.init(title: "Channels", tabs: ["Public", "Staff"], selectedTab: "Staff")]
+                ),
+            ],
+            atlasSurfaces: [
+                "world/character": .init(
+                    filePath: "/tmp/map.atlas", mapIndex: 2,
+                    currentMapIndex: 1, currentRoomIndex: 4,
+                    scale: 1.75, originX: 120, originY: -30,
+                    selectionFilterRaw: AtlasSelectionFilter.rooms.rawValue,
+                    liveTracking: true
+                ),
+            ],
+            webViewPanes: [
+                "world/character": [try XCTUnwrap(SavedWebViewPane(.init(
+                    id: "status",
+                    url: try XCTUnwrap(URL(string: "https://example.invalid/status")),
+                    dock: .right,
+                    width: 480,
+                    height: 320
+                )))],
+            ]
         )
         WorkspacePreferencesStore.save(preferences, defaults: defaults)
         XCTAssertEqual(WorkspacePreferencesStore.load(defaults: defaults), preferences)
@@ -51,6 +79,10 @@ final class WorkspacePreferencesTests: XCTestCase {
         XCTAssertFalse(decoded.outputSplit)
         XCTAssertNil(decoded.workspaceLayout)
         XCTAssertEqual(decoded.characterNotes, [:])
+        XCTAssertEqual(decoded.spawnSurfaces, [:])
+        XCTAssertEqual(decoded.atlasSurfaces, [:])
+        XCTAssertEqual(decoded.workspaceLayouts, [:])
+        XCTAssertEqual(decoded.webViewPanes, [:])
     }
 
     func testUnsafeLayoutValuesAreNormalizedOnLoad() throws {
@@ -90,6 +122,92 @@ final class WorkspacePreferencesTests: XCTestCase {
             XCTAssertEqual(layout.panes.count, WorkspacePaneKind.allCases.count)
         }
         XCTAssertTrue(WorkspaceLayoutNode.mainOnly.isValid)
+    }
+
+    func testDynamicPaneKindsRoundTripAndRecursiveInsertionRemovesCleanly() throws {
+        let web = WorkspacePaneKind.webView("status:α")
+        let spawn = WorkspacePaneKind.spawnTabs("Chat / Public")
+        var layout = WorkspaceLayoutNode.tabbedRight.inserting(web, side: .left)
+        layout = layout.inserting(spawn, side: .bottom)
+
+        XCTAssertTrue(layout.isValid)
+        XCTAssertEqual(layout.panes.filter { $0 == .main }.count, 1)
+        XCTAssertTrue(layout.panes.contains(web))
+        XCTAssertTrue(layout.panes.contains(spawn))
+
+        let decoded = try JSONDecoder().decode(
+            WorkspaceLayoutNode.self,
+            from: JSONEncoder().encode(layout)
+        )
+        XCTAssertEqual(decoded, layout)
+        XCTAssertEqual(decoded.removing(web)?.removing(spawn), .tabbedRight)
+    }
+
+    func testSavedWebViewPaneKeepsSafeURLFieldsOnly() throws {
+        let request = WebViewOpenRequest(
+            id: "status",
+            url: try XCTUnwrap(URL(string: "https://example.invalid/status")),
+            headers: ["Authorization": "secret"],
+            dock: .bottom,
+            width: 640,
+            height: 360
+        )
+        let saved = try XCTUnwrap(SavedWebViewPane(request))
+        XCTAssertEqual(saved.request.id, "status")
+        XCTAssertEqual(saved.request.dock, .bottom)
+        XCTAssertTrue(saved.request.headers.isEmpty)
+        XCTAssertNil(SavedWebViewPane(.init(id: "inline", source: "<p>private</p>", dock: .right)))
+        XCTAssertNil(SavedWebViewPane(.init(id: "floating", url: request.url)))
+    }
+
+    @MainActor
+    func testDockControllerHostsAndUnhostsDynamicPane() {
+        let owner = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let main = NSView()
+        let dynamic = NSTextField(labelWithString: "Server status")
+        let controller = WorkspaceDockController(mainView: main, ownerWindow: owner)
+        owner.contentView = controller.hostView
+        controller.hostView.frame = owner.contentView?.bounds ?? .zero
+
+        let pane = WorkspacePaneKind.webView("status")
+        controller.dockPane(pane, view: dynamic, title: "Status", side: .right)
+        XCTAssertTrue(controller.containsPane(pane))
+        XCTAssertNotNil(dynamic.window)
+
+        controller.undockPane(pane)
+        XCTAssertFalse(controller.containsPane(pane))
+        XCTAssertEqual(controller.currentLayout, .mainOnly)
+    }
+
+    @MainActor
+    func testSpawnSurfaceMovesBetweenWindowAndRecursiveDock() {
+        let owner = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let dock = WorkspaceDockController(mainView: NSView(), ownerWindow: owner)
+        owner.contentView = dock.hostView
+        let spawn = TriggerSpawnWindowController(title: "WHO")
+        spawn.append(.init(text: "Player One"))
+        let pane = WorkspacePaneKind.spawn("WHO")
+
+        dock.dockPane(pane, view: spawn.contentViewForDocking(), title: "WHO", side: .bottom)
+        XCTAssertTrue(spawn.isDocked)
+        XCTAssertTrue(dock.containsPane(pane))
+        XCTAssertEqual(spawn.retainedLines.map(\.text), ["Player One"])
+
+        dock.undockPane(pane)
+        spawn.showFloating(nil)
+        XCTAssertFalse(spawn.isDocked)
+        XCTAssertNotNil(spawn.window?.contentView)
+        spawn.closeSurface()
     }
 
     func testWorkspaceLayoutUpdatesNestedDividerWithoutChangingOtherBranches() {
@@ -174,5 +292,253 @@ final class WorkspacePreferencesTests: XCTestCase {
         XCTAssertEqual(settings.palette.background.hexString, "#F0E0D0")
         XCTAssertEqual(settings.palette.accent.hexString, "#4080C0")
         XCTAssertEqual(settings.palette.appearance?.name, .aqua)
+
+        let lowContrast = WorkspaceThemeSettings(
+            mode: .custom,
+            foregroundHex: "#777777",
+            backgroundHex: "#777777",
+            accentHex: "#777777"
+        ).palette(displayOptions: .init(increaseContrast: true))
+        XCTAssertGreaterThanOrEqual(lowContrast.foreground.contrastRatio(against: lowContrast.background), 7)
+        XCTAssertGreaterThanOrEqual(lowContrast.accent.contrastRatio(against: lowContrast.background), 4.5)
+
+        let imageViewer = ImageViewerWindowController()
+        imageViewer.applyAccessibilityDisplayOptions(.init(reduceMotion: true))
+        XCTAssertFalse(imageViewer.imageAnimationEnabled)
+        imageViewer.close()
+    }
+
+    @MainActor
+    func testAdvancedGMCPPanesExposeNativeAccessibleContent() throws {
+        let stats = GMCPStatisticsWindowController(title: "Player")
+        stats.update(.init(
+            title: "Player",
+            background: .rgb(.init(red: 0, green: 32, blue: 64)),
+            values: [
+                "0_Health": .init(
+                    key: "0_Health",
+                    prefixLength: 2,
+                    value: .range(.init(value: 80, lower: 0, upper: 100))
+                ),
+            ]
+        ))
+        let statsContent = try XCTUnwrap(stats.window?.contentView)
+        statsContent.layoutSubtreeIfNeeded()
+        let statsViews = recursiveSubviews(of: statsContent)
+        XCTAssertTrue(statsViews.contains { $0.accessibilityLabel() == "Health: 80 [0…100]" })
+        XCTAssertTrue(statsViews.contains { $0.accessibilityLabel() == "Progress" })
+
+        let tileMap = TileMapWindowController(title: "Castle")
+        tileMap.update(.init(
+            name: "Castle",
+            tileWidth: 16,
+            tileHeight: 16,
+            columns: 4,
+            rows: 3,
+            encoding: .hex4,
+            tiles: Array(repeating: 0, count: 12)
+        ))
+        let mapContent = try XCTUnwrap(tileMap.window?.contentView)
+        let mapViews = recursiveSubviews(of: mapContent)
+        XCTAssertTrue(mapViews.contains { $0.accessibilityLabel() == "Tile map Castle" })
+        XCTAssertTrue(mapViews.contains { ($0.accessibilityValue() as? String) == "4 columns by 3 rows" })
+    }
+
+    @MainActor
+    func testMCPStatusSurfaceAndEmptyMediaStateAreAccessibleAndSafe() throws {
+        let status = MCPStatusWindowController()
+        status.update("Connected as Builder")
+        let content = try XCTUnwrap(status.window?.contentView)
+        content.layoutSubtreeIfNeeded()
+        XCTAssertTrue(recursiveSubviews(of: content).contains { $0.accessibilityLabel() == "MCP status: Connected as Builder" })
+
+        let media = ClientMediaController()
+        XCTAssertEqual(media.information, "No Client.Media assets are loaded.")
+        media.stop(name: nil)
+        media.flush()
+    }
+
+    @MainActor
+    func testEmbeddedHelpFiltersCommandsAndIsAccessible() throws {
+        let help = EmbeddedHelpWindowController()
+        help.show(topic: "switchtab")
+        let content = try XCTUnwrap(help.window?.contentView)
+        let views = recursiveSubviews(of: content)
+        XCTAssertTrue(views.contains { $0.accessibilityIdentifier() == "embeddedHelpSearch" })
+        let text = try XCTUnwrap(views.compactMap { $0 as? NSTextView }.first)
+        XCTAssertTrue(text.string.contains("/switchtab"))
+        XCTAssertFalse(text.string.contains("/connect "))
+    }
+
+    @MainActor
+    func testWebViewBridgeRoutesCommandsAndTracksDisplayCaptureAndGMCPHooks() throws {
+        let controller = WebViewWindowController(id: "Character editor")
+        defer { controller.close() }
+        var commands: [WebViewBridgeCommand] = []
+        controller.onCommand = { command in
+            commands.append(command)
+            if command == .isConnected { return true }
+            if case let .property(name) = command { return name == "ID" ? "Character editor" : nil }
+            return true
+        }
+        XCTAssertEqual(try controller.handleBridge(method: "isConnected", arguments: [:]) as? Bool, true)
+        _ = try controller.handleBridge(method: "send", arguments: ["text": "look", "processAliases": true])
+        XCTAssertTrue(commands.contains(.send(text: "look", processAliases: true)))
+        XCTAssertEqual(try controller.handleBridge(method: "getPropertyString", arguments: ["property": "ID"]) as? String, "Character editor")
+
+        _ = try controller.handleBridge(method: "setOnDisplay", arguments: ["id": 7, "regex": "^HP:", "gag": true])
+        XCTAssertTrue(controller.observeDisplay(.init(text: "HP: 10")))
+        XCTAssertFalse(controller.observeDisplay(.init(text: "Mana: 5")))
+        _ = try controller.handleBridge(method: "clearOnDisplay", arguments: ["id": 7])
+        XCTAssertFalse(controller.observeDisplay(.init(text: "HP: 10")))
+
+        _ = try controller.handleBridge(method: "setOnDisplayCapture", arguments: ["id": 3, "begin": "^BEGIN$", "end": "^END$"])
+        XCTAssertTrue(controller.observeDisplay(.init(text: "BEGIN")))
+        XCTAssertTrue(controller.observeDisplay(.init(text: "inside")))
+        XCTAssertTrue(controller.observeDisplay(.init(text: "END")))
+        XCTAssertEqual(try controller.handleBridge(method: "clearOnDisplayCapture", arguments: ["id": 3]) as? Bool, true)
+
+        _ = try controller.handleBridge(method: "setOnGMCP", arguments: ["prefix": "Char"])
+        controller.observeGMCP(.init(package: "Char.Vitals", payload: #"{"hp":10}"#))
+        XCTAssertEqual(try controller.handleBridge(method: "clearOnGMCP", arguments: ["prefix": "Char"]) as? Bool, true)
+        XCTAssertThrowsError(try controller.handleBridge(method: "setOnDisplay", arguments: ["id": 1, "regex": "["]))
+        XCTAssertEqual(controller.webView.accessibilityLabel(), "Web content: Character editor")
+    }
+
+    @MainActor
+    func testWebViewMovesIntoDockAndReleasesToSavedPlaceholder() {
+        let owner = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
+        let dock = WorkspaceDockController(mainView: NSView(), ownerWindow: owner)
+        owner.contentView = dock.hostView
+        let web = WebViewWindowController(id: "status")
+        let pane = WorkspacePaneKind.webView("status")
+
+        dock.dockPane(pane, view: web.contentViewForDocking(), title: "Status", side: .left)
+        XCTAssertTrue(web.isDocked)
+        XCTAssertTrue(dock.containsPane(pane))
+        XCTAssertTrue(web.webView.window === owner)
+
+        dock.releasePane(pane)
+        XCTAssertTrue(dock.containsPane(pane))
+        web.closeSurface()
+    }
+
+    @MainActor
+    func testWebViewInjectedCompatibilityObjectCallsNativeBridge() async throws {
+        let controller = WebViewWindowController(id: "Bridge conformance")
+        defer { controller.close() }
+        controller.onCommand = { command in
+            if command == .isConnected { return true }
+            if case let .property(name) = command { return name == "ID" ? "Bridge conformance" : nil }
+            return nil
+        }
+        let loaded = expectation(description: "web content loaded")
+        controller.onNavigationFinished = { loaded.fulfill() }
+        controller.apply(.init(source: "<title>Bridge Test</title><main>Ready</main><iframe srcdoc='<p>isolated</p>'></iframe>"))
+        await fulfillment(of: [loaded], timeout: 3)
+
+        let shape = try await controller.webView.callAsyncJavaScript(
+            "return [typeof window.beipClient, typeof window.chrome.webview.hostObjects.client.SendGMCP, typeof window.beipClient.setOnDisplay]",
+            arguments: [:],
+            in: nil,
+            contentWorld: .page
+        ) as? [String]
+        XCTAssertEqual(shape, ["object", "function", "function"])
+        let connected = try await controller.webView.callAsyncJavaScript(
+            "return await window.beipClient.isConnected()",
+            arguments: [:],
+            in: nil,
+            contentWorld: .page
+        ) as? Bool
+        XCTAssertEqual(connected, true)
+        let identifier = try await controller.webView.callAsyncJavaScript(
+            "return await window.chrome.webview.hostObjects.client.GetPropertyString('ID')",
+            arguments: [:],
+            in: nil,
+            contentWorld: .page
+        ) as? String
+        XCTAssertEqual(identifier, "Bridge conformance")
+        let subframeBridge = try await controller.webView.callAsyncJavaScript(
+            "return typeof document.querySelector('iframe').contentWindow.beipClient",
+            arguments: [:], in: nil, contentWorld: .page
+        ) as? String
+        XCTAssertEqual(subframeBridge, "undefined")
+    }
+
+    @MainActor
+    func testSpawnTabGroupRetainsRoutesHighlightsReordersAndClosesTabs() throws {
+        let group = TriggerSpawnTabGroupWindowController(title: "Channels")
+        let publicLine = RenderedLine(
+            text: "[Public] hello",
+            runs: [.init(range: 0..<8, style: .init(foreground: .init(red: 0, green: 255, blue: 0)))]
+        )
+        group.deliver(publicLine, to: "Public", clear: false, showTab: false)
+        group.deliver(.init(text: "[Private] secret"), to: "Private", clear: false, showTab: false)
+
+        XCTAssertEqual(group.tabTitles, ["Public", "Private"])
+        XCTAssertEqual(group.selectedTitle, "Public")
+        XCTAssertEqual(group.highlightedTitles, ["Private"])
+        XCTAssertEqual(group.retainedLines(in: "Public"), [publicLine])
+
+        XCTAssertTrue(group.selectTab(named: "Private"))
+        XCTAssertEqual(group.selectedTitle, "Private")
+        XCTAssertTrue(group.highlightedTitles.isEmpty)
+        group.deliver(.init(text: "replacement"), to: "Private", clear: true, showTab: false)
+        XCTAssertEqual(group.retainedLines(in: "Private").map(\.text), ["replacement"])
+
+        group.moveTab(from: 1, to: 0)
+        XCTAssertEqual(group.tabTitles, ["Private", "Public"])
+        XCTAssertTrue(group.closeTab(named: "Private"))
+        XCTAssertEqual(group.tabTitles, ["Public"])
+        XCTAssertEqual(group.selectedTitle, "Public")
+
+        let content = try XCTUnwrap(group.window?.contentView)
+        content.layoutSubtreeIfNeeded()
+        let views = recursiveSubviews(of: content)
+        XCTAssertTrue(views.contains { $0.accessibilityLabel() == "Spawn tabs" })
+        XCTAssertTrue(views.contains { $0.accessibilityLabel() == "Close Public" })
+    }
+
+    @MainActor
+    func testAtlasEditorIntegratesRoomInfoAndExposesNativeAccessibleControls() throws {
+        let controller = AtlasWindowController(atlas: Atlas(maps: []))
+        controller.integrate(.init(
+            id: "dock",
+            area: "Harbor",
+            name: "Moonlit Dock",
+            coordinates: .init(floor: 0, x: 20, y: 30),
+            size: .init(x: 100, y: 70)
+        ))
+
+        XCTAssertEqual(controller.editor.currentLocation, .init(mapIndex: 0, roomIndex: 0))
+        XCTAssertEqual(controller.editor.currentMap?.name, "Harbor")
+        XCTAssertEqual(controller.lookDescription(), "Location: Moonlit Dock\nExits: (none)")
+        try controller.restore(.init(
+            mapIndex: 0, currentMapIndex: 0, currentRoomIndex: 0,
+            scale: 1.5, originX: 44, originY: -12,
+            selectionFilterRaw: AtlasSelectionFilter.rooms.rawValue,
+            liveTracking: true
+        ))
+        XCTAssertEqual(controller.editor.viewport, .init(scale: 1.5, origin: .init(x: 44, y: -12)))
+        XCTAssertEqual(controller.editor.selectionFilter, .rooms)
+        XCTAssertTrue(controller.editor.liveTracking)
+        let content = try XCTUnwrap(controller.window?.contentView)
+        content.layoutSubtreeIfNeeded()
+        let views = recursiveSubviews(of: content)
+        XCTAssertTrue(views.contains { $0.accessibilityLabel() == "Atlas map canvas" })
+        XCTAssertTrue(views.contains { $0.accessibilityLabel() == "Atlas editing tool" })
+        XCTAssertTrue(views.contains { $0.accessibilityLabel() == "Atlas map" })
+        XCTAssertTrue(views.compactMap { $0 as? NSButton }.contains { $0.title == "Palette" })
+        XCTAssertTrue(views.compactMap { $0 as? NSButton }.contains { $0.title == "Export" })
+
+        let location = try XCTUnwrap(controller.editor.currentLocation)
+        let roomID = try XCTUnwrap(controller.editor.objectID(for: location))
+        controller.editor.selection = [roomID]
+        XCTAssertTrue(controller.copySelection())
+        XCTAssertTrue(controller.pasteSelection())
+        XCTAssertEqual(controller.editor.atlas.maps[0].rooms.count, 2)
     }
 }

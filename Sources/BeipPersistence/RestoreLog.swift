@@ -203,6 +203,30 @@ public enum RestoreLogError: LocalizedError {
 }
 
 public enum RestoreLogStore {
+    public struct BufferInspection: Sendable, Equatable {
+        public var index: Int
+        public var recordCount: Int
+        public var usedBytes: Int
+        public var wasRepaired: Bool
+
+        public init(index: Int, recordCount: Int, usedBytes: Int, wasRepaired: Bool) {
+            self.index = index
+            self.recordCount = recordCount
+            self.usedBytes = usedBytes
+            self.wasRepaired = wasRepaired
+        }
+    }
+
+    public struct Inspection: Sendable, Equatable {
+        public var bufferSize: Int
+        public var buffers: [BufferInspection]
+
+        public init(bufferSize: Int, buffers: [BufferInspection]) {
+            self.bufferSize = bufferSize
+            self.buffers = buffers
+        }
+    }
+
     public static func load(from url: URL, bufferSize: Int) throws -> [[RestoreLogRecord]] {
         try RestoreLogCodec.read(Data(contentsOf: url), bufferSize: bufferSize)
     }
@@ -219,6 +243,25 @@ public enum RestoreLogStore {
             try result.repairedData.write(to: url, options: .atomic)
         }
         return result
+    }
+
+    /// Runs the same salvage-and-atomic-rewrite path used for restore playback,
+    /// then returns debugger-friendly usage information for every ring buffer.
+    @discardableResult
+    public static func inspectRepairing(from url: URL, bufferSize: Int) throws -> Inspection {
+        let result = try loadRepairing(from: url, bufferSize: bufferSize)
+        let repaired = Set(result.repairedBufferIndices)
+        return Inspection(
+            bufferSize: bufferSize,
+            buffers: result.logs.enumerated().map { index, records in
+                BufferInspection(
+                    index: index,
+                    recordCount: records.count,
+                    usedBytes: records.reduce(0) { $0 + 12 + $1.payload.count },
+                    wasRepaired: repaired.contains(index)
+                )
+            }
+        )
     }
 }
 

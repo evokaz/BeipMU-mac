@@ -63,6 +63,29 @@ final class VirtualizedOutputViewTests: XCTestCase {
         XCTAssertFalse(view.isMarked(itemID: id))
     }
 
+    func testReduceMotionDisablesBlinkTimersAndKeepsContentVisible() {
+        let view = VirtualizedOutputView(frame: NSRect(x: 0, y: 0, width: 500, height: 300))
+        view.applyAccessibilityDisplayOptions(.init())
+        let text = NSMutableAttributedString(string: "Blinking\n")
+        text.addAttribute(
+            VirtualizedOutputView.blinkAttribute,
+            value: TextStyle.Blink.slow.rawValue,
+            range: NSRange(location: 0, length: 8)
+        )
+        view.setItems([.init(
+            id: UUID(),
+            attributedText: text,
+            contentRange: NSRange(location: 0, length: 8),
+            assets: []
+        )])
+        XCTAssertTrue(view.isBlinkTimerActive)
+
+        view.applyAccessibilityDisplayOptions(.init(reduceMotion: true))
+
+        XCTAssertFalse(view.isBlinkTimerActive)
+        XCTAssertFalse(view.isAnimationTimerActive)
+    }
+
     func testSelectionAndIdentityMapSurvivePrefixCompaction() {
         let view = VirtualizedOutputView(frame: NSRect(x: 0, y: 0, width: 500, height: 300))
         let items = (0..<2_200).map { index in

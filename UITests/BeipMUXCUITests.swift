@@ -89,6 +89,42 @@ final class BeipMUXCUITests: XCTestCase {
         XCTAssertTrue(panel.waitForNonExistence(timeout: 3))
     }
 
+    func testDebuggerPanelsSupportKeyboardOnlyControls() throws {
+        let app = launchApplication(environment: [
+            "BEIPMU_FORCE_REDUCE_MOTION": "1",
+            "BEIPMU_FORCE_INCREASE_CONTRAST": "1",
+            "BEIPMU_FORCE_DIFFERENTIATE_WITHOUT_COLOR": "1",
+        ])
+        defer { app.terminate() }
+        openDebugger("Network…", in: app)
+        let network = app.windows["networkDebugger"]
+        XCTAssertTrue(network.waitForExistence(timeout: 3))
+        let hex = network.checkBoxes["networkDebuggerShowHex"]
+        let telnet = network.checkBoxes["networkDebuggerShowTelnet"]
+        XCTAssertTrue(hex.exists)
+        XCTAssertTrue(telnet.exists)
+        XCTAssertEqual(hex.value as? Int, 0)
+        XCTAssertEqual(telnet.value as? Int, 1)
+
+        network.typeKey(.space, modifierFlags: [])
+        XCTAssertEqual(hex.value as? Int, 1)
+        network.typeKey(.tab, modifierFlags: [])
+        network.typeKey(.space, modifierFlags: [])
+        XCTAssertEqual(telnet.value as? Int, 0)
+        network.typeKey("w", modifierFlags: .command)
+        XCTAssertTrue(network.waitForNonExistence(timeout: 3))
+
+        openDebugger("Scripts…", in: app)
+        let scripts = app.windows["scriptDebugger"]
+        XCTAssertTrue(scripts.waitForExistence(timeout: 3))
+        XCTAssertTrue(scripts.buttons["scriptDebuggerReset"].exists)
+        XCTAssertTrue(scripts.buttons["scriptDebuggerClear"].exists)
+        scripts.typeKey(.tab, modifierFlags: [])
+        scripts.typeKey(.space, modifierFlags: [])
+        scripts.typeKey("w", modifierFlags: .command)
+        XCTAssertTrue(scripts.waitForNonExistence(timeout: 3))
+    }
+
     private func launchApplication(environment: [String: String] = [:]) -> XCUIApplication {
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -104,6 +140,16 @@ final class BeipMUXCUITests: XCTestCase {
     private func chooseWorkspaceMenuItem(_ title: String, in app: XCUIApplication) {
         app.menuBars.menuBarItems["View"].click()
         let parent = app.menuItems["Workspace Panes"]
+        XCTAssertTrue(parent.waitForExistence(timeout: 2))
+        parent.hover()
+        let item = app.menuItems[title]
+        XCTAssertTrue(item.waitForExistence(timeout: 2))
+        item.click()
+    }
+
+    private func openDebugger(_ title: String, in app: XCUIApplication) {
+        app.menuBars.menuBarItems["Connection"].click()
+        let parent = app.menuItems["Debuggers"]
         XCTAssertTrue(parent.waitForExistence(timeout: 2))
         parent.hover()
         let item = app.menuItems[title]

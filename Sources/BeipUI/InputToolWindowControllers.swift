@@ -3,12 +3,14 @@ import BeipCore
 
 @MainActor
 final class SecondaryInputWindowController: NSWindowController, NSWindowDelegate {
-    let prefix: String
+    private(set) var prefix: String
+    let logicalTitle: String
     let input = CommandInputView()
     var onClose: (() -> Void)?
 
     init(prefix: String, checksSpelling: Bool, onSubmit: @escaping (String) -> Void) {
         self.prefix = prefix
+        logicalTitle = prefix.isEmpty ? "Input" : "Input — \(prefix)"
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 520, height: 120),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .utilityWindow],
@@ -48,6 +50,17 @@ final class SecondaryInputWindowController: NSWindowController, NSWindowDelegate
         window?.appearance = palette.appearance
         window?.backgroundColor = palette.chrome
         input.applyTheme(palette)
+    }
+
+    func applyScript(action: String, value: String) {
+        switch action {
+        case "set": input.text = value
+        case "prefix":
+            prefix = value
+            input.behavior = .init(prefix: value, isSticky: input.behavior.isSticky)
+        case "title": window?.title = value
+        default: break
+        }
     }
 
     func windowWillClose(_ notification: Notification) { onClose?() }

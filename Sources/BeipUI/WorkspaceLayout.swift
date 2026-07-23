@@ -1,16 +1,76 @@
 import Foundation
+import BeipCore
 
-enum WorkspacePaneKind: String, Codable, CaseIterable, Hashable, Sendable {
+enum WorkspacePaneKind: Hashable, Sendable, CaseIterable {
     case main
     case notes
     case diagnostics
+    case webView(String)
+    case spawn(String)
+    case spawnTabs(String)
+
+    static var allCases: [WorkspacePaneKind] { [.main, .notes, .diagnostics] }
 
     var title: String {
         switch self {
         case .main: "Session"
         case .notes: "Notes"
         case .diagnostics: "Diagnostics"
+        case let .webView(identifier): identifier.isEmpty ? "Web View" : identifier
+        case let .spawn(title): title
+        case let .spawnTabs(title): title
         }
+    }
+
+    private var persistenceValue: String {
+        switch self {
+        case .main: "main"
+        case .notes: "notes"
+        case .diagnostics: "diagnostics"
+        case let .webView(value): "webView:\(Self.encoded(value))"
+        case let .spawn(value): "spawn:\(Self.encoded(value))"
+        case let .spawnTabs(value): "spawnTabs:\(Self.encoded(value))"
+        }
+    }
+
+    private static func encoded(_ value: String) -> String { Data(value.utf8).base64EncodedString() }
+
+    private static func decoded(_ value: Substring) -> String? {
+        Data(base64Encoded: String(value)).map { String(decoding: $0, as: UTF8.self) }
+    }
+}
+
+extension WorkspacePaneKind: Codable {
+    init(from decoder: any Decoder) throws {
+        let value = try decoder.singleValueContainer().decode(String.self)
+        switch value {
+        case "main": self = .main
+        case "notes": self = .notes
+        case "diagnostics": self = .diagnostics
+        default:
+            guard let separator = value.firstIndex(of: ":"),
+                  let payload = Self.decoded(value[value.index(after: separator)...]) else {
+                throw DecodingError.dataCorruptedError(
+                    in: try decoder.singleValueContainer(),
+                    debugDescription: "Unknown workspace pane \(value)"
+                )
+            }
+            switch value[..<separator] {
+            case "webView": self = .webView(payload)
+            case "spawn": self = .spawn(payload)
+            case "spawnTabs": self = .spawnTabs(payload)
+            default:
+                throw DecodingError.dataCorruptedError(
+                    in: try decoder.singleValueContainer(),
+                    debugDescription: "Unknown workspace pane \(value)"
+                )
+            }
+        }
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(persistenceValue)
     }
 }
 
@@ -170,6 +230,53 @@ indirect enum WorkspaceLayoutNode: Codable, Equatable, Sendable {
                 && leftSecond.hasSameTopology(as: rightSecond)
         default:
             false
+        }
+    }
+
+    func inserting(_ pane: WorkspacePaneKind, side: WebViewDockSide, fraction: Double = 0.72) -> Self {
+        let base = removing(pane) ?? .mainOnly
+        return base.insertingBesideMain(pane, side: side, fraction: fraction).normalized
+    }
+
+    func removing(_ pane: WorkspacePaneKind) -> Self? {
+        switch self {
+        case let .pane(existing):
+            return existing == pane ? nil : self
+        case let .tabs(panes, selected):
+            let retained = panes.filter { $0 != pane }
+            guard !retained.isEmpty else { return nil }
+            if retained.count == 1 { return .pane(retained[0]) }
+            return .tabs(panes: retained, selected: retained.contains(selected) ? selected : retained[0])
+        case let .split(axis, fraction, first, second):
+            let newFirst = first.removing(pane)
+            let newSecond = second.removing(pane)
+            switch (newFirst, newSecond) {
+            case let (first?, second?): return .split(axis: axis, fraction: fraction, first: first, second: second)
+            case let (first?, nil): return first
+            case let (nil, second?): return second
+            case (nil, nil): return nil
+            }
+        }
+    }
+
+    private func insertingBesideMain(_ pane: WorkspacePaneKind, side: WebViewDockSide, fraction: Double) -> Self {
+        if self == .pane(.main) {
+            let auxiliary: Self = .pane(pane)
+            let retained = min(0.85, max(0.15, fraction))
+            switch side {
+            case .left: return .split(axis: .columns, fraction: 1 - retained, first: auxiliary, second: self)
+            case .right: return .split(axis: .columns, fraction: retained, first: self, second: auxiliary)
+            case .top: return .split(axis: .rows, fraction: 1 - retained, first: auxiliary, second: self)
+            case .bottom: return .split(axis: .rows, fraction: retained, first: self, second: auxiliary)
+            }
+        }
+        switch self {
+        case .pane, .tabs: return self
+        case let .split(axis, fraction, first, second):
+            if first.panes.contains(.main) {
+                return .split(axis: axis, fraction: fraction, first: first.insertingBesideMain(pane, side: side, fraction: fraction), second: second)
+            }
+            return .split(axis: axis, fraction: fraction, first: first, second: second.insertingBesideMain(pane, side: side, fraction: fraction))
         }
     }
 
