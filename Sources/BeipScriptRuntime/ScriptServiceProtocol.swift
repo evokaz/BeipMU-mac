@@ -1,6 +1,23 @@
 import BeipCore
 import Foundation
 
+private final class OutputDrainCompletion: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<[ScriptOutput], Never>?
+
+    init(_ continuation: CheckedContinuation<[ScriptOutput], Never>) {
+        self.continuation = continuation
+    }
+
+    func resume(returning outputs: [ScriptOutput]) {
+        lock.lock()
+        let continuation = continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(returning: outputs)
+    }
+}
+
 @objc public protocol ScriptServiceProtocol {
     func evaluate(_ source: NSString, hostJSON: NSString, reply: @escaping @Sendable (NSString?, NSString?, NSString?) -> Void)
     func call(_ function: NSString, arguments: [NSString], hostJSON: NSString, reply: @escaping @Sendable (NSString?, NSString?, NSString?) -> Void)
@@ -18,12 +35,27 @@ public actor ScriptServiceClient {
     private var watchdogs: [UUID: Task<Void, Never>] = [:]
     private var outputPoller: Task<Void, Never>?
     private var asyncOutputHandler: (@MainActor @Sendable ([ScriptOutput]) -> Void)?
+    private let requestWatchdogInterval: TimeInterval
+    private let connectionFactory: @Sendable () -> NSXPCConnection
     /// Matches the three-second watchdog before the Windows client exposes
     /// its script-abort UI. A fresh XPC connection gives macOS a recoverable
     /// boundary even though JavaScriptCore cannot interrupt a tight loop.
     public static let watchdogInterval: TimeInterval = 3
 
-    public init() {}
+    public init() {
+        requestWatchdogInterval = Self.watchdogInterval
+        connectionFactory = {
+            NSXPCConnection(serviceName: "org.beipmu.BeipMU.ScriptService")
+        }
+    }
+
+    init(
+        watchdogInterval: TimeInterval,
+        connectionFactory: @escaping @Sendable () -> NSXPCConnection
+    ) {
+        requestWatchdogInterval = watchdogInterval
+        self.connectionFactory = connectionFactory
+    }
 
     public func startAsyncOutputDelivery(
         _ handler: @escaping @MainActor @Sendable ([ScriptOutput]) -> Void
@@ -153,14 +185,15 @@ public actor ScriptServiceClient {
     private func pollAsyncOutputs() async {
         guard connection != nil, let asyncOutputHandler else { return }
         let outputs = await withCheckedContinuation { continuation in
+            let completion = OutputDrainCompletion(continuation)
             let proxy = activeConnection().remoteObjectProxyWithErrorHandler(
-                makeDrainErrorHandler(continuation: continuation)
+                makeDrainErrorHandler(completion: completion)
             )
             guard let service = proxy as? ScriptServiceProtocol else {
-                continuation.resume(returning: [])
+                completion.resume(returning: [])
                 return
             }
-            service.drainOutputs(reply: makeDrainReply(continuation: continuation))
+            service.drainOutputs(reply: makeDrainReply(completion: completion))
         }
         guard !outputs.isEmpty else { return }
         await asyncOutputHandler(outputs)
@@ -168,7 +201,7 @@ public actor ScriptServiceClient {
 
     private func activeConnection() -> NSXPCConnection {
         if let connection { return connection }
-        let connection = NSXPCConnection(serviceName: "org.beipmu.BeipMU.ScriptService")
+        let connection = connectionFactory()
         let generation = UUID()
         connection.remoteObjectInterface = NSXPCInterface(with: ScriptServiceProtocol.self)
         connection.interruptionHandler = makeConnectionFailureHandler(
@@ -187,9 +220,10 @@ public actor ScriptServiceClient {
 
     private func register(_ continuation: CheckedContinuation<ScriptEvaluation, Never>, id: UUID) {
         pending[id] = continuation
+        let interval = requestWatchdogInterval
         watchdogs[id] = Task { [weak self] in
             do {
-                try await Task.sleep(for: .seconds(Self.watchdogInterval))
+                try await Task.sleep(for: .seconds(interval))
             } catch {
                 return
             }
@@ -204,7 +238,7 @@ public actor ScriptServiceClient {
 
     private func watchdogExpired(id: UUID) {
         guard pending[id] != nil else { return }
-        terminate(reason: "Script exceeded the \(Int(Self.watchdogInterval))-second watchdog and was aborted; the scripting service connection was reset.")
+        terminate(reason: "Script exceeded the \(Self.formatWatchdogInterval(requestWatchdogInterval))-second watchdog and was aborted; the scripting service connection was reset.")
     }
 
     private func connectionFailed(generation: UUID, reason: String) {
@@ -244,15 +278,15 @@ public actor ScriptServiceClient {
     }
 
     private nonisolated func makeDrainErrorHandler(
-        continuation: CheckedContinuation<[ScriptOutput], Never>
+        completion: OutputDrainCompletion
     ) -> @Sendable (Error) -> Void {
-        { _ in continuation.resume(returning: []) }
+        { _ in completion.resume(returning: []) }
     }
 
     private nonisolated func makeDrainReply(
-        continuation: CheckedContinuation<[ScriptOutput], Never>
+        completion: OutputDrainCompletion
     ) -> @Sendable (NSString?) -> Void {
-        { source in continuation.resume(returning: Self.decodeOutputs(source as String?)) }
+        { source in completion.resume(returning: Self.decodeOutputs(source as String?)) }
     }
 
     private func terminate(reason: String) {
@@ -273,6 +307,13 @@ public actor ScriptServiceClient {
     private static func decodeOutputs(_ source: String?) -> [ScriptOutput] {
         guard let source, let data = source.data(using: .utf8) else { return [] }
         return (try? JSONDecoder().decode([ScriptOutput].self, from: data)) ?? []
+    }
+
+    private static func formatWatchdogInterval(_ interval: TimeInterval) -> String {
+        if interval.rounded() == interval {
+            return String(Int(interval))
+        }
+        return String(format: "%.3g", interval)
     }
 
     private static func encodeHost(_ host: ScriptHostSnapshot) -> String {

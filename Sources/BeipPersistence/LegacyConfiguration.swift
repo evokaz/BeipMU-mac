@@ -62,18 +62,19 @@ public struct LegacyConfigurationDocument: Sendable {
         guard let name = path.last else { throw LegacyConfigurationError.missingPath("") }
         let replacement = quoted ? Self.quote(value) : value
         let parents = Array(path.dropLast())
+        let newline = preferredLineEnding
         if parents.isEmpty {
-            if !source.isEmpty, source.last != "\n" { source.append("\n") }
-            source.append("\(name)=\(replacement)\n")
+            if source.last.map({ !Self.isLineBreak($0) }) == true { source.append(newline) }
+            source.append("\(Self.identifier(name))=\(replacement)\(newline)")
         } else {
             if blockInsertionIndex(at: parents, nodes: nodes) == nil { try ensureBlocks(at: parents) }
             guard let insertion = blockInsertionIndex(at: parents, nodes: nodes) else {
                 throw LegacyConfigurationError.missingPath(parents.joined(separator: "."))
             }
-            let lineStart = source[..<insertion].lastIndex(of: "\n").map { source.index(after: $0) } ?? source.startIndex
+            let lineStart = lineStart(before: insertion)
             let closingIndent = source[lineStart..<insertion].prefix(while: { $0 == " " || $0 == "\t" })
             let childIndent = String(closingIndent) + "  "
-            source.insert(contentsOf: "\(childIndent)\(name)=\(replacement)\n", at: insertion)
+            source.insert(contentsOf: "\(childIndent)\(Self.identifier(name))=\(replacement)\(newline)", at: insertion)
         }
         var parser = LegacyParser(source: source)
         nodes = try parser.parse()
@@ -89,10 +90,11 @@ public struct LegacyConfigurationDocument: Sendable {
         guard let insertion = blockInsertionIndex(at: path, nodes: nodes) else {
             throw LegacyConfigurationError.missingPath(path.joined(separator: "."))
         }
-        let lineStart = source[..<insertion].lastIndex(of: "\n").map { source.index(after: $0) } ?? source.startIndex
+        let lineStart = lineStart(before: insertion)
         let closingIndent = source[lineStart..<insertion].prefix(while: { $0 == " " || $0 == "\t" })
         let childIndent = String(closingIndent) + "  "
-        source.insert(contentsOf: "\(childIndent){\n\(childIndent)}\n", at: insertion)
+        let newline = preferredLineEnding
+        source.insert(contentsOf: "\(childIndent){\(newline)\(childIndent)}\(newline)", at: insertion)
         var parser = LegacyParser(source: source)
         nodes = try parser.parse()
         return (descend(path, nodes: nodes) ?? []).reduce(into: 0) { count, node in
@@ -136,12 +138,36 @@ public struct LegacyConfigurationDocument: Sendable {
         guard let insertion else {
             throw LegacyConfigurationError.missingPath(relativePath.joined(separator: "."))
         }
-        let lineStart = source[..<insertion].lastIndex(of: "\n").map { source.index(after: $0) } ?? source.startIndex
+        let lineStart = lineStart(before: insertion)
         let closingIndent = source[lineStart..<insertion].prefix(while: { $0 == " " || $0 == "\t" })
         let childIndent = String(closingIndent) + "  "
-        source.insert(contentsOf: "\(childIndent)\(field)=\(quoted ? Self.quote(value) : value)\n", at: insertion)
+        source.insert(
+            contentsOf: "\(childIndent)\(Self.identifier(field))=\(quoted ? Self.quote(value) : value)\(preferredLineEnding)",
+            at: insertion
+        )
         var parser = LegacyParser(source: source)
         nodes = try parser.parse()
+    }
+
+    public func value(
+        inUnnamedBlockAt index: Int,
+        collectionPath: [String],
+        relativePath: [String]
+    ) -> String? {
+        guard let entry = unnamedBlock(at: index, collectionPath: collectionPath),
+              let final = relativePath.last else { return nil }
+        let parents = Array(relativePath.dropLast())
+        for split in stride(from: parents.count, through: 0, by: -1) {
+            guard let children = descend(Array(parents.prefix(split)), nodes: entry.children) else { continue }
+            let candidate = (Array(parents.dropFirst(split)) + [final]).joined(separator: ".")
+            for node in children {
+                if case let .assignment(name, value, _, _) = node,
+                   name.caseInsensitiveCompare(candidate) == .orderedSame {
+                    return Self.unquote(value)
+                }
+            }
+        }
+        return nil
     }
 
     /// Removes one unnamed entry while leaving the rest of its collection
@@ -153,6 +179,20 @@ public struct LegacyConfigurationDocument: Sendable {
         var parser = LegacyParser(source: source)
         nodes = try parser.parse()
         return true
+    }
+
+    /// Returns scalar fields from every unnamed entry in a legacy collection.
+    /// This is used for collections such as `Variables`, whose v331 form is
+    /// `{ Name="…" Value="…" }`.
+    public func unnamedBlockValues(at collectionPath: [String]) -> [[String: String]] {
+        guard let children = descend(collectionPath, nodes: nodes) else { return [] }
+        return children.compactMap { node in
+            guard case let .block(name: nil, entryChildren, _, _) = node else { return nil }
+            return Dictionary(uniqueKeysWithValues: entryChildren.compactMap { child in
+                guard case let .assignment(name, value, _, _) = child else { return nil }
+                return (name, Self.unquote(value))
+            })
+        }
     }
 
     /// Removes one named entry from a legacy collection. Both full block form
@@ -185,6 +225,18 @@ public struct LegacyConfigurationDocument: Sendable {
     }
 
     public func serialized() -> String { source }
+
+    private var preferredLineEnding: String {
+        source.contains("\r\n") ? "\r\n" : "\n"
+    }
+
+    private func lineStart(before index: String.Index) -> String.Index {
+        source[..<index].lastIndex(where: Self.isLineBreak).map(source.index(after:)) ?? source.startIndex
+    }
+
+    private static func isLineBreak(_ character: Character) -> Bool {
+        character.isNewline
+    }
 
     private func descend(_ path: [String], nodes: [Node]) -> [Node]? {
         guard let first = path.first else { return nodes }
@@ -244,18 +296,19 @@ public struct LegacyConfigurationDocument: Sendable {
             let name = path[depth - 1]
             let serializedName = Self.identifier(name)
             let parentPath = Array(path.prefix(depth - 1))
+            let newline = preferredLineEnding
             if parentPath.isEmpty {
-                if !source.isEmpty, source.last != "\n" { source.append("\n") }
-                source.append("\(serializedName)\n{\n}\n")
+                if source.last.map({ !Self.isLineBreak($0) }) == true { source.append(newline) }
+                source.append("\(serializedName)\(newline){\(newline)}\(newline)")
             } else {
                 guard let insertion = blockInsertionIndex(at: parentPath, nodes: nodes) else {
                     throw LegacyConfigurationError.missingPath(parentPath.joined(separator: "."))
                 }
-                let lineStart = source[..<insertion].lastIndex(of: "\n").map { source.index(after: $0) } ?? source.startIndex
+                let lineStart = lineStart(before: insertion)
                 let closingIndent = source[lineStart..<insertion].prefix(while: { $0 == " " || $0 == "\t" })
                 let childIndent = String(closingIndent) + "  "
                 source.insert(
-                    contentsOf: "\(childIndent)\(serializedName)\n\(childIndent){\n\(childIndent)}\n",
+                    contentsOf: "\(childIndent)\(serializedName)\(newline)\(childIndent){\(newline)\(childIndent)}\(newline)",
                     at: insertion
                 )
             }
@@ -282,11 +335,12 @@ public struct LegacyConfigurationDocument: Sendable {
             guard let insertion else {
                 throw LegacyConfigurationError.missingPath(parentPath.joined(separator: "."))
             }
-            let lineStart = source[..<insertion].lastIndex(of: "\n").map { source.index(after: $0) } ?? source.startIndex
+            let lineStart = lineStart(before: insertion)
             let closingIndent = source[lineStart..<insertion].prefix(while: { $0 == " " || $0 == "\t" })
             let childIndent = String(closingIndent) + "  "
+            let newline = preferredLineEnding
             source.insert(
-                contentsOf: "\(childIndent)\(Self.identifier(path[depth - 1]))\n\(childIndent){\n\(childIndent)}\n",
+                contentsOf: "\(childIndent)\(Self.identifier(path[depth - 1]))\(newline)\(childIndent){\(newline)\(childIndent)}\(newline)",
                 at: insertion
             )
             var parser = LegacyParser(source: source)
@@ -295,8 +349,8 @@ public struct LegacyConfigurationDocument: Sendable {
     }
 
     private func expandedRemovalRange(_ range: Range<String.Index>) -> Range<String.Index> {
-        let lineStart = source[..<range.lowerBound].lastIndex(of: "\n").map(source.index(after:)) ?? source.startIndex
-        let nextNewline = source[range.upperBound...].firstIndex(of: "\n")
+        let lineStart = source[..<range.lowerBound].lastIndex(where: Self.isLineBreak).map(source.index(after:)) ?? source.startIndex
+        let nextNewline = source[range.upperBound...].firstIndex(where: Self.isLineBreak)
         let lineEnd = nextNewline ?? source.endIndex
         let prefix = source[lineStart..<range.lowerBound]
         let suffix = source[range.upperBound..<lineEnd]
@@ -312,9 +366,13 @@ public struct LegacyConfigurationDocument: Sendable {
     }
 
     private static func identifier(_ value: String) -> String {
-        value.contains(where: { $0.isWhitespace || $0 == "{" || $0 == "}" || $0 == "=" })
-            ? quote(value)
-            : value
+        // v331's ConfigImport::Parse_KeyString accepts letters only. Its own
+        // serializer therefore quotes property/scope names containing digits,
+        // underscores, punctuation, or whitespace (for example
+        // "KeyboardMacros2", "GMCP_WebView", and "TCP_NoDelay").
+        value.unicodeScalars.allSatisfy {
+            (65...90).contains($0.value) || (97...122).contains($0.value)
+        } ? value : quote(value)
     }
 
     private static func unquote(_ value: String) -> String {
@@ -473,7 +531,8 @@ private struct LegacyParser {
             }
             if character == "/", source.index(after: cursor) < source.endIndex,
                source[source.index(after: cursor)] == "/" {
-                cursor = source[cursor...].firstIndex(of: "\n").map { source.index(after: $0) } ?? source.endIndex
+                cursor = source[cursor...].firstIndex(where: \.isNewline)
+                    .map { source.index(after: $0) } ?? source.endIndex
                 continue
             }
             let start = cursor
@@ -519,16 +578,37 @@ public actor LegacyConfigurationStore {
 
     public let url: URL
     private var fingerprint: String?
+    private let writer: AtomicFileWriter
+    private let backupWriter: AtomicFileWriter
+    private let conflictWriter: AtomicFileWriter
 
-    public init(url: URL) { self.url = url }
+    public init(url: URL) {
+        self.url = url
+        writer = .live
+        backupWriter = .live
+        conflictWriter = .live
+    }
+
+    init(
+        url: URL,
+        writer: AtomicFileWriter = .live,
+        backupWriter: AtomicFileWriter = .live,
+        conflictWriter: AtomicFileWriter = .live
+    ) {
+        self.url = url
+        self.writer = writer
+        self.backupWriter = backupWriter
+        self.conflictWriter = conflictWriter
+    }
 
     public func load() throws -> LegacyConfigurationDocument {
         let data = try Data(contentsOf: url)
         guard let source = String(data: data, encoding: .utf8) else {
             throw LegacyConfigurationError.notUTF8
         }
+        let document = try Self.readableDocument(source: source)
         fingerprint = Self.fingerprint(data)
-        return try LegacyConfigurationDocument(source: source)
+        return document
     }
 
     /// Loads the primary configuration, falling back to the newest readable
@@ -540,7 +620,7 @@ public actor LegacyConfigurationStore {
             for backup in backupCandidates() {
                 guard let data = try? Data(contentsOf: backup),
                       let source = String(data: data, encoding: .utf8),
-                      let document = try? LegacyConfigurationDocument(source: source) else { continue }
+                      let document = try? Self.readableDocument(source: source) else { continue }
                 fingerprint = primaryData.map(Self.fingerprint)
                 return Recovery(document: document, recoveredFrom: backup)
             }
@@ -549,19 +629,39 @@ public actor LegacyConfigurationStore {
     }
 
     public func save(_ document: LegacyConfigurationDocument) throws {
+        var expectedCurrentFingerprint: String?
         if FileManager.default.fileExists(atPath: url.path) {
             let current = try Data(contentsOf: url)
             if let fingerprint, Self.fingerprint(current) != fingerprint {
-                let conflict = url.deletingPathExtension().appendingPathExtension("conflict-\(Self.timestamp()).txt")
-                try Data(document.serialized().utf8).write(to: conflict, options: .atomic)
-                throw LegacyConfigurationError.externalChange(conflict)
+                throw LegacyConfigurationError.externalChange(try writeConflict(document))
             }
+            expectedCurrentFingerprint = Self.fingerprint(current)
             let backup = url.deletingPathExtension().appendingPathExtension("backup-\(Self.timestamp()).txt")
-            try current.write(to: backup, options: .atomic)
+            try backupWriter.write(current, to: backup)
         }
         let data = Data(document.serialized().utf8)
-        try data.write(to: url, options: .atomic)
+        try writer.write(data, to: url) {
+            guard let expectedCurrentFingerprint else { return }
+            guard let latest = try? Data(contentsOf: url),
+                  Self.fingerprint(latest) == expectedCurrentFingerprint else {
+                throw LegacyConfigurationError.externalChange(try writeConflict(document))
+            }
+        }
         fingerprint = Self.fingerprint(data)
+    }
+
+    private func writeConflict(_ document: LegacyConfigurationDocument) throws -> URL {
+        let conflict = url.deletingPathExtension().appendingPathExtension(
+            "conflict-\(Self.timestamp()).txt"
+        )
+        try conflictWriter.write(Data(document.serialized().utf8), to: conflict)
+        return conflict
+    }
+
+    private static func readableDocument(source: String) throws -> LegacyConfigurationDocument {
+        let document = try LegacyConfigurationDocument(source: source)
+        _ = try LegacyConfigurationProjection(document: document)
+        return document
     }
 
     private static func fingerprint(_ data: Data) -> String {
@@ -587,7 +687,9 @@ public actor LegacyConfigurationStore {
     }
 
     private static func timestamp() -> String {
-        ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: Date()).replacingOccurrences(of: ":", with: "-")
     }
 }
 

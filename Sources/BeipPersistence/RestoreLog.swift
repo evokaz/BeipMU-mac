@@ -232,15 +232,58 @@ public enum RestoreLogStore {
     }
 
     public static func save(_ logs: [[RestoreLogRecord]], to url: URL, bufferSize: Int) throws {
+        try save(logs, to: url, bufferSize: bufferSize, writer: .live)
+    }
+
+    static func save(
+        _ logs: [[RestoreLogRecord]],
+        to url: URL,
+        bufferSize: Int,
+        writer: AtomicFileWriter
+    ) throws {
         let data = try RestoreLogCodec.write(logs, bufferSize: bufferSize)
-        try data.write(to: url, options: .atomic)
+        try writer.write(data, to: url)
+    }
+
+    /// Selects the buffer that will survive v331's CheckAndRepair pass.
+    /// v331 retains only buffers referenced by Character.RestoreLogIndex,
+    /// deleting unreferenced buffers and moving the final buffer into any gap.
+    public static func v331AppendBufferIndex(
+        requestedIndex: Int,
+        referencedIndices: some Sequence<Int>
+    ) -> Int? {
+        let referenced = Set(referencedIndices.filter { $0 >= 0 })
+        if referenced.contains(requestedIndex) { return requestedIndex }
+        return referenced.min()
+    }
+
+    /// Models the buffer contents after v331 removes every unreferenced
+    /// restore log. This deliberately exposes loss rather than treating a
+    /// removed buffer as normalization.
+    public static func simulatingV331Selection(
+        _ logs: [[RestoreLogRecord]],
+        referencedIndices: some Sequence<Int>
+    ) -> [[RestoreLogRecord]] {
+        var result = logs
+        var references = Set(referencedIndices.filter { result.indices.contains($0) })
+        guard !result.isEmpty else { return result }
+        for index in stride(from: result.count - 1, through: 0, by: -1)
+            where !references.contains(index) {
+            let last = result.count - 1
+            if index != last {
+                result[index] = result[last]
+                if references.remove(last) != nil { references.insert(index) }
+            }
+            result.removeLast()
+        }
+        return result
     }
 
     @discardableResult
     public static func loadRepairing(from url: URL, bufferSize: Int) throws -> RestoreLogCodec.RepairResult {
         let result = try RestoreLogCodec.repair(Data(contentsOf: url), bufferSize: bufferSize)
         if !result.repairedBufferIndices.isEmpty {
-            try result.repairedData.write(to: url, options: .atomic)
+            try AtomicFileWriter.live.write(result.repairedData, to: url)
         }
         return result
     }

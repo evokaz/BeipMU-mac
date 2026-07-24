@@ -26,9 +26,10 @@ public struct MUServerAction: Codable, Sendable {
     public var expectHex: String?
     public var delayMilliseconds: UInt64?
     public var disconnect: Bool?
+    public var abort: Bool?
 
     enum CodingKeys: String, CodingKey {
-        case send, chunks, expect, disconnect
+        case send, chunks, expect, disconnect, abort
         case sendHex = "send_hex"
         case expectHex = "expect_hex"
         case delayMilliseconds = "delay_ms"
@@ -41,7 +42,8 @@ public struct MUServerAction: Codable, Sendable {
         expect: String? = nil,
         expectHex: String? = nil,
         delayMilliseconds: UInt64? = nil,
-        disconnect: Bool? = nil
+        disconnect: Bool? = nil,
+        abort: Bool? = nil
     ) {
         self.send = send
         self.sendHex = sendHex
@@ -50,6 +52,7 @@ public struct MUServerAction: Codable, Sendable {
         self.expectHex = expectHex
         self.delayMilliseconds = delayMilliseconds
         self.disconnect = disconnect
+        self.abort = abort
     }
 }
 
@@ -59,8 +62,8 @@ public final class ScriptedMUServer: @unchecked Sendable {
     private let lock = NSLock()
     private var listenerContinuation: CheckedContinuation<UInt16, Error>?
     private var connectionContinuation: CheckedContinuation<NWConnection, Error>?
-    private var pendingConnection: NWConnection?
-    private var activeConnection: NWConnection?
+    private var pendingConnections: [NWConnection] = []
+    private var activeConnections: [ObjectIdentifier: NWConnection] = [:]
 
     public init(tlsIdentity: sec_identity_t? = nil) throws {
         let parameters: NWParameters
@@ -89,12 +92,12 @@ public final class ScriptedMUServer: @unchecked Sendable {
             guard let self else { return }
             connection.start(queue: self.queue)
             let continuation = self.lock.withLock { () -> CheckedContinuation<NWConnection, Error>? in
-                self.activeConnection = connection
+                self.activeConnections[ObjectIdentifier(connection)] = connection
                 if let continuation = self.connectionContinuation {
                     self.connectionContinuation = nil
                     return continuation
                 }
-                self.pendingConnection = connection
+                self.pendingConnections.append(connection)
                 return nil
             }
             continuation?.resume(returning: connection)
@@ -130,6 +133,12 @@ public final class ScriptedMUServer: @unchecked Sendable {
             }
             if action.disconnect == true {
                 try await finish(connection)
+                remove(connection)
+                return
+            }
+            if action.abort == true {
+                connection.cancel()
+                remove(connection)
                 return
             }
         }
@@ -139,11 +148,13 @@ public final class ScriptedMUServer: @unchecked Sendable {
         listener.stateUpdateHandler = nil
         listener.newConnectionHandler = nil
         listener.cancel()
-        lock.withLock {
-            activeConnection?.cancel()
-            activeConnection = nil
-            pendingConnection = nil
+        let connections = lock.withLock { () -> [NWConnection] in
+            let result = Array(activeConnections.values)
+            activeConnections.removeAll()
+            pendingConnections.removeAll()
+            return result
         }
+        connections.forEach { $0.cancel() }
         finishListener(.failure(ScriptedMUServerError.closed))
         finishConnection(.failure(ScriptedMUServerError.closed))
     }
@@ -151,9 +162,8 @@ public final class ScriptedMUServer: @unchecked Sendable {
     private func nextConnection() async throws -> NWConnection {
         try await withCheckedThrowingContinuation { continuation in
             let pending = lock.withLock { () -> NWConnection? in
-                if let pendingConnection {
-                    self.pendingConnection = nil
-                    return pendingConnection
+                if !pendingConnections.isEmpty {
+                    return pendingConnections.removeFirst()
                 }
                 connectionContinuation = continuation
                 return nil
@@ -196,6 +206,12 @@ public final class ScriptedMUServer: @unchecked Sendable {
     private func finish(_ connection: NWConnection) async throws {
         try await withTimeout("server disconnect") { completion in
             connection.send(content: nil, contentContext: .defaultStream, isComplete: true, completion: .contentProcessed(completion))
+        }
+    }
+
+    private func remove(_ connection: NWConnection) {
+        _ = lock.withLock {
+            activeConnections.removeValue(forKey: ObjectIdentifier(connection))
         }
     }
 

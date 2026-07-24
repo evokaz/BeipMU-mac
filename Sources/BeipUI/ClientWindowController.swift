@@ -3278,6 +3278,9 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
             guard let self, let controller else { return nil }
             return try self.handleWebViewBridge(command, from: controller)
         }
+        controller.onNavigationError = { [weak self] message in
+            self?.appendError("WebView \(request.id.isEmpty ? "(unnamed)" : request.id): \(message)")
+        }
         controller.onDockRequest = { [weak self, weak controller] side in
             guard let self, let controller else { return }
             self.dockWebView(controller, key: key, side: side)

@@ -244,6 +244,38 @@ final class LegacyConfigTests: XCTestCase {
         ])
     }
 
+    func testProjectionLoadsV331CanonicalDottedFindStringAssignments() throws {
+        let source = """
+        Version=331
+        Connections {
+          Aliases {
+            Active=true
+            {
+              Description="Dotted alias"
+              Replace="look"
+              FindString.MatchText="l"
+              FindString.StartsWith=true
+            }
+          }
+          Triggers {
+            Active=true
+            {
+              Description="Dotted trigger"
+              FindString.MatchText="HP:"
+              FindString.MatchCase=true
+            }
+          }
+        }
+        """
+        let projection = try LegacyConfigurationProjection(document: .init(source: source))
+        let alias = try XCTUnwrap(projection.automation.aliases.aliases.first)
+        XCTAssertEqual(alias.match.text, "l")
+        XCTAssertTrue(alias.match.startsWith)
+        let trigger = try XCTUnwrap(projection.automation.triggers.triggers.first)
+        XCTAssertEqual(trigger.match.text, "HP:")
+        XCTAssertTrue(trigger.match.matchCase)
+    }
+
     func testProjectionLoadsKeyboardMacrosAtEveryConnectionScope() throws {
         let source = """
         Version=331

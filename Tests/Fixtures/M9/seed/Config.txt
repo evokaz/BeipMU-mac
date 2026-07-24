@@ -1,0 +1,132 @@
+Version=331
+Connections
+{
+  Window
+  {
+    Left=120
+    Top=80
+    Width=1280
+    Height=760
+    Maximized=false
+    Font { Name="Consolas" Size=11 Bold=false }
+    Keys { Connect=Control+Alt+C Atlas=Control+M }
+    M9UnknownWindow="preserve-window-exactly"
+  }
+  Logging
+  {
+    Path="C:\\M9Audit\\Logs"
+    DefaultLogFileName="%server%\\%character%-%date%.html"
+    LogSent=true
+    SentPrefix="S>"
+    LogTyped=true
+    TypedPrefix="T>"
+  }
+  Variables
+  {
+    Active=true
+    { Name="global_keep" Value="seed-global" }
+    { Name="global_delete" Value="delete-me" }
+  }
+  Aliases
+  {
+    Active=true
+    { Description="Global update" FindString { MatchText="greet" } Replace="say hello" }
+    { Description="Global delete" FindString { MatchText="obsolete" } Replace="look" }
+  }
+  KeyboardMacros2
+  {
+    Active=true
+    { Description="Global macro" Macro="inventory" key=Control+I Type=true }
+  }
+  Triggers
+  {
+    Active=true
+    {
+      Description="Global extension trigger"
+      FindString { MatchText="ALERT:" }
+      Send { Active=true Send="status" }
+      Extensions { M9PortableExtension { Enabled=true Payload="preserve-extension" } }
+    }
+  }
+  M9UnknownGlobal
+  {
+    Token="unknown-global-payload"
+    Nested { WindowsPath="D:\\M9Audit\\Scripts\\unknown.js" }
+  }
+  Shortcuts
+  {
+    "Round Trip World"
+    {
+      Host="127.0.0.1:49190"
+      Description="M9 primary world"
+      ConnectAtStartup=false
+      ScriptFile="C:\\M9Audit\\Assets\\roundtrip.js"
+      ImageFile="C:\\M9Audit\\Assets\\marker.svg"
+      SoundFile="C:\\M9Audit\\Assets\\notify.wav"
+      LogFileName="C:\\M9Audit\\Logs\\roundtrip.html"
+      Window { Left=240 Top=140 Width=1024 Height=680 }
+      Variables
+      {
+        Active=true
+        { Name="world_update" Value="seed-world" }
+        { Name="world_delete" Value="delete-world" }
+      }
+      Aliases
+      {
+        Active=true
+        { Description="World update" FindString { MatchText="world-old" } Replace="say world old" }
+      }
+      Characters
+      {
+        "Round Trip Hero"
+        {
+          Login="hero"
+          Password="fixture-only-password"
+          LogFileName="C:\\M9Audit\\Logs\\hero.html"
+          Variables
+          {
+            Active=true
+            { Name="character_update" Value="seed-character" }
+            { Name="character_delete" Value="delete-character" }
+          }
+          Triggers
+          {
+            Active=true
+            { Description="Character update" FindString { MatchText="HP:" } Gag { Active=true Display=false Log=true } }
+          }
+          Puppets
+          {
+            "Round Trip Puppet"
+            {
+              Prefix="[guard] "
+              Variables
+              {
+                Active=true
+                { Name="puppet_update" Value="seed-puppet" }
+                { Name="puppet_delete" Value="delete-puppet" }
+              }
+              Aliases
+              {
+                Active=true
+                { Description="Puppet update" FindString { MatchText="guard-old" } Replace="say guard old" }
+              }
+              KeyboardMacros2
+              {
+                Active=true
+                { Description="Puppet macro delete" Macro="guard" key=F8 Type=false }
+              }
+              M9UnknownPuppet="preserve-puppet-exactly"
+            }
+          }
+          M9UnknownCharacter="preserve-character-exactly"
+        }
+      }
+      M9UnknownWorld="preserve-world-exactly"
+    }
+    "Delete Me World"
+    {
+      Host="delete.invalid:9"
+      Characters { "Disposable" { Login="delete" } }
+    }
+  }
+}

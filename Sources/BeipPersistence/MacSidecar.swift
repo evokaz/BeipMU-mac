@@ -39,9 +39,16 @@ public enum MacSidecarStore {
     }
 
     public static func save(_ sidecar: MacConfigurationSidecar, to url: URL) throws {
+        try save(sidecar, to: url, writer: .live)
+    }
+
+    static func save(
+        _ sidecar: MacConfigurationSidecar,
+        to url: URL,
+        writer: AtomicFileWriter
+    ) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(sidecar).write(to: url, options: .atomic)
+        try writer.write(encoder.encode(sidecar), to: url)
     }
 }
-

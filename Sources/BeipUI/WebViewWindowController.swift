@@ -33,6 +33,13 @@ final class WebViewWindowController: NSWindowController, NSWindowDelegate, WKNav
     var onClose: (() -> Void)?
     var onCommand: ((WebViewBridgeCommand) throws -> Any?)?
     var onNavigationFinished: (() -> Void)?
+    var onNavigationError: ((String) -> Void)?
+    private(set) var lastNavigationError: String?
+    private(set) var isClosed = false
+    private var activeNavigation: WKNavigation?
+    private var navigationTimeoutTask: Task<Void, Never>?
+    private var navigationGeneration: UInt64 = 0
+    private let navigationTimeout: TimeInterval
     private(set) var isDocked = false
     private var displayHooks: [Int: DisplayHook] = [:]
     private var captureHooks: [Int: CaptureHook] = [:]
@@ -51,9 +58,15 @@ final class WebViewWindowController: NSWindowController, NSWindowDelegate, WKNav
         didSet { dockingAccessory.onDockRequest = onDockRequest }
     }
 
-    init(id: String, request: WebViewOpenRequest = .init(), allowsFileNavigation: Bool = true) {
+    init(
+        id: String,
+        request: WebViewOpenRequest = .init(),
+        allowsFileNavigation: Bool = true,
+        navigationTimeout: TimeInterval = 15
+    ) {
         logicalID = id
         self.allowsFileNavigation = allowsFileNavigation
+        self.navigationTimeout = max(0.05, navigationTimeout)
         currentRequest = request
         let configuration = WKWebViewConfiguration()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
@@ -92,9 +105,15 @@ final class WebViewWindowController: NSWindowController, NSWindowDelegate, WKNav
     required init?(coder: NSCoder) { nil }
 
     func apply(_ request: WebViewOpenRequest, allowsFileNavigation: Bool? = nil) {
+        guard !isClosed else { return }
         currentRequest = request
         if let allowsFileNavigation { self.allowsFileNavigation = allowsFileNavigation }
         headers = request.headers
+        lastNavigationError = nil
+        navigationTimeoutTask?.cancel()
+        navigationGeneration &+= 1
+        webView.stopLoading()
+        activeNavigation = nil
         if let frame = request.frame {
             window?.setFrame(NSRect(x: frame.x, y: frame.y, width: frame.width, height: frame.height), display: true)
         } else if request.width != nil || request.height != nil, let window {
@@ -105,11 +124,13 @@ final class WebViewWindowController: NSWindowController, NSWindowDelegate, WKNav
         }
         if request.maximized { window?.zoom(nil) }
         if let source = request.source {
-            webView.loadHTMLString(source, baseURL: nil)
+            activeNavigation = webView.loadHTMLString(source, baseURL: nil)
+            scheduleNavigationTimeout()
         } else if let url = request.url {
             var value = URLRequest(url: url)
             for (name, header) in headers { value.setValue(header, forHTTPHeaderField: name) }
-            webView.load(value)
+            activeNavigation = webView.load(value)
+            scheduleNavigationTimeout()
         }
     }
 
@@ -140,6 +161,8 @@ final class WebViewWindowController: NSWindowController, NSWindowDelegate, WKNav
     }
 
     func closeSurface() {
+        guard !isClosed else { return }
+        invalidateNavigation()
         if isDocked {
             webView.removeFromSuperview()
             window?.contentView = webView
@@ -271,8 +294,24 @@ final class WebViewWindowController: NSWindowController, NSWindowDelegate, WKNav
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard !isClosed, navigation === activeNavigation else { return }
+        navigationTimeoutTask?.cancel()
+        navigationTimeoutTask = nil
+        activeNavigation = nil
         if let title = webView.title, !title.isEmpty { window?.title = title }
         onNavigationFinished?()
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        navigationFailed(navigation, error: error)
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        didFailProvisionalNavigation navigation: WKNavigation!,
+        withError error: Error
+    ) {
+        navigationFailed(navigation, error: error)
     }
 
     func webView(
@@ -297,14 +336,63 @@ final class WebViewWindowController: NSWindowController, NSWindowDelegate, WKNav
     }
 
     func windowWillClose(_ notification: Notification) {
-        webView.stopLoading()
+        invalidateNavigation()
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "beipClient", contentWorld: .page)
-        onClose?()
+        let close = onClose
+        onClose = nil
+        close?()
     }
 
     private func regex(_ pattern: String) throws -> NSRegularExpression {
         do { return try NSRegularExpression(pattern: pattern) }
         catch { throw WebViewBridgeError.invalidRegex(pattern) }
+    }
+
+    private func navigationFailed(_ navigation: WKNavigation?, error: Error) {
+        guard !isClosed, navigation == nil || navigation === activeNavigation else { return }
+        // WebKit reports a policy-driven replacement navigation as error 102;
+        // it is not a user-visible load failure.
+        if (error as NSError).domain == WKError.errorDomain,
+           (error as NSError).code == 102 {
+            return
+        }
+        activeNavigation = nil
+        navigationTimeoutTask?.cancel()
+        navigationTimeoutTask = nil
+        lastNavigationError = error.localizedDescription
+        onNavigationError?(error.localizedDescription)
+    }
+
+    private func invalidateNavigation() {
+        guard !isClosed else { return }
+        isClosed = true
+        navigationGeneration &+= 1
+        navigationTimeoutTask?.cancel()
+        navigationTimeoutTask = nil
+        activeNavigation = nil
+        webView.stopLoading()
+        webView.navigationDelegate = nil
+        webView.uiDelegate = nil
+    }
+
+    private func scheduleNavigationTimeout() {
+        let generation = navigationGeneration
+        navigationTimeoutTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(self?.navigationTimeout ?? 0.05)) }
+            catch { return }
+            guard !Task.isCancelled else { return }
+            self?.navigationTimedOut(generation: generation)
+        }
+    }
+
+    private func navigationTimedOut(generation: UInt64) {
+        guard !isClosed, generation == navigationGeneration else { return }
+        webView.stopLoading()
+        activeNavigation = nil
+        navigationTimeoutTask = nil
+        let message = String(format: "Navigation timed out after %.2f seconds", navigationTimeout)
+        lastNavigationError = message
+        onNavigationError?(message)
     }
 
     private func dispatch(_ event: String, _ payload: [String: Any]) {

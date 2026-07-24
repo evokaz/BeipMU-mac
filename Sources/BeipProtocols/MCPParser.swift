@@ -10,6 +10,10 @@ public enum MCPParserEvent: Sendable, Hashable {
 
 /// Stateful MCP 2.1 line parser and encoder.
 public struct MCPParser: Sendable {
+    public static let maximumPendingMessages = 128
+    public static let maximumMultilineBytes = 4 * 1_024 * 1_024
+    public static let maximumMultilineLines = 4_096
+
     private struct Package: Sendable {
         var name: String
         var minimum: String
@@ -19,6 +23,8 @@ public struct MCPParser: Sendable {
     private struct Pending: Sendable {
         var message: MCPMessage
         var tag: String
+        var byteCount: Int
+        var lineCount: Int
     }
 
     private static let packages = [
@@ -66,7 +72,18 @@ public struct MCPParser: Sendable {
         do {
             guard let parsed = try parseMessage(control) else { return [] }
             if let tag = parsed[parameter: "_data-tag"], !parsed.multiline.isEmpty {
-                pending[tag.lowercased()] = Pending(message: parsed, tag: tag)
+                let key = tag.lowercased()
+                guard pending[key] != nil || pending.count < Self.maximumPendingMessages else {
+                    return [.diagnostic(
+                        "MCP protocol error: too many pending multiline messages"
+                    )]
+                }
+                pending[key] = Pending(
+                    message: parsed,
+                    tag: tag,
+                    byteCount: control.utf8.count,
+                    lineCount: 0
+                )
                 return []
             }
             return dispatch(parsed)
@@ -116,7 +133,17 @@ public struct MCPParser: Sendable {
               let storedKey = item.message.multiline.keys.first(where: { $0.caseInsensitiveCompare(key) == .orderedSame }) else {
             return [.diagnostic("MCP protocol error: unknown multiline tag or key")]
         }
+        let addedBytes = value.utf8.count
+        guard item.lineCount < Self.maximumMultilineLines,
+              addedBytes <= Self.maximumMultilineBytes,
+              item.byteCount <= Self.maximumMultilineBytes - addedBytes
+        else {
+            pending.removeValue(forKey: tag.lowercased())
+            return [.diagnostic("MCP protocol error: multiline message exceeded its safety limit")]
+        }
         item.message.multiline[storedKey, default: []].append(value)
+        item.byteCount += addedBytes
+        item.lineCount += 1
         pending[tag.lowercased()] = item
         return []
     }

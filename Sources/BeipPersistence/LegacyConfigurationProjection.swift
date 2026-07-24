@@ -351,38 +351,92 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
         try migratePortableLegacyValues(in: &result)
         try removeStaleProfileEntries(from: &result)
         try result.upsertValue(String(targetVersion), at: ["Version"], quoted: false)
-        try result.upsertValue(String(settings.connectTimeoutMilliseconds), at: ["Connections", "ConnectTimeout"], quoted: false)
-        try result.upsertValue(String(settings.connectRetryCount), at: ["Connections", "ConnectRetry"], quoted: false)
-        try result.upsertValue(Self.flag(settings.retryForever), at: ["Connections", "RetryForever"], quoted: false)
-        try result.upsertValue(Self.flag(settings.tcpKeepAlive), at: ["TCP_KeepAlive"], quoted: false)
-        try result.upsertValue(Self.flag(settings.tcpNoDelay), at: ["TCP_NoDelay"], quoted: false)
-        try result.upsertValue(scripting.startupPath, at: ["ScriptStartup"])
-        try result.upsertValue(Self.flag(scripting.debugEnabled), at: ["ScriptDebug"], quoted: false)
+        try Self.upsert(
+            String(settings.connectTimeoutMilliseconds), default: "30000",
+            at: ["Connections", "ConnectTimeout"], quoted: false, in: &result
+        )
+        try Self.upsert(
+            String(settings.connectRetryCount), default: "5",
+            at: ["Connections", "ConnectRetry"], quoted: false, in: &result
+        )
+        try Self.upsert(
+            Self.flag(settings.retryForever), default: "false",
+            at: ["Connections", "RetryForever"], quoted: false, in: &result
+        )
+        try Self.upsert(
+            Self.flag(settings.tcpKeepAlive), default: "true",
+            at: ["TCP_KeepAlive"], quoted: false, in: &result
+        )
+        try Self.upsert(
+            Self.flag(settings.tcpNoDelay), default: "true",
+            at: ["TCP_NoDelay"], quoted: false, in: &result
+        )
+        try Self.upsert(scripting.startupPath, default: "", at: ["ScriptStartup"], in: &result)
+        try Self.upsert(
+            Self.flag(scripting.debugEnabled), default: "false",
+            at: ["ScriptDebug"], quoted: false, in: &result
+        )
 
         for server in servers {
             let base = ["Connections", "Shortcuts", server.profile.name]
             let host = server.profile.host.contains(":") ? "[\(server.profile.host)]:\(server.profile.port)" : "\(server.profile.host):\(server.profile.port)"
             try result.upsertValue(host, at: base + ["Host"])
-            try result.upsertValue(server.profile.encoding.rawValue, at: base + ["Encoding"], quoted: false)
-            for (name, enabled) in [
-                ("TLS", server.profile.usesTLS), ("VerifyCertificate", server.profile.verifiesCertificate),
-                ("IPV4", server.profile.forceIPv4), ("Pueblo", server.profile.pueblo),
-                ("Prompts", server.profile.prompts), ("MCP", server.profile.mcp),
-                ("MCMP", server.profile.mcmp), ("NAWSOnResize", server.profile.sendNAWSOnResize),
-                ("LimitTelnetCharset", server.profile.limitTelnetCharset),
+            try Self.upsert(
+                server.profile.encoding.rawValue, default: TextEncoding.cp1252.rawValue,
+                at: base + ["Encoding"], quoted: false, in: &result
+            )
+            for (name, enabled, defaultValue) in [
+                ("TLS", server.profile.usesTLS, false),
+                ("VerifyCertificate", server.profile.verifiesCertificate, false),
+                ("IPV4", server.profile.forceIPv4, false),
+                ("Pueblo", server.profile.pueblo, false),
+                ("Prompts", server.profile.prompts, false),
+                ("MCP", server.profile.mcp, false),
+                ("MCMP", server.profile.mcmp, false),
+                ("NAWSOnResize", server.profile.sendNAWSOnResize, false),
+                ("LimitTelnetCharset", server.profile.limitTelnetCharset, false),
             ] {
-                try result.upsertValue(Self.flag(enabled), at: base + [name], quoted: false)
+                try Self.upsert(
+                    Self.flag(enabled), default: Self.flag(defaultValue),
+                    at: base + [name], quoted: false, in: &result
+                )
             }
-            try result.upsertValue(server.profile.aiEndpoint?.absoluteString ?? "", at: base + ["AIEndpoint"])
-            try result.upsertValue(server.profile.aiModel, at: base + ["AIModel"])
-            try result.upsertValue(String((server.profile.gmcpWebViewPolicy ?? .ask).rawValue), at: base + ["GMCP_WebView"], quoted: false)
+            // AIEndpoint/AIModel are Mac projection extensions, not v331
+            // properties. Update pre-existing syntax so existing Mac profiles
+            // remain editable, but never introduce either field into a
+            // Windows configuration.
+            if result.value(at: base + ["AIEndpoint"]) != nil {
+                try result.upsertValue(
+                    server.profile.aiEndpoint?.absoluteString ?? "",
+                    at: base + ["AIEndpoint"]
+                )
+            }
+            if result.value(at: base + ["AIModel"]) != nil {
+                try result.upsertValue(server.profile.aiModel, at: base + ["AIModel"])
+            }
+            try Self.upsert(
+                String((server.profile.gmcpWebViewPolicy ?? .ask).rawValue), default: "2",
+                at: base + ["GMCP_WebView"], quoted: false, in: &result
+            )
             for character in server.characters {
-            let characterBase = base + ["Characters", character.name]
-                try result.upsertValue(character.connectText, at: characterBase + ["Connect"])
-                try result.upsertValue(character.password, at: characterBase + ["Password"])
-                try result.upsertValue(Self.flag(character.autoConnect), at: characterBase + ["ConnectAtStartup"], quoted: false)
+                let characterBase = base + ["Characters", character.name]
+                try Self.upsert(
+                    character.connectText, default: "",
+                    at: characterBase + ["Connect"], in: &result
+                )
+                try Self.upsert(
+                    character.password, default: "",
+                    at: characterBase + ["Password"], in: &result
+                )
+                try Self.upsert(
+                    Self.flag(character.autoConnect), default: "false",
+                    at: characterBase + ["ConnectAtStartup"], quoted: false, in: &result
+                )
                 let idleEnabled = character.idleTimeout != nil && !character.idleText.isEmpty
-                try result.upsertValue(Self.flag(idleEnabled), at: characterBase + ["IdleEnabled"], quoted: false)
+                try Self.upsert(
+                    Self.flag(idleEnabled), default: "false",
+                    at: characterBase + ["IdleEnabled"], quoted: false, in: &result
+                )
                 if let timeout = character.idleTimeout {
                     try result.upsertValue(String(Int(timeout / 60)), at: characterBase + ["IdleTimeout"], quoted: false)
                     try result.upsertValue(character.idleText, at: characterBase + ["IdleString"])
@@ -391,23 +445,49 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
                     let puppetBase = characterBase + ["Puppets", puppet.name]
                     try result.upsertValue(puppet.receivePrefix, at: puppetBase + ["ReceivePrefix"])
                     try result.upsertValue(puppet.sendPrefix, at: puppetBase + ["SendPrefix"])
-                    try result.upsertValue(puppet.logFilename, at: puppetBase + ["LogFileName"])
-                    try result.upsertValue(puppet.logAppendsDate ? "6" : "0", at: puppetBase + ["LogFileNameTimeFormat"], quoted: false)
-                    try result.upsertValue(puppet.characterLogPrefix, at: puppetBase + ["CharacterLogPrefix"])
-                    for (name, enabled) in [
-                        ("RegularExpression", puppet.receivePrefixIsRegex),
-                        ("HideReceivePrefix", puppet.hideReceivePrefix),
-                        ("AutoConnect", puppet.autoConnect),
-                        ("ConnectWithPlayer", puppet.connectWithPlayer),
-                        ("RemoveAccidentalPrefix", puppet.removeAccidentalPrefix),
-                        ("CharacterLog", puppet.characterLog),
+                    try Self.upsert(
+                        puppet.logFilename, default: "",
+                        at: puppetBase + ["LogFileName"], in: &result
+                    )
+                    try Self.upsert(
+                        puppet.logAppendsDate ? "6" : "0", default: "0",
+                        at: puppetBase + ["LogFileNameTimeFormat"], quoted: false, in: &result
+                    )
+                    try Self.upsert(
+                        puppet.characterLogPrefix, default: "",
+                        at: puppetBase + ["CharacterLogPrefix"], in: &result
+                    )
+                    for (name, enabled, defaultValue) in [
+                        ("RegularExpression", puppet.receivePrefixIsRegex, false),
+                        ("HideReceivePrefix", puppet.hideReceivePrefix, true),
+                        ("AutoConnect", puppet.autoConnect, true),
+                        ("ConnectWithPlayer", puppet.connectWithPlayer, false),
+                        ("RemoveAccidentalPrefix", puppet.removeAccidentalPrefix, false),
+                        ("CharacterLog", puppet.characterLog, false),
                     ] {
-                        try result.upsertValue(Self.flag(enabled), at: puppetBase + [name], quoted: false)
+                        try Self.upsert(
+                            Self.flag(enabled), default: Self.flag(defaultValue),
+                            at: puppetBase + [name], quoted: false, in: &result
+                        )
                     }
                 }
             }
         }
         return result
+    }
+
+    /// Mirrors v331's ShowDefaults=false serializer: an existing field is
+    /// updated in place, while a missing field is introduced only when its
+    /// value differs from the v331 default.
+    private static func upsert(
+        _ value: String,
+        default defaultValue: String,
+        at path: [String],
+        quoted: Bool = true,
+        in document: inout LegacyConfigurationDocument
+    ) throws {
+        guard document.value(at: path) != nil || value != defaultValue else { return }
+        try document.upsertValue(value, at: path, quoted: quoted)
     }
 
     /// Reconciles deletions before portable fields are upserted. This is kept
@@ -605,7 +685,12 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
     }
 
     private static func matchDefinition(from nodes: [LegacyConfigurationDocument.Node]) -> MatchDefinition {
-        let find = nodes.firstBlock(named: "FindString")?.children ?? nodes
+        // v331 canonicalizes edited match blocks to dotted assignments such as
+        // `FindString.MatchText="WORLD:"`. Treat dotted and braced forms as
+        // the same logical block so a Windows resave remains loadable on Mac.
+        let find = nodes.namedBlocks().first {
+            $0.0.caseInsensitiveCompare("FindString") == .orderedSame
+        }?.1 ?? nodes
         return .init(
             text: find.value("MatchText") ?? "",
             isRegularExpression: find.bool("RegularExpression") ?? false,

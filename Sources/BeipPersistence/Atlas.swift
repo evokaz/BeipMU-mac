@@ -319,11 +319,14 @@ public enum AtlasReader {
         let data = try Data(contentsOf: url)
         guard data.starts(with: [0x50, 0x4b]) else { return .init(atlas: try read(from: data)) }
         let entries = try archiveEntries(at: url)
+        if let unsafe = entries.first(where: { !isSafeArchivePath($0) }) {
+            throw AtlasError.unsafeResourcePath(unsafe)
+        }
         guard let xmlEntry = entries.first(where: {
             URL(fileURLWithPath: $0).lastPathComponent.caseInsensitiveCompare("Atlas.xml") == .orderedSame
         }) else { throw AtlasError.missingAtlasXML }
         var resources: [String: Data] = [:]
-        for entry in entries where entry != xmlEntry && !entry.hasSuffix("/") && isSafeArchivePath(entry) {
+        for entry in entries where entry != xmlEntry && !entry.hasSuffix("/") {
             resources[entry] = try runUnzip(arguments: ["-p", url.path, entry])
         }
         return .init(
@@ -357,8 +360,11 @@ public enum AtlasReader {
     }
 
     private static func isSafeArchivePath(_ path: String) -> Bool {
-        let parts = path.split(separator: "/")
-        return !path.hasPrefix("/") && !parts.contains("..")
+        let normalized = path.replacingOccurrences(of: "\\", with: "/")
+        var parts = normalized.split(separator: "/", omittingEmptySubsequences: false)
+        if parts.last == "" { parts.removeLast() }
+        return !normalized.hasPrefix("/") && !parts.isEmpty
+            && !parts.contains("..") && !parts.contains("")
     }
 
     fileprivate static func runUnzip(arguments: [String]) throws -> Data {
@@ -546,34 +552,102 @@ public enum AtlasWriter {
         to url: URL,
         zipped: Bool? = nil
     ) throws {
+        try write(archive, to: url, zipped: zipped, writer: .live)
+    }
+
+    static func write(
+        _ archive: AtlasArchive,
+        to url: URL,
+        zipped: Bool? = nil,
+        writer: AtomicFileWriter
+    ) throws {
         let useArchive = zipped ?? (archive.atlas.version >= 2 || !archive.resources.isEmpty)
         guard useArchive else {
-            try data(for: archive.atlas).write(to: url, options: .atomic)
+            try writer.write(data(for: archive.atlas), to: url)
             return
         }
-        let manager = FileManager.default
-        let directory = manager.temporaryDirectory.appendingPathComponent("BeipMU-Atlas-\(UUID().uuidString)", isDirectory: true)
-        try manager.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? manager.removeItem(at: directory) }
-        try data(for: archive.atlas).write(to: directory.appendingPathComponent("Atlas.xml"))
-        for (path, contents) in archive.resources {
+        try writer.write(archiveData(for: archive), to: url)
+    }
+
+    /// Builds an uncompressed ZIP with fixed metadata and sorted entries.
+    /// Atlas resources are already compressed media in normal use, and the
+    /// stable byte representation is important for cross-host evidence and
+    /// conflict detection.
+    public static func archiveData(for archive: AtlasArchive) throws -> Data {
+        var entries = [("Atlas.xml", data(for: archive.atlas))]
+        for path in archive.resources.keys.sorted() {
             guard safeRelativePath(path) else { throw AtlasError.unsafeResourcePath(path) }
-            let destination = directory.appendingPathComponent(path)
-            try manager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try contents.write(to: destination)
+            entries.append((path, archive.resources[path] ?? Data()))
         }
-        if manager.fileExists(atPath: url.path) { try manager.removeItem(at: url) }
-        let process = Process()
-        let errors = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
-        process.currentDirectoryURL = directory
-        process.arguments = ["-q", "-r", url.path, "."]
-        process.standardError = errors
-        try process.run()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            throw AtlasError.archiveFailure(String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self))
+
+        struct CentralEntry {
+            var name: Data
+            var crc32: UInt32
+            var size: UInt32
+            var offset: UInt32
         }
+
+        var result = Data()
+        var central: [CentralEntry] = []
+        for (path, contents) in entries {
+            let name = Data(path.utf8)
+            guard name.count <= Int(UInt16.max),
+                  contents.count <= Int(UInt32.max),
+                  result.count <= Int(UInt32.max) else {
+                throw AtlasError.archiveFailure("The atlas archive exceeds ZIP32 limits.")
+            }
+            let checksum = crc32(contents)
+            let offset = UInt32(result.count)
+            appendUInt32(0x0403_4B50, to: &result)
+            appendUInt16(20, to: &result)
+            appendUInt16(0x0800, to: &result)
+            appendUInt16(0, to: &result)
+            appendUInt16(0, to: &result)
+            appendUInt16(0x0021, to: &result)
+            appendUInt32(checksum, to: &result)
+            appendUInt32(UInt32(contents.count), to: &result)
+            appendUInt32(UInt32(contents.count), to: &result)
+            appendUInt16(UInt16(name.count), to: &result)
+            appendUInt16(0, to: &result)
+            result.append(name)
+            result.append(contents)
+            central.append(.init(name: name, crc32: checksum, size: UInt32(contents.count), offset: offset))
+        }
+
+        guard result.count <= Int(UInt32.max), central.count <= Int(UInt16.max) else {
+            throw AtlasError.archiveFailure("The atlas archive exceeds ZIP32 limits.")
+        }
+        let centralOffset = UInt32(result.count)
+        for entry in central {
+            appendUInt32(0x0201_4B50, to: &result)
+            appendUInt16(20, to: &result)
+            appendUInt16(20, to: &result)
+            appendUInt16(0x0800, to: &result)
+            appendUInt16(0, to: &result)
+            appendUInt16(0, to: &result)
+            appendUInt16(0x0021, to: &result)
+            appendUInt32(entry.crc32, to: &result)
+            appendUInt32(entry.size, to: &result)
+            appendUInt32(entry.size, to: &result)
+            appendUInt16(UInt16(entry.name.count), to: &result)
+            appendUInt16(0, to: &result)
+            appendUInt16(0, to: &result)
+            appendUInt16(0, to: &result)
+            appendUInt16(0, to: &result)
+            appendUInt32(0, to: &result)
+            appendUInt32(entry.offset, to: &result)
+            result.append(entry.name)
+        }
+        let centralSize = UInt32(result.count) - centralOffset
+        appendUInt32(0x0605_4B50, to: &result)
+        appendUInt16(0, to: &result)
+        appendUInt16(0, to: &result)
+        appendUInt16(UInt16(central.count), to: &result)
+        appendUInt16(UInt16(central.count), to: &result)
+        appendUInt32(centralSize, to: &result)
+        appendUInt32(centralOffset, to: &result)
+        appendUInt16(0, to: &result)
+        return result
     }
 
     private static func appendFont(_ font: Atlas.Font?, tag: String, to lines: inout [String]) {
@@ -660,7 +734,32 @@ public enum AtlasWriter {
     }
 
     private static func safeRelativePath(_ path: String) -> Bool {
-        !path.isEmpty && !path.hasPrefix("/") && !path.split(separator: "/").contains("..")
+        let normalized = path.replacingOccurrences(of: "\\", with: "/")
+        let parts = normalized.split(separator: "/", omittingEmptySubsequences: false)
+        return !normalized.hasPrefix("/")
+            && !normalized.isEmpty
+            && !parts.contains("..")
+            && !parts.contains("")
+    }
+
+    private static func crc32(_ data: Data) -> UInt32 {
+        var value = UInt32.max
+        for byte in data {
+            value ^= UInt32(byte)
+            for _ in 0..<8 {
+                value = (value >> 1) ^ ((value & 1) == 1 ? 0xEDB8_8320 : 0)
+            }
+        }
+        return value ^ UInt32.max
+    }
+
+    private static func appendUInt16(_ value: UInt16, to data: inout Data) {
+        data.append(UInt8(value & 0xFF))
+        data.append(UInt8((value >> 8) & 0xFF))
+    }
+
+    private static func appendUInt32(_ value: UInt32, to data: inout Data) {
+        data.append(contentsOf: (0..<4).map { UInt8((value >> UInt32(8 * $0)) & 0xFF) })
     }
 }
 

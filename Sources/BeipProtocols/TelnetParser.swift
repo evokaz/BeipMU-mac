@@ -2,6 +2,9 @@ import BeipCore
 import Foundation
 
 public struct TelnetParser: Sendable {
+    public static let maximumLineBytes = 4 * 1_024 * 1_024
+    public static let maximumSubnegotiationBytes = 2 * 1_024 * 1_024 + 64 * 1_024
+
     public enum Event: Sendable, Hashable {
         case line(Data)
         case prompt(Data)
@@ -41,6 +44,7 @@ public struct TelnetParser: Sendable {
     private var state: State = .normal
     private var buffer = Data()
     private var sideBuffer = Data()
+    private var discardingOversizedLine = false
     private var terminalTypeSequence = 0
     public private(set) var negotiatedNAWS = false
     public var terminalType = "Beip"
@@ -52,6 +56,7 @@ public struct TelnetParser: Sendable {
         state = .normal
         buffer.removeAll(keepingCapacity: true)
         sideBuffer.removeAll(keepingCapacity: true)
+        discardingOversizedLine = false
         terminalTypeSequence = 0
         negotiatedNAWS = false
     }
@@ -65,14 +70,32 @@ public struct TelnetParser: Sendable {
                 case 0: continue
                 case Code.iac: state = .iac
                 case 13: continue
-                case 10: events.append(.line(buffer)); buffer.removeAll(keepingCapacity: true)
-                default: buffer.append(byte)
+                case 10:
+                    if !discardingOversizedLine { events.append(.line(buffer)) }
+                    buffer.removeAll(keepingCapacity: true)
+                    discardingOversizedLine = false
+                default:
+                    if discardingOversizedLine {
+                        continue
+                    } else if buffer.count < Self.maximumLineBytes {
+                        buffer.append(byte)
+                    } else {
+                        buffer.removeAll(keepingCapacity: true)
+                        discardingOversizedLine = true
+                        events.append(.diagnostic(
+                            "Telnet line exceeded \(Self.maximumLineBytes) bytes and was discarded"
+                        ))
+                    }
                 }
             case .iac:
                 switch byte {
                 case Code.ga, Code.eor:
-                    if !buffer.isEmpty {
+                    if !buffer.isEmpty, !discardingOversizedLine {
                         events.append(.prompt(buffer))
+                    }
+                    if discardingOversizedLine {
+                        buffer.removeAll(keepingCapacity: true)
+                        discardingOversizedLine = false
                     }
                     state = .normal
                 case Code.dont: state = .dont
@@ -80,7 +103,17 @@ public struct TelnetParser: Sendable {
                 case Code.wont: state = .wont
                 case Code.will: state = .will
                 case Code.nop, Code.se: state = .normal
-                case Code.iac: buffer.append(byte); state = .normal
+                case Code.iac:
+                    if !discardingOversizedLine, buffer.count < Self.maximumLineBytes {
+                        buffer.append(byte)
+                    } else if !discardingOversizedLine {
+                        buffer.removeAll(keepingCapacity: true)
+                        discardingOversizedLine = true
+                        events.append(.diagnostic(
+                            "Telnet line exceeded \(Self.maximumLineBytes) bytes and was discarded"
+                        ))
+                    }
+                    state = .normal
                 case Code.sb: state = .subnegotiation
                 default: state = .normal
                 }
@@ -126,7 +159,17 @@ public struct TelnetParser: Sendable {
                 default: state = .waitForIAC
                 }
             case .gmcp:
-                if byte == Code.iac { state = .gmcpIAC } else { sideBuffer.append(byte) }
+                if byte == Code.iac {
+                    state = .gmcpIAC
+                } else if sideBuffer.count < Self.maximumSubnegotiationBytes {
+                    sideBuffer.append(byte)
+                } else {
+                    sideBuffer.removeAll(keepingCapacity: true)
+                    state = .waitForIAC
+                    events.append(.diagnostic(
+                        "Telnet subnegotiation exceeded \(Self.maximumSubnegotiationBytes) bytes and was discarded"
+                    ))
+                }
             case .gmcpIAC:
                 if byte == Code.se {
                     let value = String(decoding: sideBuffer, as: UTF8.self)
@@ -136,8 +179,16 @@ public struct TelnetParser: Sendable {
                     events.append(.gmcp(.init(package: package, payload: payload)))
                     state = .normal
                 } else if byte == Code.iac {
-                    sideBuffer.append(Code.iac)
-                    state = .gmcp
+                    if sideBuffer.count < Self.maximumSubnegotiationBytes {
+                        sideBuffer.append(Code.iac)
+                        state = .gmcp
+                    } else {
+                        sideBuffer.removeAll(keepingCapacity: true)
+                        state = .waitForIAC
+                        events.append(.diagnostic(
+                            "Telnet subnegotiation exceeded \(Self.maximumSubnegotiationBytes) bytes and was discarded"
+                        ))
+                    }
                 } else {
                     events.append(.diagnostic("Invalid IAC command in GMCP subnegotiation: \(byte)"))
                     state = .gmcp
@@ -146,7 +197,17 @@ public struct TelnetParser: Sendable {
                 if byte == 1 { sideBuffer.removeAll(keepingCapacity: true); state = .charsetList }
                 else { state = .waitForIAC }
             case .charsetList:
-                if byte == Code.iac { state = .charsetIAC } else { sideBuffer.append(byte) }
+                if byte == Code.iac {
+                    state = .charsetIAC
+                } else if sideBuffer.count < Self.maximumSubnegotiationBytes {
+                    sideBuffer.append(byte)
+                } else {
+                    sideBuffer.removeAll(keepingCapacity: true)
+                    state = .waitForIAC
+                    events.append(.diagnostic(
+                        "Telnet subnegotiation exceeded \(Self.maximumSubnegotiationBytes) bytes and was discarded"
+                    ))
+                }
             case .charsetIAC:
                 if byte == Code.se, let separator = sideBuffer.first {
                     let offered = sideBuffer.dropFirst().split(separator: separator).map {
@@ -158,8 +219,16 @@ public struct TelnetParser: Sendable {
                     }
                     state = .normal
                 } else if byte == Code.iac {
-                    sideBuffer.append(Code.iac)
-                    state = .charsetList
+                    if sideBuffer.count < Self.maximumSubnegotiationBytes {
+                        sideBuffer.append(Code.iac)
+                        state = .charsetList
+                    } else {
+                        sideBuffer.removeAll(keepingCapacity: true)
+                        state = .waitForIAC
+                        events.append(.diagnostic(
+                            "Telnet subnegotiation exceeded \(Self.maximumSubnegotiationBytes) bytes and was discarded"
+                        ))
+                    }
                 } else {
                     events.append(.diagnostic("Invalid IAC command in CHARSET subnegotiation: \(byte)"))
                     state = .charsetList

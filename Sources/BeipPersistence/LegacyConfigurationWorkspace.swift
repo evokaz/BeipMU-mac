@@ -117,6 +117,51 @@ public struct LegacyConfigurationWorkspace: Sendable {
         }
     }
 
+    public func variables(in scope: AutomationScope) throws -> [String: String] {
+        let entries = document.unnamedBlockValues(at: try variableCollectionPath(scope))
+        return Dictionary(uniqueKeysWithValues: entries.compactMap { entry in
+            guard let name = entry.firstValue(caseInsensitiveKey: "Name"),
+                  let value = entry.firstValue(caseInsensitiveKey: "Value") else { return nil }
+            return (name, value)
+        })
+    }
+
+    /// Adds or updates a v331 variable entry without rewriting neighbouring
+    /// fields. An update therefore remains deterministic when an older host
+    /// discarded the original entry before handoff.
+    public mutating func setVariable(
+        named name: String,
+        value: String,
+        in scope: AutomationScope
+    ) throws {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw WorkspaceError.emptyName }
+        let path = try variableCollectionPath(scope)
+        let entries = document.unnamedBlockValues(at: path)
+        let index: Int
+        if let existing = entries.firstIndex(where: {
+            $0.firstValue(caseInsensitiveKey: "Name")?.caseInsensitiveCompare(trimmed) == .orderedSame
+        }) {
+            index = existing
+        } else {
+            index = try document.appendUnnamedBlock(at: path)
+            try document.upsertValue(trimmed, inUnnamedBlockAt: index, collectionPath: path, relativePath: ["Name"])
+        }
+        try document.upsertValue(value, inUnnamedBlockAt: index, collectionPath: path, relativePath: ["Value"])
+        try reloadProjectionAfterAutomationEdit()
+    }
+
+    @discardableResult
+    public mutating func removeVariable(named name: String, in scope: AutomationScope) throws -> Bool {
+        let path = try variableCollectionPath(scope)
+        guard let index = document.unnamedBlockValues(at: path).firstIndex(where: {
+            $0.firstValue(caseInsensitiveKey: "Name")?.caseInsensitiveCompare(name) == .orderedSame
+        }) else { return false }
+        let removed = try document.removeUnnamedBlock(at: index, collectionPath: path)
+        try reloadProjectionAfterAutomationEdit()
+        return removed
+    }
+
     @discardableResult
     public mutating func addAlias(in scope: AutomationScope, description: String = "New Alias", match: MatchDefinition = .init(text: ""), replacement: String = "") throws -> Int {
         try addAutomationEntry(in: scope, kind: .aliases, description: description, match: match, replacement: replacement)
@@ -156,7 +201,7 @@ public struct LegacyConfigurationWorkspace: Sendable {
         try reloadProjectionAfterAutomationEdit()
     }
 
-    public enum AutomationKind: Sendable { case aliases, triggers, macros }
+    public enum AutomationKind: Sendable, Equatable { case aliases, triggers, macros }
 
     private func server(_ id: UUID) -> LegacyConfigurationProjection.Server? {
         projection.servers.first { $0.profile.id == id }
@@ -196,6 +241,40 @@ public struct LegacyConfigurationWorkspace: Sendable {
         }
     }
 
+    private func variableCollectionPath(_ scope: AutomationScope) throws -> [String] {
+        switch scope {
+        case .global:
+            return ["Connections", "Variables"]
+        case let .server(serverID):
+            guard let server = server(serverID) else { throw WorkspaceError.serverNotFound }
+            // v331 has no Server.Variables property. Live variables belong to
+            // Character and /set persists them there, so the compatible
+            // representation of a world-scoped edit is the world's primary
+            // character Variables collection.
+            guard let character = server.characters.first else { throw WorkspaceError.characterNotFound }
+            return [
+                "Connections", "Shortcuts", server.profile.name,
+                "Characters", character.name, "Variables",
+            ]
+        case let .character(serverID, characterID):
+            guard let server = server(serverID),
+                  let character = server.characters.first(where: { $0.id == characterID }) else {
+                throw WorkspaceError.characterNotFound
+            }
+            return ["Connections", "Shortcuts", server.profile.name, "Characters", character.name, "Variables"]
+        case let .puppet(serverID, characterID, puppetID):
+            guard let server = server(serverID),
+                  let character = server.characters.first(where: { $0.id == characterID }),
+                  let puppet = character.puppets.first(where: { $0.id == puppetID }) else {
+                throw WorkspaceError.puppetNotFound
+            }
+            return [
+                "Connections", "Shortcuts", server.profile.name, "Characters", character.name,
+                "Puppets", puppet.name, "Variables",
+            ]
+        }
+    }
+
     private mutating func addAutomationEntry(
         in scope: AutomationScope,
         kind: AutomationKind,
@@ -205,7 +284,9 @@ public struct LegacyConfigurationWorkspace: Sendable {
     ) throws -> Int {
         let path = try automationCollectionPath(scope, kind: kind)
         let index = aliases(in: scope).count
-        try document.upsertValue("true", at: path + ["Active"], quoted: false)
+        if kind == .aliases {
+            try document.upsertValue("true", at: path + ["Active"], quoted: false)
+        }
         _ = try document.appendUnnamedBlock(at: path)
         try writeAlias(at: index, collectionPath: path, description: description, match: match, replacement: replacement)
         return index
@@ -220,7 +301,9 @@ public struct LegacyConfigurationWorkspace: Sendable {
     ) throws -> Int {
         let path = try automationCollectionPath(scope, kind: kind)
         let index = triggers(in: scope).count
-        try document.upsertValue("true", at: path + ["Active"], quoted: false)
+        if kind == .aliases {
+            try document.upsertValue("true", at: path + ["Active"], quoted: false)
+        }
         _ = try document.appendUnnamedBlock(at: path)
         try writeTrigger(at: index, collectionPath: path, description: description, match: match, action: action)
         return index
@@ -236,7 +319,9 @@ public struct LegacyConfigurationWorkspace: Sendable {
     ) throws -> Int {
         let path = try automationCollectionPath(scope, kind: kind)
         let index = macros(in: scope).count
-        try document.upsertValue("true", at: path + ["Active"], quoted: false)
+        if kind == .aliases {
+            try document.upsertValue("true", at: path + ["Active"], quoted: false)
+        }
         _ = try document.appendUnnamedBlock(at: path)
         try writeMacro(at: index, collectionPath: path, description: description, key: key, macro: macro, typeIntoInput: typeIntoInput)
         return index
@@ -296,9 +381,29 @@ public struct LegacyConfigurationWorkspace: Sendable {
         case let .gag(display, log):
             try document.upsertValue(Self.flag(display), inUnnamedBlockAt: index, collectionPath: collectionPath, relativePath: ["Gag", "Active"], quoted: false)
             try document.upsertValue(Self.flag(log), inUnnamedBlockAt: index, collectionPath: collectionPath, relativePath: ["Gag", "Log"], quoted: false)
-            try document.upsertValue("false", inUnnamedBlockAt: index, collectionPath: collectionPath, relativePath: ["Send", "Active"], quoted: false)
+            if document.value(
+                inUnnamedBlockAt: index,
+                collectionPath: collectionPath,
+                relativePath: ["Send", "Active"]
+            ) != nil {
+                try document.upsertValue(
+                    "false", inUnnamedBlockAt: index,
+                    collectionPath: collectionPath,
+                    relativePath: ["Send", "Active"], quoted: false
+                )
+            }
         case let .send(text):
-            try document.upsertValue("false", inUnnamedBlockAt: index, collectionPath: collectionPath, relativePath: ["Gag", "Active"], quoted: false)
+            if document.value(
+                inUnnamedBlockAt: index,
+                collectionPath: collectionPath,
+                relativePath: ["Gag", "Active"]
+            ) != nil {
+                try document.upsertValue(
+                    "false", inUnnamedBlockAt: index,
+                    collectionPath: collectionPath,
+                    relativePath: ["Gag", "Active"], quoted: false
+                )
+            }
             try document.upsertValue("true", inUnnamedBlockAt: index, collectionPath: collectionPath, relativePath: ["Send", "Active"], quoted: false)
             try document.upsertValue(text, inUnnamedBlockAt: index, collectionPath: collectionPath, relativePath: ["Send", "Send"])
         }
@@ -307,7 +412,10 @@ public struct LegacyConfigurationWorkspace: Sendable {
 
     private mutating func writeMacro(at index: Int, collectionPath: [String], description: String, key: String, macro: String, typeIntoInput: Bool) throws {
         try document.upsertValue(description, inUnnamedBlockAt: index, collectionPath: collectionPath, relativePath: ["Description"])
-        try document.upsertValue(key, inUnnamedBlockAt: index, collectionPath: collectionPath, relativePath: ["key"])
+        try document.upsertValue(
+            key, inUnnamedBlockAt: index, collectionPath: collectionPath,
+            relativePath: ["key"], quoted: false
+        )
         try document.upsertValue(macro, inUnnamedBlockAt: index, collectionPath: collectionPath, relativePath: ["Macro"])
         try document.upsertValue(Self.flag(typeIntoInput), inUnnamedBlockAt: index, collectionPath: collectionPath, relativePath: ["Type"], quoted: false)
         try reloadProjectionAfterAutomationEdit()
@@ -605,7 +713,10 @@ public struct LegacyConfigurationWorkspace: Sendable {
     ) throws {
         let collection = ["Connections", "KeyboardMacros2"]
         try document.upsertValue(description, inUnnamedBlockAt: index, collectionPath: collection, relativePath: ["Description"])
-        try document.upsertValue(key, inUnnamedBlockAt: index, collectionPath: collection, relativePath: ["key"])
+        try document.upsertValue(
+            key, inUnnamedBlockAt: index, collectionPath: collection,
+            relativePath: ["key"], quoted: false
+        )
         try document.upsertValue(macro, inUnnamedBlockAt: index, collectionPath: collection, relativePath: ["Macro"])
         try document.upsertValue(Self.flag(typeIntoInput), inUnnamedBlockAt: index, collectionPath: collection, relativePath: ["Type"], quoted: false)
         try reloadProjectionAfterAutomationEdit()
@@ -624,9 +735,29 @@ public struct LegacyConfigurationWorkspace: Sendable {
         case let .gag(display, log):
             try document.upsertValue(Self.flag(display), inUnnamedBlockAt: index, collectionPath: collection, relativePath: ["Gag", "Active"], quoted: false)
             try document.upsertValue(Self.flag(log), inUnnamedBlockAt: index, collectionPath: collection, relativePath: ["Gag", "Log"], quoted: false)
-            try document.upsertValue("false", inUnnamedBlockAt: index, collectionPath: collection, relativePath: ["Send", "Active"], quoted: false)
+            if document.value(
+                inUnnamedBlockAt: index,
+                collectionPath: collection,
+                relativePath: ["Send", "Active"]
+            ) != nil {
+                try document.upsertValue(
+                    "false", inUnnamedBlockAt: index,
+                    collectionPath: collection,
+                    relativePath: ["Send", "Active"], quoted: false
+                )
+            }
         case let .send(text):
-            try document.upsertValue("false", inUnnamedBlockAt: index, collectionPath: collection, relativePath: ["Gag", "Active"], quoted: false)
+            if document.value(
+                inUnnamedBlockAt: index,
+                collectionPath: collection,
+                relativePath: ["Gag", "Active"]
+            ) != nil {
+                try document.upsertValue(
+                    "false", inUnnamedBlockAt: index,
+                    collectionPath: collection,
+                    relativePath: ["Gag", "Active"], quoted: false
+                )
+            }
             try document.upsertValue("true", inUnnamedBlockAt: index, collectionPath: collection, relativePath: ["Send", "Active"], quoted: false)
             try document.upsertValue(text, inUnnamedBlockAt: index, collectionPath: collection, relativePath: ["Send", "Send"])
         }
@@ -646,8 +777,17 @@ public struct LegacyConfigurationWorkspace: Sendable {
             ("WholeWord", match.wholeWord),
         ]
         try document.upsertValue(match.text, inUnnamedBlockAt: index, collectionPath: collectionPath, relativePath: ["FindString", "MatchText"])
-        for (name, value) in options {
-            try document.upsertValue(Self.flag(value), inUnnamedBlockAt: index, collectionPath: collectionPath, relativePath: ["FindString", name], quoted: false)
+        for (name, value) in options
+            where value || document.value(
+                inUnnamedBlockAt: index,
+                collectionPath: collectionPath,
+                relativePath: ["FindString", name]
+            ) != nil {
+            try document.upsertValue(
+                Self.flag(value), inUnnamedBlockAt: index,
+                collectionPath: collectionPath,
+                relativePath: ["FindString", name], quoted: false
+            )
         }
     }
 
@@ -675,5 +815,11 @@ public struct LegacyConfigurationWorkspace: Sendable {
         var suffix = 2
         while existing.contains("\(base) \(suffix)".lowercased()) { suffix += 1 }
         return "\(base) \(suffix)"
+    }
+}
+
+private extension Dictionary where Key == String {
+    func firstValue(caseInsensitiveKey key: String) -> Value? {
+        first { $0.key.caseInsensitiveCompare(key) == .orderedSame }?.value
     }
 }
