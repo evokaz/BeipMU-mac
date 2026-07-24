@@ -26,6 +26,7 @@ IMPLEMENTED_COMMANDS = {
     "ttype", "unset", "wall", "webview", "world", "ai", "gag", "grab", "puppet", "recall",
     "resetconfig", "rolltest", "test",
 }
+RELEASE_EXCLUDED_COMMANDS = {"ai"}
 IMPLEMENTATION_GAP_COMMANDS = set()
 IMPLEMENTED_PROTOCOLS = {"ANSI", "BINARY", "CHARSET", "Client.Media", "EOR", "GMCP", "MCP", "MCMP", "MTTS", "NAWS", "Pueblo", "TTYPE", "Telnet", "Tilemap", "WebView"}
 PARTIAL_PROTOCOLS = set()
@@ -34,6 +35,7 @@ IMPLEMENTED_WINDOWS = {
     "InputWindow", "Logging", "Macros", "MainWindow", "MapWindow", "Puppets", "Servers", "Settings",
     "SpawnWindow", "SpawnTabsWindow", "StatsWindow", "TextWindow", "TileMapWindow", "Triggers", "WebViewWindow", "AIWindow",
 }
+RELEASE_EXCLUDED_WINDOWS = {"AIWindow"}
 IMPLEMENTATION_GAP_WINDOWS = set()
 PLATFORM_EXCEPTIONS = {"App.ActiveXObject", "Window_Properties.HWND"}
 IMPLEMENTED_SETTING_OWNERS = {
@@ -113,9 +115,14 @@ def command_items() -> list[dict]:
     items = []
     for position, (index, match) in enumerate(matches):
         name = match.group(1)
-        status = "compile-time-excluded" if name == "mucknet" else (
-            "implementation-gap" if name in IMPLEMENTATION_GAP_COMMANDS else "implemented"
-        )
+        if name == "mucknet":
+            status = "compile-time-excluded"
+        elif name in RELEASE_EXCLUDED_COMMANDS:
+            status = "release-excluded"
+        elif name in IMPLEMENTATION_GAP_COMMANDS:
+            status = "implementation-gap"
+        else:
+            status = "implemented"
         end = matches[position + 1][0] if position + 1 < len(matches) else min(len(lines), index + 80)
         branch = " ".join(line.split("//", 1)[0].strip() for line in lines[index:end])
         items.append(item("command", f"/{name}", "Commands.cpp", index + 1, normalize(branch), status))
@@ -219,7 +226,9 @@ def declared_surface_items() -> list[dict]:
             elif category == "trigger-action":
                 status = "implemented"
             elif category == "window-dialog":
-                if name in IMPLEMENTED_WINDOWS:
+                if name in RELEASE_EXCLUDED_WINDOWS:
+                    status = "release-excluded"
+                elif name in IMPLEMENTED_WINDOWS:
                     status = "implemented"
                 elif name in IMPLEMENTATION_GAP_WINDOWS:
                     status = "implementation-gap"
@@ -246,6 +255,12 @@ def evidence_for(category: str, identifier: str, status: str) -> dict:
         return {
             "class": "milestone-audit",
             "paths": ["Documentation/PLAN.md"],
+            "status": "accepted",
+        }
+    if status == "release-excluded":
+        return {
+            "class": "milestone-audit",
+            "paths": ["Documentation/MILESTONE8_AUDIT.md", "Documentation/PARITY_RELEASE_PLAN.md"],
             "status": "accepted",
         }
     if status == "platform-exception":
@@ -300,6 +315,7 @@ def item(category: str, identifier: str, source: str, line: int, behavior: str, 
         "preserved": "preservation-only",
         "implementation-gap": "implementation-gap",
         "compile-time-excluded": "compile-time-excluded",
+        "release-excluded": "release-excluded",
         "platform-exception": "platform-exception",
     }[status]
     fixture = "; ".join(evidence["paths"])

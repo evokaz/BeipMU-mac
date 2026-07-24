@@ -23,6 +23,7 @@ ALLOWED_STATUSES = {
     "preserved",
     "implementation-gap",
     "compile-time-excluded",
+    "release-excluded",
     "platform-exception",
 }
 ALLOWED_DISPOSITIONS = {
@@ -30,6 +31,7 @@ ALLOWED_DISPOSITIONS = {
     "preservation-only",
     "implementation-gap",
     "compile-time-excluded",
+    "release-excluded",
     "platform-exception",
 }
 ALLOWED_EVIDENCE_CLASSES = {
@@ -108,6 +110,7 @@ def validate(matrix: dict) -> list[str]:
             "preserved": "preservation-only",
             "implementation-gap": "implementation-gap",
             "compile-time-excluded": "compile-time-excluded",
+            "release-excluded": "release-excluded",
             "platform-exception": "platform-exception",
         }.get(status)
         if disposition != expected_disposition:
