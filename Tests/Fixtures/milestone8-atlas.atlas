@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<atlas version='1'>
+<font_rooms name='Arial' size='9.0'/>
+<font_exits name='Arial' size='5.0'/>
+<map name='Main'>
+<room name='Audit Plaza' rect='0,0,120,80' color='#810D84'/>
+<room name='North Hall' rect='0,-160,120,-100'/>
+<room name='East Wing' rect='200,-160,320,-100'/>
+<exit from='0' to='1' name_from='north' name_to='south'/>
+<exit from='0' name_from='ledge' points='-40,40|-80,40'/>
+</map>
+<map name='Annex'>
+<room name='Annex Landing' rect='0,0,120,80'/>
+</map>
+<far_exits>
+<exit map_from='0' map_to='1' points_split='2' from='2' to='0' name_from='portal' name_to='out' points='340,-130|380,-130|-40,40|-10,40'/>
+</far_exits>
+</atlas>

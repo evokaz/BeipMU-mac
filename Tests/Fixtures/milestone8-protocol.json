@@ -1,0 +1,46 @@
+{
+  "actions": [
+    {
+      "send": "M8 protocol differential\r\n",
+      "chunks": [1, 2, 3, 5]
+    },
+    {
+      "send": "<xch_mudtext><b>Pueblo bold</b> <font color=\"#12AB34\">greenish</font> &amp; entity</xch_mudtext>\r\n",
+      "chunks": [4, 1, 7, 2, 11, 3]
+    },
+    {
+      "send": "<a xch_cmd=\"look\">Pueblo anchor</a> <send href=\"north|south\" hint=\"Directions|North|South\">choose</send>\r\n",
+      "chunks": [1, 8, 2, 13, 5]
+    },
+    {
+      "send": "<img src=\"http://127.0.0.1:48751/audit.png\" height=\"32\"> image tail\r\n",
+      "chunks": [3, 9, 1, 16]
+    },
+    {
+      "send": "before <b unclosed after\r\n",
+      "chunks": [8, 2, 1]
+    },
+    {
+      "send": "<send href=\"one|two\" hint=\"only-one\">mismatch</send>\r\n",
+      "chunks": [2, 5, 3]
+    },
+    {
+      "send": "<img src=> broken\r\n",
+      "chunks": [1, 1, 1, 1]
+    },
+    {
+      "send": "unknown <xch_unknown value=\"1\">tag</xch_unknown> tail\r\n",
+      "chunks": [7, 4, 12]
+    },
+    {
+      "send_hex": "696e76616c6964207574663820f0288cbc2061667465720d0a",
+      "chunks": [4, 7, 1, 2]
+    },
+    {
+      "delay_ms": 1500
+    },
+    {
+      "disconnect": true
+    }
+  ]
+}
