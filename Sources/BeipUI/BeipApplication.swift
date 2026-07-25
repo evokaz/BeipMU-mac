@@ -34,6 +34,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         newWindow(nil)
         NSApplication.shared.activate(ignoringOtherApps: true)
         activeController?.startPerformanceSoakIfRequested()
+        activeController?.startM10ScaleIfRequested()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }

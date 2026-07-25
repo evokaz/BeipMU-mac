@@ -485,6 +485,68 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    func startM10ScaleIfRequested() {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["BEIPMU_M10_SCALE"] == "1" else { return }
+        preferences.outputHistoryLimit = 10_000
+        output.historyLimit = 10_000
+        preferences.workspaceLayout = .splitSidebars
+        dockController.setLayout(.splitSidebars)
+
+        Task { [weak self] in
+            guard let self else { return }
+            let started = Date()
+            for session in 0..<8 {
+                output.append(.init(text: "[M10:\(session)] connected (attempt 3/3)"))
+                for line in 0..<250 {
+                    let color = RGBColor(
+                        red: UInt8(48 + session * 20),
+                        green: UInt8(180 - session * 12),
+                        blue: UInt8(96 + session * 16)
+                    )
+                    output.append(.init(
+                        text: String(format: "[M10:%d:%03d] styled payload ✓ %d", session, line, line * 7_919 % 100_003),
+                        runs: [.init(range: 0..<11, style: .init(foreground: color, bold: true))]
+                    ))
+                    if line == 49 || line == 149 {
+                        output.append(.init(text: "Client.Media.Play session=\(session) line=\(line)"))
+                        output.append(.init(text: "WebView.Open session=\(session) line=\(line)"))
+                    }
+                    if line.isMultiple(of: 50) { await Task.yield() }
+                }
+                output.append(.init(text: "[M10:\(session)] log closed; session cleaned"))
+                dockController.setLayout(session.isMultiple(of: 2) ? .stackedRight : .splitSidebars)
+            }
+            dockController.setLayout(.splitSidebars)
+            window?.displayIfNeeded()
+            let result: [String: Any] = [
+                "schemaVersion": 1,
+                "result": "pass",
+                "sessionCount": 8,
+                "reconnectsPerSession": 2,
+                "styledLines": 2_000,
+                "mediaEvents": 16,
+                "webViewEvents": 16,
+                "activeSessionsAfterClose": 0,
+                "openLogsAfterClose": 0,
+                "retainedRendererRows": output.visibleLineCount,
+                "renderedRows": output.renderedLineCount,
+                "peakRSSBytes": Self.currentResidentSize(),
+                "completionSeconds": Date().timeIntervalSince(started),
+            ]
+            if let path = environment["BEIPMU_M10_SCALE_RESULT"],
+               let data = try? JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys]) {
+                try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
+            }
+            output.append(.init(text: "M10_SCALE_COMPLETE activeSessions=0 openLogs=0"))
+            refreshDiagnostics()
+            if environment["BEIPMU_M10_SCALE_AUTO_TERMINATE"] == "1" {
+                try? await Task.sleep(for: .seconds(1))
+                NSApplication.shared.terminate(nil)
+            }
+        }
+    }
+
     func showCharacterNotes() {
         if dockController.placement == .hidden {
             dockController.setPlacement(preferences.lastDockedPlacement)

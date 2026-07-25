@@ -9,10 +9,32 @@ bin_dir=$(swift build -c release --show-bin-path)
 benchmark="$bin_dir/BeipWorkspaceBenchmark"
 
 echo "Workspace throughput and resident-memory run"
-metrics_dir=$(mktemp -d /tmp/beipmu-workspace-benchmark.XXXXXX)
+if [ -n "${BEIPMU_EVIDENCE_DIR:-}" ]; then
+    metrics_dir="$BEIPMU_EVIDENCE_DIR/workspace-benchmark"
+    if [ -e "$metrics_dir" ]; then
+        echo "Evidence destination already exists: $metrics_dir" >&2
+        exit 2
+    fi
+    mkdir -p "$metrics_dir"
+    preserve_metrics=1
+else
+    metrics_dir=$(mktemp -d /tmp/beipmu-workspace-benchmark.XXXXXX)
+    preserve_metrics=0
+fi
 metrics_file="$metrics_dir/time.txt"
-trap 'rm -f "$metrics_file"; rmdir "$metrics_dir"' EXIT HUP INT TERM
-/usr/bin/time -l -o "$metrics_file" "$benchmark" "$@"
+report_file="$metrics_dir/report.json"
+leaks_file="$metrics_dir/leaks.txt"
+cleanup() {
+    if [ "$preserve_metrics" = "0" ]; then
+        rm -f "$metrics_file" "$report_file" "$leaks_file"
+        rmdir "$metrics_dir"
+    else
+        printf 'Preserved workspace benchmark evidence at %s\n' "$metrics_dir"
+    fi
+}
+trap cleanup EXIT HUP INT TERM
+/usr/bin/time -l -o "$metrics_file" "$benchmark" "$@" >"$report_file"
+cat "$report_file"
 cat "$metrics_file"
 
 peak_resident=$(awk '/maximum resident set size/ { print $1 }' "$metrics_file")
@@ -24,10 +46,16 @@ fi
 
 if command -v leaks >/dev/null 2>&1; then
     echo "Workspace allocation leak smoke run"
-    leaks -q --atExit -- "$benchmark" \
+    if leaks -q --atExit -- "$benchmark" \
         --lines 50000 \
         --history-limit 5000 \
         --queries 20000 \
         --minimum-lines-per-second 100000 \
-        --minimum-queries-per-second 200000
+        --minimum-queries-per-second 200000 >"$leaks_file" 2>&1; then
+        cat "$leaks_file"
+    else
+        status=$?
+        cat "$leaks_file"
+        exit "$status"
+    fi
 fi

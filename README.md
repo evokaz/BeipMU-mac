@@ -1,7 +1,8 @@
 # BeipMU for Mac
 
 A native macOS reimplementation of the BeipMU MU* client. The project targets
-macOS 14 and later on Apple silicon and Intel.
+macOS 14 and later. The initial release supports Apple silicon; its universal
+package includes an Intel slice that is untested and unsupported.
 
 The Windows source at `../BeipMU-win` is a read-only behavioral reference. Do
 not edit it, change its checkout, fetch into it, or push from it.
@@ -99,11 +100,11 @@ the release-wide replay corpus (`Tests/Golden/windows-v331-replay-*`) whose
 fragmented-ANSI rendering, gag/spawn/send triggers, wire-level alias
 expansion, Windows-written plain/HTML logs, `/@ SetOnReceive` callback
 ordering, and post-session configuration save are replayed through the
-portable engines by `WindowsReplayDifferentialTests`. All 239 Swift tests,
-six XCUITests, six visual baselines, performance/leak gates, and 750
-generated parity rows pass. Assisted VoiceOver/audio/device gates pass on the
-latest Apple-silicon device, with macOS 14 Intel accepted as an explicit
-assumption for this task.
+portable engines by `WindowsReplayDifferentialTests`. The Milestone 10
+macOS 26 Apple-silicon closure passes 295 Swift tests, seven XCUITests, the
+reviewed visual baselines, performance/RSS/leak gates, and 750 generated parity
+rows. Assisted VoiceOver/audio/device gates also pass. The universal archive
+retains an Intel slice, but Intel remains untested and unsupported.
 
 Milestones 6 and 7 are complete. The 750-row matrix now has explicit release
 dispositions, typed accepted evidence, preservation-only round-trip coverage,

@@ -8,7 +8,18 @@ line_count=${BEIPMU_APP_SOAK_LINES:-50000}
 hold_seconds=${BEIPMU_APP_SOAK_HOLD_SECONDS:-10}
 history_limit=${BEIPMU_APP_SOAK_HISTORY_LIMIT:-10000}
 max_rss_bytes=${BEIPMU_APP_SOAK_MAX_RSS_BYTES:-268435456}
-record_root=$(mktemp -d /tmp/beipmu-app-soak.XXXXXX)
+if [ -n "${BEIPMU_EVIDENCE_DIR:-}" ]; then
+    record_root="$BEIPMU_EVIDENCE_DIR/app-soak"
+    if [ -e "$record_root" ]; then
+        echo "Evidence destination already exists: $record_root" >&2
+        exit 2
+    fi
+    mkdir -p "$record_root"
+    keep_artifacts=1
+else
+    record_root=$(mktemp -d /tmp/beipmu-app-soak.XXXXXX)
+    keep_artifacts=${BEIPMU_KEEP_APP_SOAK_ARTIFACTS:-0}
+fi
 app_pid=""
 
 cleanup() {
@@ -16,7 +27,7 @@ cleanup() {
         kill "$app_pid" 2>/dev/null || true
         wait "$app_pid" 2>/dev/null || true
     fi
-    if [ "${BEIPMU_KEEP_APP_SOAK_ARTIFACTS:-0}" = "1" ]; then
+    if [ "$keep_artifacts" = "1" ]; then
         printf 'Preserved Instruments artifacts at %s\n' "$record_root"
     else
         case "$record_root" in
@@ -71,10 +82,16 @@ BEIPMU_PERFORMANCE_SOAK_HOLD_SECONDS=1 \
 BEIPMU_PERFORMANCE_SOAK_HISTORY_LIMIT="$history_limit" \
     leaks -q --atExit -- "$app_binary" >"$leaks_path" 2>&1 || true
 
-python3 Scripts/verify-app-soak.py \
+if python3 Scripts/verify-app-soak.py \
     "$stdout_path" \
     "$toc_path" \
     "$leaks_path" \
     "$line_count" \
     "$history_limit" \
-    "$max_rss_bytes"
+    "$max_rss_bytes" >"$record_root/verification.txt"; then
+    cat "$record_root/verification.txt"
+else
+    status=$?
+    cat "$record_root/verification.txt"
+    exit "$status"
+fi

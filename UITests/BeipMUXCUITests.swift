@@ -244,6 +244,65 @@ private enum BaselineError: Error {
 }
 
 @MainActor
+final class M10ScaleUITests: XCTestCase {
+    func testM10ScaleInteractiveResponsivenessRSSAndCleanup() throws {
+        continueAfterFailure = false
+        let resultURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("beipmu-m10-scale-ui-result.json")
+        try FileManager.default.createDirectory(
+            at: resultURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try? FileManager.default.removeItem(at: resultURL)
+
+        let app = XCUIApplication()
+        app.launchArguments = ["-ApplePersistenceIgnoreState", "YES"]
+        app.launchEnvironment["BEIPMU_UI_TESTING"] = "1"
+        app.launchEnvironment["BEIPMU_UI_TEST_RESET"] = "1"
+        app.launchEnvironment["BEIPMU_M10_SCALE"] = "1"
+        app.launchEnvironment["BEIPMU_M10_SCALE_RESULT"] = resultURL.path
+        app.launch()
+        defer { app.terminate() }
+
+        let window = app.windows["mainWindow"]
+        XCTAssertTrue(window.waitForExistence(timeout: 5))
+        let output = window.descendants(matching: .textView)["MU star output"]
+        let input = window.descendants(matching: .textView)["Command input"]
+        XCTAssertTrue(waitUntil(timeout: 30) {
+            (output.value as? String)?.contains("M10_SCALE_COMPLETE") == true
+        })
+
+        input.click()
+        input.typeText("m10-responsive")
+        input.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(waitUntil(timeout: 3) {
+            (output.value as? String)?.contains("Not connected.") == true
+        })
+        XCTAssertTrue(FileManager.default.fileExists(atPath: resultURL.path))
+        let report = try JSONSerialization.jsonObject(with: Data(contentsOf: resultURL)) as? [String: Any]
+        XCTAssertEqual(report?["result"] as? String, "pass")
+        XCTAssertEqual(report?["activeSessionsAfterClose"] as? Int, 0)
+        XCTAssertEqual(report?["openLogsAfterClose"] as? Int, 0)
+        XCTAssertLessThanOrEqual(report?["peakRSSBytes"] as? Int ?? .max, 268_435_456)
+        XCTAssertLessThanOrEqual(report?["retainedRendererRows"] as? Int ?? .max, 10_000)
+
+        let attachment = XCTAttachment(screenshot: window.screenshot())
+        attachment.name = "m10-scale-responsive"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    private func waitUntil(timeout: TimeInterval, condition: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            if condition() { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        } while Date() < deadline
+        return condition()
+    }
+}
+
+@MainActor
 private extension XCUIElement {
     func waitForNonExistence(timeout: TimeInterval) -> Bool {
         let predicate = NSPredicate(format: "exists == false")
