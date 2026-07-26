@@ -8,6 +8,10 @@ public enum BeipApplication {
     public static func run() -> Never {
         let application = NSApplication.shared
         application.setActivationPolicy(.regular)
+        if let iconURL = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
+           let icon = NSImage(contentsOf: iconURL) {
+            application.applicationIconImage = icon
+        }
         let delegate = ApplicationDelegate()
         retainedDelegate = delegate
         application.delegate = delegate
