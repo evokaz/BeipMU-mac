@@ -6,6 +6,16 @@ private final class TopAlignedDocumentView: NSView {
     override var isFlipped: Bool { true }
 }
 
+private final class TabbableFormTextView: NSTextView {
+    override func insertTab(_ sender: Any?) {
+        window?.selectNextKeyView(self)
+    }
+
+    override func insertBacktab(_ sender: Any?) {
+        window?.selectPreviousKeyView(self)
+    }
+}
+
 @MainActor
 final class ConfigurationManagerWindowController: NSWindowController, NSTableViewDataSource, NSTableViewDelegate {
     private enum Selection: Equatable {
@@ -274,12 +284,18 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
             buildPuppetForm(serverID: server, characterID: character, puppetID: puppet)
         }
         resetDetailScrollPosition()
+        refreshKeyViewLoop()
     }
 
     private func resetDetailScrollPosition() {
         detailScroll.documentView?.layoutSubtreeIfNeeded()
         detailScroll.contentView.scroll(to: .zero)
         detailScroll.reflectScrolledClipView(detailScroll.contentView)
+    }
+
+    private func refreshKeyViewLoop() {
+        window?.contentView?.layoutSubtreeIfNeeded()
+        window?.recalculateKeyViewLoop()
     }
 
     private func buildServerForm(id: UUID) {
@@ -425,7 +441,7 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
     }
 
     private func multilineTextField(_ value: String, identifier: String) -> NSScrollView {
-        let text = NSTextView()
+        let text = TabbableFormTextView()
         text.string = value
         text.isRichText = false
         text.isAutomaticQuoteSubstitutionEnabled = false

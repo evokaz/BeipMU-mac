@@ -154,6 +154,66 @@ final class ConfigurationManagerWindowControllerTests: XCTestCase {
         XCTAssertEqual(character.name, "Updated Character")
     }
 
+    func testTabMovesBetweenWorldTextFields() throws {
+        var workspace = try LegacyConfigurationWorkspace.empty(isDirty: false)
+        _ = workspace.addServer()
+        let controller = ConfigurationManagerWindowController(library: ProfileLibrary(workspace: workspace))
+        defer { controller.close() }
+
+        let views = recursiveSubviews(of: controller.window?.contentView)
+        let name = try XCTUnwrap(
+            views.first { $0.accessibilityIdentifier() == "worldName" } as? NSTextField
+        )
+        let host = try XCTUnwrap(
+            views.first { $0.accessibilityIdentifier() == "worldHost" } as? NSTextField
+        )
+        let port = try XCTUnwrap(
+            views.first { $0.accessibilityIdentifier() == "worldPort" } as? NSTextField
+        )
+
+        XCTAssertEqual(name.nextValidKeyView, host)
+        XCTAssertEqual(host.nextValidKeyView, port)
+    }
+
+    func testTabAndShiftTabLeaveCharacterMultilineFields() throws {
+        var workspace = try LegacyConfigurationWorkspace.empty(isDirty: false)
+        let serverID = workspace.addServer()
+        _ = try workspace.addCharacter(toServerID: serverID)
+        let controller = ConfigurationManagerWindowController(library: ProfileLibrary(workspace: workspace))
+        defer { controller.close() }
+
+        let table = try XCTUnwrap(
+            recursiveSubviews(of: controller.window?.contentView)
+                .compactMap { $0 as? NSTableView }
+                .first
+        )
+        table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        controller.tableViewSelectionDidChange(Notification(name: NSTableView.selectionDidChangeNotification))
+
+        let views = recursiveSubviews(of: controller.window?.contentView)
+        let connect = try XCTUnwrap(
+            views.first { $0.accessibilityIdentifier() == "characterConnectText" } as? NSTextView
+        )
+        let info = try XCTUnwrap(
+            views.first { $0.accessibilityIdentifier() == "characterInfo" } as? NSTextView
+        )
+        let window = try XCTUnwrap(controller.window)
+        window.makeKeyAndOrderFront(nil)
+
+        XCTAssertTrue(window.makeFirstResponder(connect))
+        connect.insertTab(nil)
+        XCTAssertTrue(isFirstResponder(info, in: window))
+
+        info.insertBacktab(nil)
+        XCTAssertTrue(isFirstResponder(connect, in: window))
+    }
+
+    private func isFirstResponder(_ view: NSView, in window: NSWindow) -> Bool {
+        if window.firstResponder === view { return true }
+        guard let editor = window.firstResponder as? NSTextView else { return false }
+        return editor.delegate as AnyObject === view
+    }
+
     private func recursiveSubviews(of root: NSView?) -> [NSView] {
         guard let root else { return [] }
         return [root] + root.subviews.flatMap { recursiveSubviews(of: $0) }
