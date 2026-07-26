@@ -163,7 +163,36 @@ public struct SessionLogRenderer: Sendable {
         return """
         <!doctype html>
         <html><head><meta charset="utf-8"><title>\(Self.escapeHTML(title))</title>
-        <style>body{background:\(backgroundHex);color:\(foregroundHex);font:13px ui-monospace,monospace}.log-event{border-block:1px dotted currentColor;padding:.5em}.line{white-space:pre-wrap;margin:0}.timestamp{opacity:.65;margin-right:1em}</style></head><body>
+        <style>
+        body{background:\(backgroundHex);color:\(foregroundHex);font:13px ui-monospace,monospace}
+        .log-event{border-block:1px dotted currentColor;padding:.5em;text-align:center}
+        .log-control{position:absolute;top:2.25em;display:inline-flex;align-items:center;gap:.5em;cursor:pointer}
+        .timestamps-control{left:.75em}
+        .unformat-control{right:.75em}
+        .log-control input{position:absolute;opacity:0;pointer-events:none}
+        .switch{box-sizing:border-box;width:2.25em;height:1.25em;padding:2px;background:#c0c0c0;border-radius:1em}
+        .switch::after{display:block;width:calc(1.25em - 4px);height:calc(1.25em - 4px);content:"";background:#fff;border-radius:50%;box-shadow:0 1px 3px #0008;transition:transform .2s}
+        .log-control input:checked+.switch::after{transform:translateX(1em)}
+        .log-control input:focus-visible+.switch{outline:2px solid currentColor;outline-offset:2px}
+        .line{display:flex;white-space:pre-wrap;margin:0}
+        .line-content{flex:auto}
+        .timestamp{display:none;flex:none;opacity:.65;margin-right:1em;white-space:nowrap}
+        body.show-timestamps .timestamp{display:inline}
+        body.unformatted .line,body.unformatted .line span,body.unformatted .line a{color:inherit!important;background-color:transparent!important;border-color:currentColor!important}
+        @media(max-width:600px){.log-event:first-of-type{padding-top:2.5em}.log-control{top:1em}}
+        </style>
+        <script>
+        document.addEventListener("DOMContentLoaded",function(){
+          document.getElementById("timestamp-toggle").addEventListener("change",function(event){
+            document.body.classList.toggle("show-timestamps",event.currentTarget.checked);
+          });
+          document.getElementById("unformat-toggle").addEventListener("change",function(event){
+            document.body.classList.toggle("unformatted",event.currentTarget.checked);
+          });
+        });
+        </script></head><body>
+        <label class="log-control timestamps-control"><input id="timestamp-toggle" type="checkbox"><span class="switch" aria-hidden="true"></span><span>Timestamps</span></label>
+        <label class="log-control unformat-control"><input id="unformat-toggle" type="checkbox"><span class="switch" aria-hidden="true"></span><span>Unformat</span></label>
 
         """
     }
@@ -186,7 +215,7 @@ public struct SessionLogRenderer: Sendable {
             let background = line.paragraph.background.map { "background:\(Self.hex($0));" } ?? ""
             let border = line.paragraph.borderWidth > 0
                 ? "border:\(line.paragraph.borderWidth)px solid \(line.paragraph.strokeColor.map(Self.hex) ?? "currentColor");border-radius:\(line.paragraph.borderStyle == .round ? 8 : 0)px;" : ""
-            return "<p class=\"line\" style=\"text-align:\(alignment);\(background)\(border)\">\(timestamp)\(styledHTML(line))</p>\n"
+            return "<p class=\"line\" style=\"text-align:\(alignment);\(background)\(border)\">\(timestamp)<span class=\"line-content\">\(styledHTML(line))</span></p>\n"
         }
     }
 
@@ -203,7 +232,7 @@ public struct SessionLogRenderer: Sendable {
     private func input(_ text: String, date: Date) -> String {
         switch format {
         case .plainText: plainLine(text, date: date)
-        case .html: "<p class=\"line\">\(timestampHTML(date))\(Self.escapeHTML(text))</p>\n"
+        case .html: "<p class=\"line\">\(timestampHTML(date))<span class=\"line-content\">\(Self.escapeHTML(text))</span></p>\n"
         }
     }
 
@@ -263,8 +292,14 @@ public struct SessionLogRenderer: Sendable {
     }
 
     private func timestampHTML(_ date: Date) -> String {
-        let value = timestamp(date).trimmingCharacters(in: .whitespaces)
-        return value.isEmpty ? "" : "<span class=\"timestamp\">\(Self.escapeHTML(value))</span>"
+        var value = timestamp(date).trimmingCharacters(in: .whitespaces)
+        if value.isEmpty {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.dateFormat = "M/d/yyyy h:mm:ss a"
+            value = formatter.string(from: date)
+        }
+        return "<span class=\"timestamp\">\(Self.escapeHTML(value))</span>"
     }
 
     private func marker(_ label: String, at date: Date, starts: Bool) -> String {
