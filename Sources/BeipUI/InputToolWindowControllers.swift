@@ -24,6 +24,7 @@ final class SecondaryInputWindowController: NSWindowController, NSWindowDelegate
         input.behavior = .init(prefix: prefix)
         input.isContinuousSpellCheckingEnabled = checksSpelling
         input.onSubmit = onSubmit
+        input.onPreferredHeightChange = { [weak self] height in self?.resizeInput(to: height) }
         input.setAccessibilityIdentifier("secondaryCommandInput")
 
         let prefixLabel = NSTextField(labelWithString: prefix.isEmpty ? "No prefix" : "Prefix: \(prefix)")
@@ -61,6 +62,12 @@ final class SecondaryInputWindowController: NSWindowController, NSWindowDelegate
         case "title": window?.title = value
         default: break
         }
+    }
+
+    private func resizeInput(to height: CGFloat) {
+        guard let window else { return }
+        let contentSize = window.contentRect(forFrameRect: window.frame).size
+        window.setContentSize(NSSize(width: contentSize.width, height: max(110, height + 46)))
     }
 
     func windowWillClose(_ notification: Notification) { onClose?() }

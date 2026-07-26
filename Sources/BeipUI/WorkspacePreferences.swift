@@ -68,6 +68,40 @@ struct TextWindowSettingsOverride: Codable, Equatable {
     var settings = TextWindowSettings()
 }
 
+struct InputWindowSettings: Codable, Equatable {
+    var fontName = "Menlo"
+    var fontSize = 13.0
+    var foregroundHex = "#E6E6E6"
+    var backgroundHex = "#0D0D0D"
+    var resizesToFitContents = false
+    var minimumLines = 1
+    var maximumLines = 5
+    var marginLeft = 5
+    var marginTop = 6
+    var marginRight = 5
+    var marginBottom = 6
+    var keepsTextOnSubmit = false
+    var localEcho = true
+    var localEchoHex = "#00CDCD"
+
+    var normalized: Self {
+        var value = self
+        value.fontSize = max(6, min(96, value.fontSize))
+        value.minimumLines = max(1, min(100, value.minimumLines))
+        value.maximumLines = max(value.minimumLines, min(100, value.maximumLines))
+        value.marginLeft = max(0, min(500, value.marginLeft))
+        value.marginTop = max(0, min(500, value.marginTop))
+        value.marginRight = max(0, min(500, value.marginRight))
+        value.marginBottom = max(0, min(500, value.marginBottom))
+        return value
+    }
+}
+
+struct InputWindowSettingsOverride: Codable, Equatable {
+    var usesGlobalSettings = true
+    var settings = InputWindowSettings()
+}
+
 struct TextWindowSettingsIdentity: Equatable {
     var world: String?
     var character: String?
@@ -160,6 +194,10 @@ struct WorkspacePreferences: Codable, Equatable {
     var worldTextWindowSettings: [String: TextWindowSettingsOverride] = [:]
     var characterTextWindowSettings: [String: TextWindowSettingsOverride] = [:]
     var tabTextWindowSettings: [String: TextWindowSettingsOverride] = [:]
+    var globalInputWindowSettings = InputWindowSettings()
+    var worldInputWindowSettings: [String: InputWindowSettingsOverride] = [:]
+    var characterInputWindowSettings: [String: InputWindowSettingsOverride] = [:]
+    var tabInputWindowSettings: [String: InputWindowSettingsOverride] = [:]
     var logging = SessionLogOptions()
     var dockPlacement: WorkspaceDockPlacement = .hidden
     var lastDockedPlacement: WorkspaceDockPlacement = .right
@@ -187,6 +225,10 @@ struct WorkspacePreferences: Codable, Equatable {
         worldTextWindowSettings: [String: TextWindowSettingsOverride] = [:],
         characterTextWindowSettings: [String: TextWindowSettingsOverride] = [:],
         tabTextWindowSettings: [String: TextWindowSettingsOverride] = [:],
+        globalInputWindowSettings: InputWindowSettings = .init(),
+        worldInputWindowSettings: [String: InputWindowSettingsOverride] = [:],
+        characterInputWindowSettings: [String: InputWindowSettingsOverride] = [:],
+        tabInputWindowSettings: [String: InputWindowSettingsOverride] = [:],
         logging: SessionLogOptions = .init(),
         dockPlacement: WorkspaceDockPlacement = .hidden,
         lastDockedPlacement: WorkspaceDockPlacement = .right,
@@ -213,6 +255,10 @@ struct WorkspacePreferences: Codable, Equatable {
         self.worldTextWindowSettings = worldTextWindowSettings
         self.characterTextWindowSettings = characterTextWindowSettings
         self.tabTextWindowSettings = tabTextWindowSettings
+        self.globalInputWindowSettings = globalInputWindowSettings
+        self.worldInputWindowSettings = worldInputWindowSettings
+        self.characterInputWindowSettings = characterInputWindowSettings
+        self.tabInputWindowSettings = tabInputWindowSettings
         self.logging = logging
         self.dockPlacement = dockPlacement
         self.lastDockedPlacement = lastDockedPlacement
@@ -262,6 +308,26 @@ struct WorkspacePreferences: Codable, Equatable {
             [String: TextWindowSettingsOverride].self,
             forKey: .tabTextWindowSettings
         ) ?? [:]
+        globalInputWindowSettings = try values.decodeIfPresent(
+            InputWindowSettings.self,
+            forKey: .globalInputWindowSettings
+        ) ?? .init(
+            foregroundHex: theme.foregroundHex,
+            backgroundHex: theme.backgroundHex,
+            keepsTextOnSubmit: stickyInput
+        )
+        worldInputWindowSettings = try values.decodeIfPresent(
+            [String: InputWindowSettingsOverride].self,
+            forKey: .worldInputWindowSettings
+        ) ?? [:]
+        characterInputWindowSettings = try values.decodeIfPresent(
+            [String: InputWindowSettingsOverride].self,
+            forKey: .characterInputWindowSettings
+        ) ?? [:]
+        tabInputWindowSettings = try values.decodeIfPresent(
+            [String: InputWindowSettingsOverride].self,
+            forKey: .tabInputWindowSettings
+        ) ?? [:]
         logging = try values.decodeIfPresent(SessionLogOptions.self, forKey: .logging) ?? .init()
         dockPlacement = try values.decodeIfPresent(WorkspaceDockPlacement.self, forKey: .dockPlacement) ?? .hidden
         lastDockedPlacement = try values.decodeIfPresent(WorkspaceDockPlacement.self, forKey: .lastDockedPlacement) ?? .right
@@ -288,7 +354,7 @@ enum WorkspacePreferencesStore {
         }
         var result = decoded
         result.outputHistoryLimit = max(100, result.outputHistoryLimit)
-        result.inputHeight = max(64, min(1_000, result.inputHeight))
+        result.inputHeight = max(30, min(1_000, result.inputHeight))
         result.dockThickness = max(160, min(600, result.dockThickness))
         if ![.left, .right, .top, .bottom].contains(result.lastDockedPlacement) {
             result.lastDockedPlacement = .right
@@ -303,6 +369,16 @@ enum WorkspacePreferencesStore {
             .init(usesGlobalSettings: $0.usesGlobalSettings, settings: $0.settings.normalized)
         }
         result.tabTextWindowSettings = result.tabTextWindowSettings.mapValues {
+            .init(usesGlobalSettings: $0.usesGlobalSettings, settings: $0.settings.normalized)
+        }
+        result.globalInputWindowSettings = result.globalInputWindowSettings.normalized
+        result.worldInputWindowSettings = result.worldInputWindowSettings.mapValues {
+            .init(usesGlobalSettings: $0.usesGlobalSettings, settings: $0.settings.normalized)
+        }
+        result.characterInputWindowSettings = result.characterInputWindowSettings.mapValues {
+            .init(usesGlobalSettings: $0.usesGlobalSettings, settings: $0.settings.normalized)
+        }
+        result.tabInputWindowSettings = result.tabInputWindowSettings.mapValues {
             .init(usesGlobalSettings: $0.usesGlobalSettings, settings: $0.settings.normalized)
         }
         return result
@@ -327,6 +403,19 @@ enum WorkspacePreferencesStore {
 }
 
 extension WorkspacePreferences {
+    func inputWindowSettings(for identity: TextWindowSettingsIdentity) -> InputWindowSettings {
+        if let key = identity.tabKey, let override = tabInputWindowSettings[key] {
+            return (override.usesGlobalSettings ? globalInputWindowSettings : override.settings).normalized
+        }
+        if let key = identity.characterKey, let override = characterInputWindowSettings[key] {
+            return (override.usesGlobalSettings ? globalInputWindowSettings : override.settings).normalized
+        }
+        if let key = identity.worldKey, let override = worldInputWindowSettings[key] {
+            return (override.usesGlobalSettings ? globalInputWindowSettings : override.settings).normalized
+        }
+        return globalInputWindowSettings.normalized
+    }
+
     func textWindowSettings(for identity: TextWindowSettingsIdentity) -> TextWindowSettings {
         var resolved = globalTextWindowSettings
         if let key = identity.tabKey, let override = tabTextWindowSettings[key] {

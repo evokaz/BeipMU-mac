@@ -125,7 +125,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         return settings.showsTime || settings.showsDate
     }
     var fanFoldEnabled: Bool { activeTextWindowSettings.usesFanFoldBackgrounds }
-    var stickyInputEnabled: Bool { preferences.stickyInput }
+    var stickyInputEnabled: Bool { activeInputWindowSettings.keepsTextOnSubmit }
     var spellCheckingEnabled: Bool { preferences.checksSpelling }
     var outputSplitEnabled: Bool { output.isSplit }
     var muted: Bool { isMuted }
@@ -307,14 +307,14 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         guard splitView === inputSplitView else { return proposedMaximumPosition }
         return max(80, min(
             proposedMaximumPosition,
-            splitView.bounds.height - splitView.dividerThickness - 64
+            splitView.bounds.height - splitView.dividerThickness - 30
         ))
     }
 
     func splitViewDidResizeSubviews(_ notification: Notification) {
         guard tracksInputHeight,
               notification.object as? NSSplitView === inputSplitView,
-              inputContainer.frame.height >= 64 else { return }
+              inputContainer.frame.height >= 30 else { return }
         let height = Double(inputContainer.frame.height)
         guard abs(preferences.inputHeight - height) >= 0.5 else { return }
         preferences.inputHeight = height
@@ -450,9 +450,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         savePreferences()
     }
     func toggleStickyInput() {
-        preferences.stickyInput.toggle()
-        input.behavior.isSticky = preferences.stickyInput
-        savePreferences()
+        updateActiveInputWindowSettings { $0.keepsTextOnSubmit.toggle() }
     }
     func toggleSpellChecking() {
         preferences.checksSpelling.toggle()
@@ -691,6 +689,12 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         outputContextMenu()
     }
 
+    func inputContextMenuForTesting() -> NSMenu {
+        let menu = NSMenu()
+        menu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "")
+        return input.contextMenuForTesting(baseMenu: menu)
+    }
+
     @objc private func contextFind(_ sender: Any?) { showFindDialog() }
     @objc private func contextPause(_ sender: Any?) { toggleOutputPause() }
     @objc private func contextSplit(_ sender: Any?) { toggleOutputSplit() }
@@ -713,8 +717,88 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         onTextWindowSettingsChange?()
     }
 
+    private func showInputWindowSettings(initialScope: TextWindowSettingsEditorView.Scope) {
+        let identity = textWindowIdentity
+        let global = preferences.globalInputWindowSettings
+        var states: [TextWindowSettingsEditorView.Scope: InputWindowSettingsEditorView.State] = [
+            .global: .init(
+                label: "Global",
+                override: .init(usesGlobalSettings: false, settings: global)
+            ),
+        ]
+        if let key = identity.worldKey {
+            states[.world] = .init(
+                label: "World — \(identity.world ?? "")",
+                override: preferences.worldInputWindowSettings[key]
+                    ?? .init(usesGlobalSettings: true, settings: global)
+            )
+        }
+        if let key = identity.characterKey {
+            states[.character] = .init(
+                label: "Character — \(identity.character ?? "")",
+                override: preferences.characterInputWindowSettings[key]
+                    ?? .init(usesGlobalSettings: true, settings: global)
+            )
+        }
+        if let key = identity.tabKey {
+            states[.tab] = .init(
+                label: "Tab — \(identity.tab ?? "")",
+                override: preferences.tabInputWindowSettings[key]
+                    ?? .init(usesGlobalSettings: true, settings: global)
+            )
+        }
+        let editor = InputWindowSettingsEditorView(
+            states: states,
+            initialScope: states[initialScope] == nil ? .global : initialScope
+        )
+        let alert = NSAlert()
+        alert.messageText = initialScope == .global ? "Global Input Window Settings" : "Input Window Settings"
+        alert.informativeText = "Customize global defaults or override them for this world, character, or tab."
+        alert.addButton(withTitle: "Apply")
+        alert.addButton(withTitle: "Cancel")
+        alert.accessoryView = editor
+        let finish: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            guard response == .alertFirstButtonReturn, let self else { return }
+            editor.commit()
+            if let state = editor.states[.global] {
+                self.preferences.globalInputWindowSettings = state.override.settings.normalized
+            }
+            if let key = identity.worldKey, let state = editor.states[.world] {
+                self.preferences.worldInputWindowSettings[key] = state.override
+            }
+            if let key = identity.characterKey, let state = editor.states[.character] {
+                self.preferences.characterInputWindowSettings[key] = state.override
+            }
+            if let key = identity.tabKey, let state = editor.states[.tab] {
+                self.preferences.tabInputWindowSettings[key] = state.override
+            }
+            self.synchronizeLegacyGlobalInputSettings()
+            self.applyInputWindowSettings()
+            self.savePreferences()
+            self.onTextWindowSettingsChange?()
+        }
+        if let window { alert.beginSheetModal(for: window, completionHandler: finish) }
+        else { finish(alert.runModal()) }
+    }
+
+    private func toggleInputUseGlobalSettings() {
+        guard let key = textWindowIdentity.tabKey else { return }
+        let newValue = !activeInputWindowUsesGlobalSettings
+        var entry = preferences.tabInputWindowSettings[key]
+            ?? .init(usesGlobalSettings: newValue, settings: activeInputWindowSettings)
+        entry.usesGlobalSettings = newValue
+        preferences.tabInputWindowSettings[key] = entry
+        applyInputWindowSettings()
+        savePreferences()
+        onTextWindowSettingsChange?()
+    }
+
     func showGlobalTextWindowSettings() {
         showTextWindowSettings(initialScope: .global)
+    }
+
+    func showGlobalInputWindowSettings() {
+        showInputWindowSettings(initialScope: .global)
     }
 
     private func showTextWindowSettings(initialScope: TextWindowSettingsEditorView.Scope) {
@@ -795,7 +879,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         let fanFold = NSButton(checkboxWithTitle: "Fan-fold backgrounds", target: nil, action: nil)
         fanFold.state = preferences.usesFanFoldBackgrounds ? .on : .off
         let sticky = NSButton(checkboxWithTitle: "Sticky input", target: nil, action: nil)
-        sticky.state = preferences.stickyInput ? .on : .off
+        sticky.state = preferences.globalInputWindowSettings.keepsTextOnSubmit ? .on : .off
         let spelling = NSButton(checkboxWithTitle: "Check spelling", target: nil, action: nil)
         spelling.state = preferences.checksSpelling ? .on : .off
         let startupScript = NSTextField(string: profileLibrary.workspace.projection.scripting.startupPath)
@@ -843,6 +927,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             self.preferences.globalTextWindowSettings.showsTime = self.preferences.showsTimestamps
             self.preferences.globalTextWindowSettings.usesFanFoldBackgrounds = self.preferences.usesFanFoldBackgrounds
             self.preferences.stickyInput = sticky.state == .on
+            self.preferences.globalInputWindowSettings.keepsTextOnSubmit = sticky.state == .on
             self.preferences.checksSpelling = spelling.state == .on
             self.preferences.speechVoiceIdentifier = speechVoice.selectedItem?.representedObject as? String
             self.applyPreferences()
@@ -1212,6 +1297,14 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         }
         controller.input.completionCandidates = CommandRegistry.knownCommands.map { "/" + $0 }.sorted()
         controller.input.onSmartPaste = { [weak self] lines in self?.handleSmartPaste(lines) ?? false }
+        controller.input.onShowSettings = { [weak self] in
+            guard let self else { return }
+            self.showInputWindowSettings(initialScope: self.textWindowIdentity.tabKey == nil ? .global : .tab)
+        }
+        controller.input.onToggleUseGlobalSettings = { [weak self] in self?.toggleInputUseGlobalSettings() }
+        controller.input.usesGlobalSettings = activeInputWindowUsesGlobalSettings
+        controller.input.canToggleUseGlobalSettings = textWindowIdentity.tabKey != nil
+        controller.input.applySettings(activeInputWindowSettings)
         controller.onClose = { [weak self, weak controller] in
             guard let self, let controller else { return }
             self.secondaryInputWindows.removeAll { $0 === controller }
@@ -1340,6 +1433,12 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         input.onSubmit = { [weak self] text in self?.submitInput(text) }
         input.onSmartPaste = { [weak self] lines in self?.handleSmartPaste(lines) ?? false }
         input.onMacro = { [weak self] event in self?.handleKeyboardMacro(event) ?? false }
+        input.onShowSettings = { [weak self] in
+            guard let self else { return }
+            self.showInputWindowSettings(initialScope: self.textWindowIdentity.tabKey == nil ? .global : .tab)
+        }
+        input.onToggleUseGlobalSettings = { [weak self] in self?.toggleInputUseGlobalSettings() }
+        input.onPreferredHeightChange = { [weak self] height in self?.resizeInput(to: height) }
         output.onAction = { [weak self] action in self?.perform(action) }
         output.onContextMenu = { [weak self] _ in self?.outputContextMenu() }
         output.onPauseChange = { [weak self] paused, pending in
@@ -1354,7 +1453,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             input.containerScrollView.trailingAnchor.constraint(equalTo: inputContainer.trailingAnchor, constant: -8),
             input.containerScrollView.topAnchor.constraint(equalTo: inputContainer.topAnchor, constant: 7),
             input.containerScrollView.bottomAnchor.constraint(equalTo: inputContainer.bottomAnchor, constant: -7),
-            inputContainer.heightAnchor.constraint(greaterThanOrEqualToConstant: 64),
+            inputContainer.heightAnchor.constraint(greaterThanOrEqualToConstant: 30),
         ])
 
         inputSplitView.isVertical = false
@@ -1437,6 +1536,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             ofDividerAt: 0
         )
         tracksInputHeight = true
+        applyInputWindowSettings()
         refreshDiagnostics()
         window.makeFirstResponder(input)
     }
@@ -1507,6 +1607,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         currentPuppet = puppet
         puppetMaster = master
         applyTextWindowSettings()
+        applyInputWindowSettings()
         variables = profileLibrary.workspace.projection.variables(for: server, character: character, puppet: puppet)
         let automation = profileLibrary.workspace.projection.automationGroups(for: server, character: character, puppet: puppet)
         aliasGroups = automation.aliases
@@ -1547,6 +1648,13 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         processor.setTerminalType(terminalType)
         let next = SessionActor(transport: NetworkTransport(), processor: processor, localEcho: localEcho)
         session = next
+        let inputSettings = activeInputWindowSettings
+        Task {
+            await next.configureLocalEcho(
+                inputSettings.localEcho,
+                color: Self.rgbColor(hex: inputSettings.localEchoHex)
+            )
+        }
         output.clear()
         appendClient("Connecting to \(server.host):\(server.port)…")
         sessionTask = Task { [weak self] in
@@ -2549,8 +2657,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         case let .display(value): appendClient(value)
         case .clear: output.clear()
         case let .localEcho(enabled):
-            localEcho = enabled
-            if let session { Task { await session.configureLocalEcho(enabled) } }
+            updateActiveInputWindowSettings { $0.localEcho = enabled }
             appendClient("Local echo \(enabled ? "on" : "off").")
         case .resetANSI:
             guard let session else { appendError("Not connected."); return }
@@ -2890,8 +2997,9 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private func applyPreferences() {
         applyTextWindowSettings()
         if output.isSplit != preferences.outputSplit { output.toggleSplit() }
-        input.behavior = .init(prefix: preferences.inputPrefix, isSticky: preferences.stickyInput)
+        input.behavior.prefix = preferences.inputPrefix
         input.isContinuousSpellCheckingEnabled = preferences.checksSpelling
+        applyInputWindowSettings()
         applyThemeSettings(preferences.theme)
     }
 
@@ -2907,6 +3015,24 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
 
     private var activeTextWindowSettings: TextWindowSettings {
         preferences.textWindowSettings(for: textWindowIdentity)
+    }
+
+    private var activeInputWindowSettings: InputWindowSettings {
+        preferences.inputWindowSettings(for: textWindowIdentity)
+    }
+
+    private var activeInputWindowUsesGlobalSettings: Bool {
+        let identity = textWindowIdentity
+        if let key = identity.tabKey, let entry = preferences.tabInputWindowSettings[key] {
+            return entry.usesGlobalSettings
+        }
+        if let key = identity.characterKey, let entry = preferences.characterInputWindowSettings[key] {
+            return entry.usesGlobalSettings
+        }
+        if let key = identity.worldKey, let entry = preferences.worldInputWindowSettings[key] {
+            return entry.usesGlobalSettings
+        }
+        return true
     }
 
     private var activeTextWindowUsesGlobalSettings: Bool {
@@ -2925,6 +3051,64 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
 
     private func applyTextWindowSettings() {
         output.applySettings(activeTextWindowSettings)
+    }
+
+    private func applyInputWindowSettings() {
+        let settings = activeInputWindowSettings
+        input.usesGlobalSettings = activeInputWindowUsesGlobalSettings
+        input.canToggleUseGlobalSettings = textWindowIdentity.tabKey != nil
+        input.applySettings(settings)
+        secondaryInputWindows.forEach {
+            $0.input.usesGlobalSettings = activeInputWindowUsesGlobalSettings
+            $0.input.canToggleUseGlobalSettings = textWindowIdentity.tabKey != nil
+            $0.input.applySettings(settings)
+        }
+        localEcho = settings.localEcho
+        if let session {
+            let color = Self.rgbColor(hex: settings.localEchoHex)
+            Task { await session.configureLocalEcho(settings.localEcho, color: color) }
+        }
+    }
+
+    private func updateActiveInputWindowSettings(_ update: (inout InputWindowSettings) -> Void) {
+        let identity = textWindowIdentity
+        if let key = identity.tabKey {
+            var entry = preferences.tabInputWindowSettings[key]
+                ?? .init(usesGlobalSettings: false, settings: activeInputWindowSettings)
+            entry.usesGlobalSettings = false
+            update(&entry.settings)
+            entry.settings = entry.settings.normalized
+            preferences.tabInputWindowSettings[key] = entry
+        } else {
+            update(&preferences.globalInputWindowSettings)
+            preferences.globalInputWindowSettings = preferences.globalInputWindowSettings.normalized
+            synchronizeLegacyGlobalInputSettings()
+        }
+        applyInputWindowSettings()
+        savePreferences()
+        onTextWindowSettingsChange?()
+    }
+
+    private func synchronizeLegacyGlobalInputSettings() {
+        preferences.stickyInput = preferences.globalInputWindowSettings.keepsTextOnSubmit
+    }
+
+    private func resizeInput(to height: CGFloat) {
+        guard activeInputWindowSettings.resizesToFitContents, inputSplitView.bounds.height > 0 else { return }
+        let boundedHeight = min(max(30, height), max(30, inputSplitView.bounds.height - 80))
+        inputSplitView.setPosition(
+            inputSplitView.bounds.height - inputSplitView.dividerThickness - boundedHeight,
+            ofDividerAt: 0
+        )
+    }
+
+    private static func rgbColor(hex: String) -> BeipCore.RGBColor? {
+        guard let color = NSColor(hexString: hex)?.usingColorSpace(.deviceRGB) else { return nil }
+        return BeipCore.RGBColor(
+            red: UInt8((color.redComponent * 255).rounded()),
+            green: UInt8((color.greenComponent * 255).rounded()),
+            blue: UInt8((color.blueComponent * 255).rounded())
+        )
     }
 
     private func updateActiveTextWindowSettings(_ update: (inout TextWindowSettings) -> Void) {
@@ -2959,7 +3143,12 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         preferences.worldTextWindowSettings = saved.worldTextWindowSettings
         preferences.characterTextWindowSettings = saved.characterTextWindowSettings
         preferences.tabTextWindowSettings = saved.tabTextWindowSettings
+        preferences.globalInputWindowSettings = saved.globalInputWindowSettings
+        preferences.worldInputWindowSettings = saved.worldInputWindowSettings
+        preferences.characterInputWindowSettings = saved.characterInputWindowSettings
+        preferences.tabInputWindowSettings = saved.tabInputWindowSettings
         applyTextWindowSettings()
+        applyInputWindowSettings()
     }
 
     private var notesKey: String {

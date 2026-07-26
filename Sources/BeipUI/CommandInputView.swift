@@ -7,9 +7,15 @@ final class CommandInputView: NSTextView {
     var onSubmit: ((String) -> Void)?
     var onSmartPaste: (([String]) -> Bool)?
     var onMacro: ((NSEvent) -> Bool)?
+    var onShowSettings: (() -> Void)?
+    var onToggleUseGlobalSettings: (() -> Void)?
+    var onPreferredHeightChange: ((CGFloat) -> Void)?
+    var usesGlobalSettings = true
+    var canToggleUseGlobalSettings = false
     var behavior = InputBehavior()
     var completionCandidates: [String] = []
     private var commandHistory = InputHistory()
+    private var settings = InputWindowSettings()
 
     init() {
         let storage = NSTextStorage()
@@ -50,14 +56,34 @@ final class CommandInputView: NSTextView {
     }
 
     func applyTheme(_ palette: WorkspaceThemePalette) {
-        textColor = palette.foreground
-        backgroundColor = palette.background
+        if settings.foregroundHex.isEmpty { textColor = palette.foreground }
+        if settings.backgroundHex.isEmpty { backgroundColor = palette.background }
         insertionPointColor = palette.accent
         selectedTextAttributes = [
             .backgroundColor: palette.accent.withAlphaComponent(0.55),
-            .foregroundColor: palette.foreground,
+            .foregroundColor: textColor ?? palette.foreground,
         ]
     }
+
+    func applySettings(_ suppliedSettings: InputWindowSettings) {
+        settings = suppliedSettings.normalized
+        font = NSFont(name: settings.fontName, size: settings.fontSize)
+            ?? .monospacedSystemFont(ofSize: settings.fontSize, weight: .regular)
+        textColor = NSColor(hexString: settings.foregroundHex) ?? .textColor
+        backgroundColor = NSColor(hexString: settings.backgroundHex) ?? .textBackgroundColor
+        containerScrollView.backgroundColor = backgroundColor
+        containerScrollView.contentInsets = NSEdgeInsets(
+            top: CGFloat(settings.marginTop),
+            left: CGFloat(settings.marginLeft),
+            bottom: CGFloat(settings.marginBottom),
+            right: CGFloat(settings.marginRight)
+        )
+        textContainerInset = .zero
+        behavior.isSticky = settings.keepsTextOnSubmit
+        notifyPreferredHeight()
+    }
+
+    var appliedSettingsForTesting: InputWindowSettings { settings }
 
     override func keyDown(with event: NSEvent) {
         if onMacro?(event) == true { return }
@@ -82,6 +108,61 @@ final class CommandInputView: NSTextView {
         text = conversion.apply(to: string)
     }
 
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard let menu = super.menu(for: event) else { return nil }
+        return addingConversionMenu(to: menu)
+    }
+
+    func contextMenuForTesting(baseMenu: NSMenu = NSMenu()) -> NSMenu {
+        addingConversionMenu(to: baseMenu)
+    }
+
+    private func addingConversionMenu(to menu: NSMenu) -> NSMenu {
+        guard menu.item(withTitle: "Conversion") == nil else { return menu }
+
+        if onShowSettings != nil {
+            let global = NSMenuItem(
+                title: "Use global settings",
+                action: #selector(toggleUseGlobalSettings(_:)),
+                keyEquivalent: ""
+            )
+            global.target = self
+            global.state = usesGlobalSettings ? .on : .off
+            global.isEnabled = canToggleUseGlobalSettings && onToggleUseGlobalSettings != nil
+            menu.insertItem(global, at: 0)
+            let settings = NSMenuItem(title: "Settings…", action: #selector(showSettings(_:)), keyEquivalent: "")
+            settings.target = self
+            menu.insertItem(settings, at: 1)
+            menu.insertItem(.separator(), at: 2)
+        }
+
+        let conversionMenu = NSMenu(title: "Conversion")
+        func add(_ title: String, conversion: InputConversion, action: Selector) {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            item.representedObject = conversion.rawValue
+            conversionMenu.addItem(item)
+        }
+        add("Convert Returns to %R", conversion: .returns, action: #selector(convertReturns(_:)))
+        add("Convert Tabs to %T", conversion: .tabs, action: #selector(convertTabs(_:)))
+        add("Convert Spaces to %B", conversion: .spaces, action: #selector(convertSpaces(_:)))
+
+        let conversionItem = NSMenuItem(title: "Conversion", action: nil, keyEquivalent: "")
+        conversionItem.submenu = conversionMenu
+        let insertionIndex = onShowSettings == nil ? 0 : 3
+        menu.insertItem(conversionItem, at: insertionIndex)
+        if menu.numberOfItems > insertionIndex + 1, !menu.items[insertionIndex + 1].isSeparatorItem {
+            menu.insertItem(.separator(), at: insertionIndex + 1)
+        }
+        return menu
+    }
+
+    @objc private func toggleUseGlobalSettings(_ sender: Any?) { onToggleUseGlobalSettings?() }
+    @objc private func showSettings(_ sender: Any?) { onShowSettings?() }
+    @objc private func convertReturns(_ sender: Any?) { apply(.returns) }
+    @objc private func convertTabs(_ sender: Any?) { apply(.tabs) }
+    @objc private func convertSpaces(_ sender: Any?) { apply(.spaces) }
+
     func addToHistory(_ value: String) {
         commandHistory.record(value)
     }
@@ -92,6 +173,23 @@ final class CommandInputView: NSTextView {
         let lines = normalized.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         if lines.count > 1, onSmartPaste?(lines) == true { return }
         insertText(normalized, replacementRange: selectedRange())
+    }
+
+    override func didChangeText() {
+        super.didChangeText()
+        notifyPreferredHeight()
+    }
+
+    private func notifyPreferredHeight() {
+        guard settings.resizesToFitContents, bounds.width > 0, let layoutManager, let textContainer else { return }
+        layoutManager.ensureLayout(for: textContainer)
+        let lineHeight = max(1, layoutManager.defaultLineHeight(for: font ?? .systemFont(ofSize: settings.fontSize)))
+        let measuredLines = max(1, Int(ceil(layoutManager.usedRect(for: textContainer).height / lineHeight)))
+        let lines = min(settings.maximumLines, max(settings.minimumLines, measuredLines))
+        let height = CGFloat(lines) * lineHeight
+            + CGFloat(settings.marginTop + settings.marginBottom)
+            + 4
+        onPreferredHeightChange?(max(30, height))
     }
 
     private var shouldNavigateBackward: Bool {

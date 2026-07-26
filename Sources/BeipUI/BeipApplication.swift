@@ -203,6 +203,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     @objc func convertSpaces(_ sender: Any?) { activeController?.applyInputConversion(.spaces) }
     @objc func settings(_ sender: Any?) { activeController?.showWorkspaceSettings() }
     @objc func globalTextWindowSettings(_ sender: Any?) { activeController?.showGlobalTextWindowSettings() }
+    @objc func globalInputWindowSettings(_ sender: Any?) { activeController?.showGlobalInputWindowSettings() }
     @objc func themeSettings(_ sender: Any?) { activeController?.showThemeSettings() }
     @objc func toggleMute(_ sender: Any?) { activeController?.toggleMute() }
     @objc func showNotes(_ sender: Any?) { activeController?.showCharacterNotes() }
@@ -348,6 +349,11 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         appMenu.addItem(
             withTitle: "Global Text Window Settings…",
             action: #selector(globalTextWindowSettings(_:)),
+            keyEquivalent: ""
+        )
+        appMenu.addItem(
+            withTitle: "Global Input Window Settings…",
+            action: #selector(globalInputWindowSettings(_:)),
             keyEquivalent: ""
         )
         appMenu.addItem(withTitle: "Theme…", action: #selector(themeSettings(_:)), keyEquivalent: "")

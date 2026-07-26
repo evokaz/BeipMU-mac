@@ -462,6 +462,7 @@ final class NetworkTransportTests: XCTestCase {
 
         await session.connect(.init(server: .init(name: "echo", host: "127.0.0.1", port: port)))
         let peer = try await server.nextConnection()
+        await session.configureLocalEcho(true, color: .init(red: 0x12, green: 0x34, blue: 0x56))
         await session.send("look")
         let lookPayload = try await peer.receive(atLeast: 6)
         XCTAssertEqual(lookPayload, Data("look\r\n".utf8))
@@ -469,6 +470,7 @@ final class NetworkTransportTests: XCTestCase {
         let lines = await recorder.renderedLines()
         XCTAssertEqual(lines.last?.text, "look")
         XCTAssertEqual(lines.last?.source, .localEcho)
+        XCTAssertEqual(lines.last?.runs.first?.style.foreground, .init(red: 0x12, green: 0x34, blue: 0x56))
 
         await session.configureLocalEcho(false)
         await session.send("quiet")

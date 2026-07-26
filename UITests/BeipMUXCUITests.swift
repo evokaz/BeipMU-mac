@@ -124,6 +124,27 @@ final class BeipMUXCUITests: XCTestCase {
         }
         app.typeKey(.escape, modifierFlags: [])
 
+        let input = app.windows["mainWindow"].descendants(matching: .textView)["Command input"]
+        input.rightClick()
+        for title in ["Use global settings", "Settings…", "Conversion"] {
+            XCTAssertTrue(app.menuItems[title].exists, "Missing input context-menu command: \(title)")
+        }
+        app.typeKey(.escape, modifierFlags: [])
+
+        app.menuBars.menuBarItems["BeipMU"].click()
+        app.menuItems["Global Input Window Settings…"].click()
+        let inputSheet = app.sheets.firstMatch
+        XCTAssertTrue(inputSheet.waitForExistence(timeout: 3))
+        XCTAssertTrue(inputSheet.popUpButtons["inputSettingsFont"].exists)
+        XCTAssertTrue(inputSheet.textFields["inputSettingsFontSize"].exists)
+        XCTAssertTrue(inputSheet.checkBoxes["inputSettingsResizeToFit"].exists)
+        XCTAssertTrue(inputSheet.textFields["inputSettingsMinimumLines"].exists)
+        XCTAssertTrue(inputSheet.textFields["inputSettingsMaximumLines"].exists)
+        XCTAssertTrue(inputSheet.checkBoxes["inputSettingsKeepText"].exists)
+        XCTAssertTrue(inputSheet.checkBoxes["inputSettingsLocalEcho"].exists)
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(inputSheet.waitForNonExistence(timeout: 3))
+
         app.menuBars.menuBarItems["BeipMU"].click()
         app.menuItems["Global Text Window Settings…"].click()
         let sheet = app.sheets.firstMatch

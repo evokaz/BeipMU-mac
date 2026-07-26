@@ -190,6 +190,42 @@ final class WorkspacePreferencesTests: XCTestCase {
         XCTAssertEqual(preferences.textWindowSettings(for: identity).fontSize, 12)
     }
 
+    func testInputWindowSettingsResolveAcrossScopesAndNormalize() {
+        let identity = TextWindowSettingsIdentity(world: "Example World", character: "Builder", tab: "Main")
+        var preferences = WorkspacePreferences()
+        preferences.globalInputWindowSettings = .init(fontSize: 12, localEchoHex: "#112233")
+        preferences.worldInputWindowSettings[identity.worldKey!] = .init(
+            usesGlobalSettings: false,
+            settings: .init(fontSize: 14)
+        )
+        preferences.characterInputWindowSettings[identity.characterKey!] = .init(
+            usesGlobalSettings: false,
+            settings: .init(fontSize: 16)
+        )
+        preferences.tabInputWindowSettings[identity.tabKey!] = .init(
+            usesGlobalSettings: false,
+            settings: .init(fontSize: 500, minimumLines: 8, maximumLines: 2)
+        )
+
+        let tab = preferences.inputWindowSettings(for: identity)
+        XCTAssertEqual(tab.fontSize, 96)
+        XCTAssertEqual(tab.minimumLines, 8)
+        XCTAssertEqual(tab.maximumLines, 8)
+
+        preferences.tabInputWindowSettings[identity.tabKey!]?.usesGlobalSettings = true
+        let inherited = preferences.inputWindowSettings(for: identity)
+        XCTAssertEqual(inherited.fontSize, 12)
+        XCTAssertEqual(inherited.localEchoHex, "#112233")
+    }
+
+    func testLegacyStickyInputMigratesToGlobalInputWindowSettings() throws {
+        let data = Data(##"{"stickyInput":true,"theme":{"mode":"custom","foregroundHex":"#102030","backgroundHex":"#405060","accentHex":"#708090"}}"##.utf8)
+        let preferences = try JSONDecoder().decode(WorkspacePreferences.self, from: data)
+        XCTAssertTrue(preferences.globalInputWindowSettings.keepsTextOnSubmit)
+        XCTAssertEqual(preferences.globalInputWindowSettings.foregroundHex, "#102030")
+        XCTAssertEqual(preferences.globalInputWindowSettings.backgroundHex, "#405060")
+    }
+
     func testTextWindowIdentityKeysAreStableAndNormalized() {
         let first = TextWindowSettingsIdentity(world: "Café", character: "Éowyn", tab: "Main")
         let second = TextWindowSettingsIdentity(world: "CAFE", character: "eowyn", tab: "main")
@@ -230,6 +266,93 @@ final class WorkspacePreferencesTests: XCTestCase {
         )
         XCTAssertEqual(menu.item(withTitle: "Use global settings")?.state, .on)
         XCTAssertFalse(try XCTUnwrap(menu.item(withTitle: "Use global settings")).isEnabled)
+    }
+
+    @MainActor
+    func testCommandInputContextMenuContainsConversionCommands() throws {
+        let input = CommandInputView()
+        let baseMenu = NSMenu()
+        baseMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "")
+
+        let menu = input.contextMenuForTesting(baseMenu: baseMenu)
+        let conversion = try XCTUnwrap(menu.item(withTitle: "Conversion")?.submenu)
+
+        XCTAssertEqual(menu.items.first?.title, "Conversion")
+        XCTAssertTrue(menu.items[1].isSeparatorItem)
+        XCTAssertEqual(
+            conversion.items.map(\.title),
+            ["Convert Returns to %R", "Convert Tabs to %T", "Convert Spaces to %B"]
+        )
+    }
+
+    @MainActor
+    func testCommandInputAppliesInputWindowAppearanceMarginsAndAutoHeight() {
+        let input = CommandInputView()
+        var preferredHeight: CGFloat?
+        input.onPreferredHeightChange = { preferredHeight = $0 }
+        input.applySettings(.init(
+            fontName: "Menlo",
+            fontSize: 18,
+            foregroundHex: "#123456",
+            backgroundHex: "#ABCDEF",
+            resizesToFitContents: true,
+            minimumLines: 2,
+            maximumLines: 4,
+            marginLeft: 11,
+            marginTop: 12,
+            marginRight: 13,
+            marginBottom: 14,
+            keepsTextOnSubmit: true,
+            localEcho: false,
+            localEchoHex: "#FEDCBA"
+        ))
+
+        XCTAssertEqual(input.font?.pointSize, 18)
+        XCTAssertEqual(input.textColor?.hexString, "#123456")
+        XCTAssertEqual(input.backgroundColor.hexString, "#ABCDEF")
+        XCTAssertEqual(input.containerScrollView.contentInsets.left, 11)
+        XCTAssertEqual(input.containerScrollView.contentInsets.top, 12)
+        XCTAssertEqual(input.containerScrollView.contentInsets.right, 13)
+        XCTAssertEqual(input.containerScrollView.contentInsets.bottom, 14)
+        XCTAssertTrue(input.behavior.isSticky)
+        XCTAssertNotNil(preferredHeight)
+    }
+
+    @MainActor
+    func testControllerInputContextMenuContainsSettingsAndGlobalInheritance() throws {
+        let controller = ClientWindowController(profileLibrary: .init(workspace: try .empty(isDirty: false)))
+        defer { controller.close() }
+        let menu = controller.inputContextMenuForTesting()
+
+        XCTAssertEqual(
+            menu.items.filter { !$0.isSeparatorItem }.map(\.title),
+            ["Use global settings", "Settings…", "Conversion", "Cut"]
+        )
+        XCTAssertEqual(menu.item(withTitle: "Use global settings")?.state, .on)
+        XCTAssertFalse(try XCTUnwrap(menu.item(withTitle: "Use global settings")).isEnabled)
+    }
+
+    @MainActor
+    func testInputSettingsEditorExposesAllLegacyControls() {
+        let editor = InputWindowSettingsEditorView(
+            states: [
+                .global: .init(
+                    label: "Global",
+                    override: .init(usesGlobalSettings: false, settings: .init())
+                ),
+            ],
+            initialScope: .global
+        )
+        let identifiers = Set(recursiveSubviews(of: editor).compactMap { $0.accessibilityIdentifier() })
+        for identifier in [
+            "inputSettingsFont", "inputSettingsFontSize", "inputSettingsForeground",
+            "inputSettingsBackground", "inputSettingsResizeToFit", "inputSettingsMinimumLines",
+            "inputSettingsMaximumLines", "inputSettingsMarginLeft", "inputSettingsMarginTop",
+            "inputSettingsMarginRight", "inputSettingsMarginBottom", "inputSettingsKeepText",
+            "inputSettingsLocalEcho", "inputSettingsLocalEchoColor",
+        ] {
+            XCTAssertTrue(identifiers.contains(identifier), "Missing control: \(identifier)")
+        }
     }
 
     @MainActor
