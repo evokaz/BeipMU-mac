@@ -10,6 +10,12 @@ final class OutputTextView: NSObject {
     private let scrollView: NSScrollView
     var onAction: ((LinkAction) -> Void)?
     var onPauseChange: ((Bool, Int) -> Void)?
+    var onInteractionCompleted: (() -> Void)? {
+        didSet {
+            outputView.onInteractionCompleted = onInteractionCompleted
+            secondaryOutputView?.onInteractionCompleted = onInteractionCompleted
+        }
+    }
     var onContextMenu: ((NSEvent) -> NSMenu?)? {
         didSet {
             outputView.onContextMenu = onContextMenu
@@ -304,6 +310,7 @@ final class OutputTextView: NSObject {
         let secondary = Self.makeScrollView(documentView: view, backgroundColor: defaultBackground)
         secondary.setAccessibilityLabel("Live output split")
         secondaryOutputView = view
+        view.onInteractionCompleted = onInteractionCompleted
         secondaryScrollView = secondary
         containerView.addArrangedSubview(secondary)
         containerView.setHoldingPriority(.defaultLow, forSubviewAt: 1)

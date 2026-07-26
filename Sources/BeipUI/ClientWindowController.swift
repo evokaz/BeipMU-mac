@@ -9,6 +9,217 @@ import Darwin
 import UserNotifications
 
 @MainActor
+private final class SessionWindowTabItemView: NSView {
+    weak var targetController: ClientWindowController?
+    private let selectButton = NSButton()
+    private let closeButton = NSButton()
+    private var tracking: NSTrackingArea?
+    private var selected = false
+    private let tabColor: NSColor?
+
+    init(title: String, selected: Bool, color: NSColor?, targetController: ClientWindowController) {
+        self.targetController = targetController
+        self.selected = selected
+        tabColor = color
+        super.init(frame: .zero)
+
+        wantsLayer = true
+        layer?.cornerRadius = 7
+
+        selectButton.title = title
+        selectButton.isBordered = false
+        selectButton.font = .systemFont(ofSize: 13, weight: selected ? .semibold : .regular)
+        selectButton.target = self
+        selectButton.action = #selector(selectTab(_:))
+        selectButton.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(selectButton)
+
+        closeButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close tab")
+        closeButton.imageScaling = .scaleProportionallyDown
+        closeButton.isBordered = false
+        closeButton.contentTintColor = .secondaryLabelColor
+        closeButton.target = self
+        closeButton.action = #selector(closeTab(_:))
+        closeButton.translatesAutoresizingMaskIntoConstraints = false
+        closeButton.isHidden = !selected
+        addSubview(closeButton)
+
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+        setAccessibilityLabel("\(title) tab")
+        setAccessibilityIdentifier(selected ? "activeSessionTab" : "sessionTab")
+
+        let minimumWidth = widthAnchor.constraint(greaterThanOrEqualToConstant: 132)
+        minimumWidth.priority = .defaultLow
+        NSLayoutConstraint.activate([
+            heightAnchor.constraint(equalToConstant: 28),
+            minimumWidth,
+            widthAnchor.constraint(lessThanOrEqualToConstant: 220),
+            selectButton.leadingAnchor.constraint(equalTo: leadingAnchor),
+            selectButton.trailingAnchor.constraint(equalTo: trailingAnchor),
+            selectButton.topAnchor.constraint(equalTo: topAnchor),
+            selectButton.bottomAnchor.constraint(equalTo: bottomAnchor),
+            closeButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 7),
+            closeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            closeButton.widthAnchor.constraint(equalToConstant: 16),
+            closeButton.heightAnchor.constraint(equalToConstant: 16),
+        ])
+        updateBackground(hovered: false)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let next = NSTrackingArea(
+            rect: bounds,
+            options: [.activeInKeyWindow, .inVisibleRect, .mouseEnteredAndExited],
+            owner: self
+        )
+        addTrackingArea(next)
+        tracking = next
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        closeButton.isHidden = false
+        updateBackground(hovered: true)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        closeButton.isHidden = !selected
+        updateBackground(hovered: false)
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateBackground(hovered: false)
+    }
+
+    private func updateBackground(hovered: Bool) {
+        layer?.backgroundColor = if selected {
+            (tabColor ?? NSColor.controlColor).cgColor
+        } else if hovered {
+            NSColor.quaternaryLabelColor.cgColor
+        } else {
+            NSColor.clear.cgColor
+        }
+    }
+
+    @objc private func selectTab(_ sender: Any?) {
+        targetController?.sessionTabGroup?.select(targetController, sender: sender)
+    }
+
+    @objc private func closeTab(_ sender: Any?) {
+        targetController?.window?.performClose(sender)
+    }
+}
+
+@MainActor
+final class ClientTabGroup {
+    private final class WeakController {
+        weak var value: ClientWindowController?
+        init(_ value: ClientWindowController) { self.value = value }
+    }
+
+    private var entries: [WeakController]
+    private(set) weak var selectedController: ClientWindowController?
+
+    init(_ initialController: ClientWindowController) {
+        entries = [WeakController(initialController)]
+        selectedController = initialController
+        initialController.sessionTabGroup = self
+    }
+
+    var controllers: [ClientWindowController] {
+        entries.compactMap(\.value)
+    }
+
+    func add(_ controller: ClientWindowController) {
+        guard !controllers.contains(where: { $0 === controller }) else { return }
+        entries.append(WeakController(controller))
+        controller.sessionTabGroup = self
+        refreshTabs()
+    }
+
+    func select(_ controller: ClientWindowController?, sender: Any?) {
+        guard let controller, controllers.contains(where: { $0 === controller }) else { return }
+        let previous = selectedController
+        if let frame = previous?.window?.frame {
+            controller.window?.setFrame(frame, display: false)
+        }
+        selectedController = controller
+        if previous !== controller { previous?.window?.orderOut(sender) }
+        controller.showWindow(sender)
+        controller.window?.makeKeyAndOrderFront(sender)
+        controller.focusCommandInput()
+        refreshTabs()
+    }
+
+    func prepareToClose(_ controller: ClientWindowController) {
+        guard selectedController === controller else { return }
+        let current = controllers
+        guard current.count > 1,
+              let index = current.firstIndex(where: { $0 === controller }) else { return }
+        let remaining = current.filter { $0 !== controller }
+        let replacement = remaining[min(index, remaining.count - 1)]
+        if let frame = controller.window?.frame {
+            replacement.window?.setFrame(frame, display: false)
+        }
+        selectedController = replacement
+        replacement.showWindow(nil)
+        replacement.window?.makeKeyAndOrderFront(nil)
+        replacement.focusCommandInput()
+        refreshTabs()
+    }
+
+    func markSelected(_ controller: ClientWindowController) {
+        guard controllers.contains(where: { $0 === controller }) else { return }
+        selectedController = controller
+        refreshTabs()
+    }
+
+    func controllerWillClose(_ controller: ClientWindowController) {
+        let before = controllers
+        guard let index = before.firstIndex(where: { $0 === controller }) else { return }
+        let wasSelected = selectedController === controller
+        entries.removeAll { $0.value == nil || $0.value === controller }
+        controller.sessionTabGroup = nil
+
+        let remaining = controllers
+        if remaining.count == 1 {
+            let survivor = remaining[0]
+            survivor.sessionTabGroup = nil
+            selectedController = nil
+            if wasSelected {
+                DispatchQueue.main.async {
+                    survivor.showWindow(nil)
+                    survivor.window?.makeKeyAndOrderFront(nil)
+                    survivor.rebuildSessionTabs()
+                }
+            } else {
+                survivor.rebuildSessionTabs()
+            }
+            return
+        }
+
+        if wasSelected, !remaining.isEmpty {
+            selectedController = nil
+            let replacement = remaining[min(index, remaining.count - 1)]
+            DispatchQueue.main.async { [weak self, weak replacement] in
+                self?.select(replacement, sender: nil)
+            }
+        } else {
+            refreshTabs()
+        }
+    }
+
+    func refreshTabs() {
+        controllers.forEach { $0.rebuildSessionTabs() }
+    }
+}
+
+@MainActor
 final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSplitViewDelegate {
     private struct ActiveLog {
         var template: String
@@ -44,7 +255,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private let inputContainer = NSView()
     private let stateLabel = NSTextField(labelWithString: "Disconnected")
     private let activityLabel = NSTextField(labelWithString: "")
-    private let tabButton = NSButton(title: "New Tab", target: nil, action: nil)
+    private let sessionTabs = NSStackView()
+    private let titlebarStatistics = SessionTitlebarStatisticsController()
     private let commandRegistry = CommandRegistry()
     private let delayScheduler = DelayScheduler()
     private let scriptService = ScriptServiceClient()
@@ -101,6 +313,9 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private var helpWindow: EmbeddedHelpWindowController?
     private var spawnCapture: SpawnCapture?
     private var statisticsTask: Task<Void, Never>?
+    private var titlebarStatisticsTask: Task<Void, Never>?
+    private var lastTypedAt = Date()
+    private var isSessionConnected = false
     private var logWriters: [URL: ActiveLog] = [:]
     private var localEcho = true
     private var terminalType = "Beip"
@@ -109,6 +324,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private var hasPendingPrompt = false
     private var unreadCount = 0
     private var lastFindQuery = ""
+    private var sessionTabColor: NSColor?
+    var sessionTabGroup: ClientTabGroup?
     private var preferences = WorkspacePreferencesStore.load()
     private var baseWindowTitle = "Untitled"
     private var scriptTitlePrefix = ""
@@ -220,6 +437,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             object: nil
         )
         configureUI(in: window)
+        startTitlebarStatisticsUpdates()
         Self.configureUnrestrictedSizing(for: window)
         if ProcessInfo.processInfo.environment["BEIPMU_UI_TESTING"] == "1" {
             window.setContentSize(NSSize(width: 980, height: 700))
@@ -236,6 +454,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     required init?(coder: NSCoder) { nil }
 
     func windowWillClose(_ notification: Notification) {
+        sessionTabGroup?.controllerWillClose(self)
         if let puppet = currentPuppet {
             puppetMaster?.detachPuppetChild(puppet.id)
             puppetMaster = nil
@@ -255,6 +474,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         secondaryInputWindows.forEach { $0.close() }
         editWindows.forEach { $0.close() }
         statisticsTask?.cancel()
+        titlebarStatisticsTask?.cancel()
         statisticsWindow?.close()
         triggerStatisticsWindows.values.forEach { $0.close() }
         saveSpawnSurfacePreferences()
@@ -278,6 +498,11 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         sessionTask?.cancel()
         if let session { Task { await session.disconnect() } }
         onClose?()
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        sessionTabGroup?.prepareToClose(self)
+        return true
     }
 
     func windowDidResize(_ notification: Notification) {
@@ -327,6 +552,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         unreadCount = 0
         activityLabel.stringValue = ""
         updateWindowTitle()
+        sessionTabGroup?.markSelected(self)
+        rebuildSessionTabs()
         Self.updateDockBadge()
         Task { [weak self, scriptService] in
             guard let self else { return }
@@ -1418,15 +1645,17 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         stateLabel.setAccessibilityIdentifier("connectionState")
         stateLabel.setContentHuggingPriority(.required, for: .horizontal)
         activityLabel.textColor = .secondaryLabelColor
-        tabButton.bezelStyle = .recessed
-        tabButton.setAccessibilityIdentifier("sessionTaskButton")
-        tabButton.target = self
-        tabButton.action = #selector(toggleMuteFromTaskbar(_:))
-        tabButton.toolTip = "Toggle audio for this tab"
-        taskbar.addArrangedSubview(stateLabel)
-        taskbar.addArrangedSubview(NSView())
+        sessionTabs.orientation = .horizontal
+        sessionTabs.alignment = .centerY
+        sessionTabs.distribution = .fillEqually
+        sessionTabs.spacing = 4
+        sessionTabs.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        sessionTabs.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        sessionTabs.setAccessibilityIdentifier("sessionTabs")
+        taskbar.addArrangedSubview(sessionTabs)
         taskbar.addArrangedSubview(activityLabel)
-        taskbar.addArrangedSubview(tabButton)
+        taskbar.addArrangedSubview(NSView())
+        taskbar.addArrangedSubview(titlebarStatistics.view)
 
         input.completionCandidates = CommandRegistry.knownCommands.map { "/" + $0 }.sorted()
         input.onSubmit = { [weak self] text in self?.submitInput(text) }
@@ -1438,8 +1667,10 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         }
         input.onToggleUseGlobalSettings = { [weak self] in self?.toggleInputUseGlobalSettings() }
         input.onPreferredHeightChange = { [weak self] height in self?.resizeInput(to: height) }
+        input.onTextChange = { [weak self] _ in self?.refreshTitlebarStatistics() }
         output.onAction = { [weak self] action in self?.perform(action) }
         output.onContextMenu = { [weak self] _ in self?.outputContextMenu() }
+        output.onInteractionCompleted = { [weak self] in self?.focusCommandInput() }
         output.onPauseChange = { [weak self] paused, pending in
             guard let self else { return }
             self.activityLabel.stringValue = paused ? "Paused\(pending > 0 ? " — \(pending) new" : "")" : ""
@@ -1601,6 +1832,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         closeAIWindow(preservingDockPlacement: true)
         sessionTask?.cancel()
         if let session { Task { await session.disconnect() } }
+        isSessionConnected = false
         currentServer = server
         currentCharacter = character
         currentPuppet = puppet
@@ -1702,17 +1934,30 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         switch event {
         case let .state(state):
             switch state {
-            case .disconnected: connectionStateText = "Disconnected"; stateLabel.stringValue = connectionStateText; stateLabel.textColor = .secondaryLabelColor
-            case .resolving: connectionStateText = "Resolving…"; stateLabel.stringValue = connectionStateText; stateLabel.textColor = .systemOrange
-            case .connecting: connectionStateText = "Connecting…"; stateLabel.stringValue = connectionStateText; stateLabel.textColor = .systemOrange
+            case .disconnected:
+                isSessionConnected = false
+                connectionStateText = "Disconnected"; stateLabel.stringValue = connectionStateText; stateLabel.textColor = .secondaryLabelColor
+            case .resolving:
+                isSessionConnected = false
+                connectionStateText = "Resolving…"; stateLabel.stringValue = connectionStateText; stateLabel.textColor = .systemOrange
+            case .connecting:
+                isSessionConnected = false
+                connectionStateText = "Connecting…"; stateLabel.stringValue = connectionStateText; stateLabel.textColor = .systemOrange
             case .connected:
+                isSessionConnected = true
+                lastTypedAt = Date()
                 connectionStateText = "Connected"
                 stateLabel.stringValue = connectionStateText
                 stateLabel.textColor = .systemGreen
                 startAutomaticLog()
-            case .disconnecting: connectionStateText = "Disconnecting…"; stateLabel.stringValue = connectionStateText; stateLabel.textColor = .systemOrange
-            case let .failed(message): connectionStateText = "Failed"; stateLabel.stringValue = connectionStateText; stateLabel.textColor = .systemRed; appendError(message)
+            case .disconnecting:
+                isSessionConnected = false
+                connectionStateText = "Disconnecting…"; stateLabel.stringValue = connectionStateText; stateLabel.textColor = .systemOrange
+            case let .failed(message):
+                isSessionConnected = false
+                connectionStateText = "Failed"; stateLabel.stringValue = connectionStateText; stateLabel.textColor = .systemRed; appendError(message)
             }
+            refreshTitlebarStatistics()
             refreshDiagnostics()
             if case .connected = state { webViewWindows.values.forEach { $0.connectionChanged(connected: true) } }
             if case .disconnected = state { webViewWindows.values.forEach { $0.connectionChanged(connected: false) } }
@@ -1804,9 +2049,12 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
 
     private func masterConnectionStateChanged(connected: Bool) {
         let changed = (connectionStateText == "Connected") != connected
+        isSessionConnected = connected
+        if connected, changed { lastTypedAt = Date() }
         connectionStateText = connected ? "Connected" : "Disconnected"
         stateLabel.stringValue = connectionStateText
         stateLabel.textColor = connected ? .systemGreen : .secondaryLabelColor
+        refreshTitlebarStatistics()
         webViewWindows.values.forEach { $0.connectionChanged(connected: connected) }
         refreshDiagnostics()
         guard changed else { return }
@@ -1961,6 +2209,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     private func submitLine(_ line: String) {
+        lastTypedAt = Date()
+        refreshTitlebarStatistics()
         appendTypedToLogs(line)
         guard line.hasPrefix("/") else { processInput(line); return }
         let body = String(line.dropFirst())
@@ -2973,23 +3223,57 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         NSApplication.shared.dockTile.badgeLabel = total > 0 ? String(total) : nil
     }
 
-    @objc private func toggleMuteFromTaskbar(_ sender: Any?) { toggleMute() }
+    func rebuildSessionTabs() {
+        sessionTabs.arrangedSubviews.forEach {
+            sessionTabs.removeArrangedSubview($0)
+            $0.removeFromSuperview()
+        }
 
-    private func updateWindowTitle() {
+        let controllers = sessionTabGroup?.controllers ?? [self]
+        let selectedController = sessionTabGroup?.selectedController ?? self
+        for controller in controllers {
+            let tab = SessionWindowTabItemView(
+                title: controller.sessionTabTitle,
+                selected: controller === selectedController,
+                color: controller.sessionTabColor,
+                targetController: controller
+            )
+            sessionTabs.addArrangedSubview(tab)
+        }
+    }
+
+    func focusCommandInput() {
+        window?.makeFirstResponder(input)
+    }
+
+    var isCommandInputFocusedForTesting: Bool {
+        window?.firstResponder === input
+    }
+
+    private var sessionTabTitle: String {
         let activity = unreadCount > 0 ? "● " : ""
         let mute = isMuted ? " 🔇" : ""
         let logging = logWriters.isEmpty ? "" : " 📝"
-        window?.title = activity + scriptTitlePrefix + baseWindowTitle + mute + logging
-        tabButton.title = (isMuted ? "Muted" : baseWindowTitle) + logging
+        return activity + scriptTitlePrefix + baseWindowTitle + mute + logging
+    }
+
+    private func updateWindowTitle() {
+        window?.title = sessionTabTitle
+        if let sessionTabGroup { sessionTabGroup.refreshTabs() }
+        else { rebuildSessionTabs() }
     }
 
     private func setTabColor(_ value: String?) {
         guard let value, let color = NSColor(htmlColor: value) else {
-            tabButton.bezelColor = nil
+            sessionTabColor = nil
+            if let sessionTabGroup { sessionTabGroup.refreshTabs() }
+            else { rebuildSessionTabs() }
             appendClient("Tab color reset.")
             return
         }
-        tabButton.bezelColor = color
+        sessionTabColor = color
+        if let sessionTabGroup { sessionTabGroup.refreshTabs() }
+        else { rebuildSessionTabs() }
         appendClient("Tab color set to \(value).")
     }
 
@@ -3196,6 +3480,39 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             server: currentServer.map { "\($0.host):\($0.port)" } ?? "None",
             state: connectionStateText
         )
+    }
+
+    private func startTitlebarStatisticsUpdates() {
+        refreshTitlebarStatistics()
+        titlebarStatisticsTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled, let self else { return }
+                refreshTitlebarStatistics()
+            }
+        }
+    }
+
+    private func refreshTitlebarStatistics() {
+        let typedCount = UInt64(input.string.count)
+        let idleSeconds = isSessionConnected ? Date().timeIntervalSince(lastTypedAt) : 0
+        guard let session else {
+            titlebarStatistics.update(
+                typedCount: typedCount,
+                onlineSeconds: 0,
+                idleSeconds: idleSeconds
+            )
+            return
+        }
+        Task { [weak self] in
+            let statistics = await session.statistics()
+            guard let self else { return }
+            titlebarStatistics.update(
+                typedCount: typedCount,
+                onlineSeconds: statistics.secondsConnected,
+                idleSeconds: idleSeconds
+            )
+        }
     }
 
     private static func endpoint(_ address: String) -> (host: String, port: UInt16)? {

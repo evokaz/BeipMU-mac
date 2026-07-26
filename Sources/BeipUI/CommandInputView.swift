@@ -10,6 +10,7 @@ final class CommandInputView: NSTextView {
     var onShowSettings: (() -> Void)?
     var onToggleUseGlobalSettings: (() -> Void)?
     var onPreferredHeightChange: ((CGFloat) -> Void)?
+    var onTextChange: ((String) -> Void)?
     var usesGlobalSettings = true
     var canToggleUseGlobalSettings = false
     var behavior = InputBehavior()
@@ -52,7 +53,11 @@ final class CommandInputView: NSTextView {
 
     var text: String {
         get { string }
-        set { string = newValue; setSelectedRange(NSRange(location: newValue.utf16.count, length: 0)) }
+        set {
+            string = newValue
+            setSelectedRange(NSRange(location: newValue.utf16.count, length: 0))
+            onTextChange?(newValue)
+        }
     }
 
     func applyTheme(_ palette: WorkspaceThemePalette) {
@@ -177,6 +182,7 @@ final class CommandInputView: NSTextView {
 
     override func didChangeText() {
         super.didChangeText()
+        onTextChange?(string)
         notifyPreferredHeight()
     }
 

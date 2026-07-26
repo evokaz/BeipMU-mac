@@ -29,6 +29,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     var onContextMenu: ((NSEvent) -> NSMenu?)?
     var onPageUp: (() -> Bool)?
     var onSelectionCompleted: (() -> Void)?
+    var onInteractionCompleted: (() -> Void)?
     private(set) var renderedItemCount = 0
     private(set) var lastDrawnItemCount = 0
 
@@ -378,7 +379,10 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     }
 
     override func mouseUp(with event: NSEvent) {
-        defer { mouseDownPosition = nil }
+        defer {
+            mouseDownPosition = nil
+            onInteractionCompleted?()
+        }
         if !selectedRangeIsEmpty {
             onSelectionCompleted?()
             return

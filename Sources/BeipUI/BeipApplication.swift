@@ -37,7 +37,12 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         activeController?.startM10ScaleIfRequested()
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag { newWindow(nil) }
+        return true
+    }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if profileLibrary.workspace.isDirty {
@@ -79,14 +84,15 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     }
 
     @objc func newTab(_ sender: Any?) {
-        guard let parentWindow = activeController?.window else { newWindow(sender); return }
+        guard let parent = activeController, let parentWindow = parent.window else { newWindow(sender); return }
         let controller = makeController()
         guard let childWindow = controller.window else { return }
-        parentWindow.tabbingMode = .preferred
-        childWindow.tabbingMode = .preferred
-        parentWindow.addTabbedWindow(childWindow, ordered: .above)
-        controller.showWindow(sender)
-        childWindow.makeKeyAndOrderFront(sender)
+        parentWindow.tabbingMode = .disallowed
+        childWindow.tabbingMode = .disallowed
+        childWindow.setFrame(parentWindow.frame, display: false)
+        let group = parent.sessionTabGroup ?? ClientTabGroup(parent)
+        group.add(controller)
+        group.select(controller, sender: sender)
     }
 
     @objc func newInputWindow(_ sender: Any?) { activeController?.showNewInputWindow() }
