@@ -216,6 +216,8 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     @objc func dockTop(_ sender: Any?) { activeController?.setDockPlacement(.top) }
     @objc func dockBottom(_ sender: Any?) { activeController?.setDockPlacement(.bottom) }
     @objc func floatDock(_ sender: Any?) { activeController?.setDockPlacement(.floating) }
+    @objc func maximizeWindow(_ sender: Any?) { activeController?.toggleMaximize() }
+    @objc func toggleFullScreen(_ sender: Any?) { activeController?.toggleFullScreen() }
 
     @objc func configureKeyboardShortcuts(_ sender: Any?) {
         let alert = NSAlert()
@@ -445,7 +447,15 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         let windowMenu = NSMenu(title: "Window")
         windowItem.submenu = windowMenu
         windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.miniaturize(_:)), keyEquivalent: "m")
-        windowMenu.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        let zoomItem = windowMenu.addItem(withTitle: "Zoom", action: #selector(maximizeWindow(_:)), keyEquivalent: "")
+        zoomItem.target = self
+        let fullScreenItem = windowMenu.addItem(
+            withTitle: "Enter Full Screen",
+            action: #selector(toggleFullScreen(_:)),
+            keyEquivalent: "f"
+        )
+        fullScreenItem.target = self
+        fullScreenItem.keyEquivalentModifierMask = [.control, .command]
         windowMenu.addItem(.separator())
         windowMenu.addItem(withTitle: "Show Previous Tab", action: #selector(NSWindow.selectPreviousTab(_:)), keyEquivalent: "{")
         windowMenu.addItem(withTitle: "Show Next Tab", action: #selector(NSWindow.selectNextTab(_:)), keyEquivalent: "}")

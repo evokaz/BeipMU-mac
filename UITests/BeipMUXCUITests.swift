@@ -3,6 +3,46 @@ import XCTest
 
 @MainActor
 final class BeipMUXCUITests: XCTestCase {
+    func testMainWindowResizesMaximizesAndEntersFullScreen() {
+        let app = launchApplication()
+        defer { app.terminate() }
+        let window = app.windows["mainWindow"]
+
+        let initialFrame = window.frame
+        app.menuBars.menuBarItems["Window"].click()
+        app.menuItems["Zoom"].click()
+        XCTAssertTrue(
+            waitUntil { reportedHeight(of: window) > initialFrame.height + 100 },
+            "Zoom did not expand \(initialFrame) on \(NSScreen.main!.frame); value: \(String(describing: window.value))"
+        )
+        app.menuBars.menuBarItems["Window"].click()
+        app.menuItems["Zoom"].click()
+        XCTAssertTrue(waitUntil { reportedHeight(of: window) <= initialFrame.height + 2 })
+
+        let resizeHandle = window.descendants(matching: .any)["mainWindowVerticalResizeHandle"]
+        XCTAssertTrue(resizeHandle.waitForExistence(timeout: 2))
+        let bottomEdge = resizeHandle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let tallerPosition = bottomEdge.withOffset(CGVector(dx: 0, dy: 160))
+        bottomEdge.press(forDuration: 0.2, thenDragTo: tallerPosition)
+        XCTAssertGreaterThan(
+            reportedHeight(of: window),
+            initialFrame.height + 100,
+            "Initial frame: \(initialFrame); reported value: \(String(describing: window.value))"
+        )
+
+        let tallerHeight = reportedHeight(of: window)
+        let newBottomEdge = resizeHandle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let shorterPosition = newBottomEdge.withOffset(CGVector(dx: 0, dy: -120))
+        newBottomEdge.press(forDuration: 0.2, thenDragTo: shorterPosition)
+        XCTAssertLessThan(reportedHeight(of: window), tallerHeight - 80)
+
+        app.typeKey("f", modifierFlags: [.command, .control])
+        XCTAssertTrue(waitUntil(timeout: 5) {
+            reportedHeight(of: window) >= NSScreen.main!.frame.height - 2
+        })
+        app.typeKey("f", modifierFlags: [.command, .control])
+    }
+
     func testMainWorkspaceAccessibilityKeyboardAndBaseline() throws {
         let app = launchApplication()
         defer { app.terminate() }
@@ -237,6 +277,14 @@ final class BeipMUXCUITests: XCTestCase {
         } while Date() < deadline
         return condition()
     }
+
+    private func reportedHeight(of window: XCUIElement) -> CGFloat {
+        guard let value = window.value as? String,
+              let height = value.split(separator: "x").last.flatMap({ Double($0) }) else {
+            return window.frame.height
+        }
+        return CGFloat(height)
+    }
 }
 
 private enum BaselineError: Error {
@@ -300,6 +348,7 @@ final class M10ScaleUITests: XCTestCase {
         } while Date() < deadline
         return condition()
     }
+
 }
 
 @MainActor

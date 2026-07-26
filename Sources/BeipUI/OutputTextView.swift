@@ -89,10 +89,12 @@ final class OutputTextView: NSObject {
         containerView.dividerStyle = .thin
         containerView.translatesAutoresizingMaskIntoConstraints = false
         containerView.addArrangedSubview(scrollView)
-        containerView.setHoldingPriority(.defaultHigh, forSubviewAt: 0)
+        containerView.setHoldingPriority(.defaultLow, forSubviewAt: 0)
         containerView.setContentHuggingPriority(.defaultLow, for: .vertical)
         containerView.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
-        scrollView.heightAnchor.constraint(greaterThanOrEqualToConstant: 80).isActive = true
+        let preferredScrollHeight = scrollView.heightAnchor.constraint(greaterThanOrEqualToConstant: 80)
+        preferredScrollHeight.priority = .defaultHigh
+        preferredScrollHeight.isActive = true
         super.init()
         outputView.onLink = { [weak self] url in self?.perform(url: url) }
     }
@@ -236,7 +238,7 @@ final class OutputTextView: NSObject {
         secondaryOutputView = view
         secondaryScrollView = secondary
         containerView.addArrangedSubview(secondary)
-        containerView.setHoldingPriority(.defaultHigh, forSubviewAt: 1)
+        containerView.setHoldingPriority(.defaultLow, forSubviewAt: 1)
         secondary.heightAnchor.constraint(greaterThanOrEqualToConstant: 80).isActive = true
         view.setItems(currentItems())
         view.scrollToEnd()

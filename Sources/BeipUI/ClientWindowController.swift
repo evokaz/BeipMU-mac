@@ -52,6 +52,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
     private var scriptSounds: [NSSound] = []
     private var scriptWindows: [String: ScriptWindowController] = [:]
     private var suppressNextSessionActivity = false
+    private var frameBeforeMaximize: NSRect?
     private var dockController: WorkspaceDockController!
     private var variables: [String: String] = [:]
     private var aliasGroups: [AliasGroup] = []
@@ -163,6 +164,27 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
         dockController?.currentLayout.hasSameTopology(as: layout) == true
     }
 
+    func toggleMaximize() {
+        guard let window, let screen = window.screen else { return }
+        if let restoreFrame = frameBeforeMaximize {
+            frameBeforeMaximize = nil
+            window.setFrame(restoreFrame, display: true)
+            Self.postFrameChange(for: window)
+        } else {
+            frameBeforeMaximize = window.frame
+            Self.configureUnrestrictedSizing(for: window)
+            window.setFrame(screen.visibleFrame, display: true)
+            Self.postFrameChange(for: window)
+            Self.publishTestFrame(for: window)
+        }
+    }
+
+    func toggleFullScreen() {
+        guard let window else { return }
+        Self.configureUnrestrictedSizing(for: window)
+        window.toggleFullScreen(nil)
+    }
+
     init(profileLibrary: ProfileLibrary) {
         self.profileLibrary = profileLibrary
         let window = NSWindow(
@@ -173,7 +195,6 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
         )
         window.title = "BeipMU"
         window.setAccessibilityIdentifier("mainWindow")
-        window.minSize = NSSize(width: 520, height: 360)
         super.init(window: window)
         Task { [weak self, scriptService] in
             await scriptService.startAsyncOutputDelivery { [weak self] outputs in
@@ -192,7 +213,9 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
             object: nil
         )
         configureUI(in: window)
+        Self.configureUnrestrictedSizing(for: window)
         if ProcessInfo.processInfo.environment["BEIPMU_UI_TESTING"] == "1" {
+            window.setContentSize(NSSize(width: 980, height: 700))
             window.center()
         } else {
             if !window.setFrameUsingName("BeipMUClientWindow") { window.center() }
@@ -252,12 +275,18 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowDidResize(_ notification: Notification) {
+        if let window = notification.object as? NSWindow {
+            Self.publishTestFrame(for: window)
+        }
         guard let session else { return }
         let size = output.terminalSize
         Task { await session.updateWindowSize(columns: size.columns, rows: size.rows) }
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
+        if let window = notification.object as? NSWindow {
+            Self.configureUnrestrictedSizing(for: window)
+        }
         unreadCount = 0
         activityLabel.stringValue = ""
         updateWindowTitle()
@@ -1190,10 +1219,30 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
         }
         dockController.setNotes(preferences.characterNotes[notesKey] ?? "")
         dockController.applyTheme(preferences.theme.palette)
-        window.contentView = dockController.hostView
+        // Keep the Auto Layout-driven dock tree behind an autoresizing wrapper.
+        // Making the dock host the NSWindow content view directly lets its
+        // fitting height become a WindowServer live-resize boundary.
+        let contentBounds = window.contentView?.bounds
+            ?? NSRect(origin: .zero, size: window.contentRect(forFrameRect: window.frame).size)
+        let windowContent = NSView(frame: contentBounds)
+        windowContent.autoresizingMask = [.width, .height]
+        dockController.hostView.frame = windowContent.bounds
+        dockController.hostView.autoresizingMask = [.width, .height]
+        windowContent.addSubview(dockController.hostView)
+        let verticalResizeHandle = VerticalWindowResizeHandle(
+            frame: NSRect(x: 0, y: 0, width: windowContent.bounds.width, height: 8)
+        )
+        verticalResizeHandle.autoresizingMask = [.width, .maxYMargin]
+        windowContent.addSubview(verticalResizeHandle)
+        window.contentView = windowContent
+        let preferredOutputHeight = output.containerView.heightAnchor.constraint(greaterThanOrEqualToConstant: 200)
+        // This is a layout preference, not a window-size requirement. Keeping it
+        // required makes the vertical stack (and docked row layouts in particular)
+        // push its fitting height back onto the window during a live resize.
+        preferredOutputHeight.priority = .defaultHigh
         NSLayoutConstraint.activate([
             taskbar.heightAnchor.constraint(equalToConstant: 34),
-            output.containerView.heightAnchor.constraint(greaterThanOrEqualToConstant: 200),
+            preferredOutputHeight,
         ])
         if preferences.dockPlacement == .floating {
             dockController.apply(placement: .floating, thickness: preferences.dockThickness)
@@ -1219,6 +1268,35 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
             master: master,
             policy: profileLibrary.workspace.projection.connectionPolicy
         )
+    }
+
+    func windowWillUseStandardFrame(_ window: NSWindow, defaultFrame newFrame: NSRect) -> NSRect {
+        window.screen?.visibleFrame ?? newFrame
+    }
+
+    private static func configureUnrestrictedSizing(for window: NSWindow) {
+        let unrestrictedSize = NSSize(width: 100_000, height: 100_000)
+        window.minSize = .zero
+        window.maxSize = unrestrictedSize
+        window.contentMinSize = .zero
+        window.contentMaxSize = unrestrictedSize
+        window.contentAspectRatio = .zero
+        window.contentResizeIncrements = NSSize(width: 1, height: 1)
+        window.resizeIncrements = NSSize(width: 1, height: 1)
+        window.minFullScreenContentSize = .zero
+        window.maxFullScreenContentSize = unrestrictedSize
+        window.collectionBehavior.insert(.fullScreenPrimary)
+    }
+
+    private static func postFrameChange(for window: NSWindow) {
+        NSAccessibility.post(element: window, notification: .windowMoved)
+        NSAccessibility.post(element: window, notification: .windowResized)
+    }
+
+    private static func publishTestFrame(for window: NSWindow) {
+        guard ProcessInfo.processInfo.environment["BEIPMU_UI_TESTING"] == "1" else { return }
+        window.setAccessibilityValue("\(Int(window.frame.width))x\(Int(window.frame.height))")
+        NSAccessibility.post(element: window, notification: .valueChanged)
     }
 
     private func startSession(
@@ -3611,6 +3689,60 @@ private enum WebViewClientError: LocalizedError {
         switch self {
         case .notConnected: "WebView client is not connected"
         case .invalidPackage: "WebView GMCP package is empty"
+        }
+    }
+}
+
+@MainActor
+private final class VerticalWindowResizeHandle: NSView {
+    private var initialWindowFrame = NSRect.zero
+    private var initialMouseLocation = NSPoint.zero
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setAccessibilityElement(true)
+        setAccessibilityRole(.handle)
+        setAccessibilityLabel("Resize window vertically")
+        setAccessibilityIdentifier("mainWindowVerticalResizeHandle")
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .resizeUpDown)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let window, !window.styleMask.contains(.fullScreen) else { return }
+        initialWindowFrame = window.frame
+        initialMouseLocation = NSEvent.mouseLocation
+        while let nextEvent = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
+            if nextEvent.type == .leftMouseUp { break }
+            resizeWindow(to: NSEvent.mouseLocation)
+        }
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        resizeWindow(to: NSEvent.mouseLocation)
+    }
+
+    private func resizeWindow(to mouseLocation: NSPoint) {
+        guard let window, initialWindowFrame.height > 0 else { return }
+        let delta = mouseLocation.y - initialMouseLocation.y
+        let minimumHeight = max(32, window.frame.height - window.contentLayoutRect.height)
+        let height = max(minimumHeight, initialWindowFrame.height - delta)
+        let frame = NSRect(
+            x: initialWindowFrame.minX,
+            y: initialWindowFrame.maxY - height,
+            width: initialWindowFrame.width,
+            height: height
+        )
+        window.setFrame(frame, display: true)
+        NSAccessibility.post(element: window, notification: .windowMoved)
+        NSAccessibility.post(element: window, notification: .windowResized)
+        if ProcessInfo.processInfo.environment["BEIPMU_UI_TESTING"] == "1" {
+            window.setAccessibilityValue("\(Int(window.frame.width))x\(Int(window.frame.height))")
+            NSAccessibility.post(element: window, notification: .valueChanged)
         }
     }
 }

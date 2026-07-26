@@ -6,6 +6,34 @@ import XCTest
 
 final class WorkspacePreferencesTests: XCTestCase {
     @MainActor
+    func testMainWindowSupportsVerticalResize() throws {
+        let library = ProfileLibrary(workspace: try .empty(isDirty: false))
+        let controller = ClientWindowController(profileLibrary: library)
+        defer { controller.close() }
+        let window = try XCTUnwrap(controller.window)
+        controller.showWindow(nil)
+        // AppKit retains only the title bar's own system minimum after showing.
+        XCTAssertLessThanOrEqual(window.minSize.height, 32)
+        XCTAssertEqual(window.contentMinSize, .zero)
+        window.setFrame(
+            NSRect(origin: window.frame.origin, size: NSSize(width: window.frame.width, height: 500)),
+            display: false
+        )
+        window.setFrame(
+            NSRect(origin: window.frame.origin, size: NSSize(width: window.frame.width, height: 1_200)),
+            display: false
+        )
+        XCTAssertEqual(window.frame.height, 1_200, accuracy: 1)
+        XCTAssertGreaterThan(window.maxSize.height, 1_200)
+        XCTAssertGreaterThan(window.contentMaxSize.height, 1_200)
+        XCTAssertEqual(window.resizeIncrements.height, 1)
+        XCTAssertEqual(window.contentResizeIncrements.height, 1)
+        XCTAssertEqual(window.contentAspectRatio, .zero)
+        XCTAssertTrue(window.collectionBehavior.contains(.fullScreenPrimary))
+        XCTAssertGreaterThan(window.maxFullScreenContentSize.height, 1_200)
+    }
+
+    @MainActor
     func testAIWindowUsesNativeAccessibleSurfaceAndProfileState() throws {
         let controller = AIWindowController(profileKey: "milestone7")
         controller.updateEndpoint(URL(string: "https://example.invalid/ai")!)
