@@ -88,16 +88,46 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     }
 
     @objc func newTab(_ sender: Any?) {
-        guard let parent = activeController, let parentWindow = parent.window else { newWindow(sender); return }
+        guard let parent = activeController else { newWindow(sender); return }
+        _ = makeTab(relativeTo: parent, sender: sender)
+        saveOpenTabs()
+    }
+
+    @discardableResult
+    private func makeTab(relativeTo parent: ClientWindowController, sender: Any?) -> ClientWindowController {
         let controller = makeController()
-        guard let childWindow = controller.window else { return }
+        guard let parentWindow = parent.window, let childWindow = controller.window else {
+            controller.showWindow(sender)
+            controller.window?.makeKeyAndOrderFront(sender)
+            controller.focusCommandInput()
+            return controller
+        }
         parentWindow.tabbingMode = .disallowed
         childWindow.tabbingMode = .disallowed
         childWindow.setFrame(parentWindow.frame, display: false)
         let group = parent.sessionTabGroup ?? ClientTabGroup(parent)
         group.add(controller)
         group.select(controller, sender: sender)
+        return controller
+    }
+
+    @discardableResult
+    private func openQuickConnectTab(
+        from parent: ClientWindowController,
+        server: ServerProfile,
+        character: CharacterProfile?
+    ) -> ClientWindowController? {
+        guard !windows.contains(where: {
+            $0.representsSavedProfile(server, character: character)
+        }) else { return nil }
+        let controller = makeTab(relativeTo: parent, sender: nil)
+        controller.startSavedProfileSession(
+            server,
+            character: character,
+            policy: profileLibrary.workspace.projection.connectionPolicy
+        )
         saveOpenTabs()
+        return controller
     }
 
     @objc func newInputWindow(_ sender: Any?) { activeController?.showNewInputWindow() }
@@ -120,6 +150,9 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
             return true
         }
         controller.onTabStateChange = { [weak self] in self?.saveOpenTabs() }
+        controller.onQuickConnectProfile = { [weak self] source, server, character in
+            self?.openQuickConnectTab(from: source, server: server, character: character)
+        }
         controller.onThemeChange = { [weak self] theme in
             self?.windows.forEach { $0.applyThemeSettings(theme) }
         }

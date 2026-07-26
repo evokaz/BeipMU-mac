@@ -1,3 +1,4 @@
+import AppKit
 import BeipPersistence
 import XCTest
 @testable import BeipUI
@@ -130,5 +131,66 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
             menu.item(withTitle: "Many World")?.submenu?.items.map(\.title),
             ["Wizard", "Tester1", "Tester2"]
         )
+    }
+
+    @MainActor
+    func testPlayerQuickConnectHandsSavedProfileToNewTabCreator() throws {
+        var workspace = try LegacyConfigurationWorkspace.empty(isDirty: false)
+        let world = workspace.addServer(named: "Single World")
+        _ = try workspace.addCharacter(toServerID: world, named: "Hero")
+
+        let controller = ClientWindowController(profileLibrary: ProfileLibrary(workspace: workspace))
+        defer { controller.close() }
+
+        var sourceController: ClientWindowController?
+        var selectedServerName: String?
+        var selectedCharacterName: String?
+        controller.onQuickConnectProfile = { source, server, character in
+            sourceController = source
+            selectedServerName = server.name
+            selectedCharacterName = character?.name
+        }
+
+        let item = try XCTUnwrap(controller.quickConnectMenuForTesting.item(withTitle: "Single World — Hero"))
+        let action = try XCTUnwrap(item.action)
+
+        XCTAssertTrue(NSApplication.shared.sendAction(action, to: item.target, from: item))
+        XCTAssertTrue(sourceController === controller)
+        XCTAssertEqual(selectedServerName, "Single World")
+        XCTAssertEqual(selectedCharacterName, "Hero")
+        XCTAssertNil(controller.persistedOpenTab.serverID)
+        XCTAssertNil(controller.persistedOpenTab.characterID)
+    }
+
+    @MainActor
+    func testPlayerQuickConnectDoesNothingWhenCharacterTabAlreadyExists() throws {
+        var workspace = try LegacyConfigurationWorkspace.empty(isDirty: false)
+        let world = workspace.addServer(named: "Single World")
+        _ = try workspace.addCharacter(toServerID: world, named: "Hero")
+        let saved = try XCTUnwrap(workspace.servers.first)
+        let character = try XCTUnwrap(saved.characters.first)
+
+        let library = ProfileLibrary(workspace: workspace)
+        let controller = ClientWindowController(profileLibrary: library)
+        let existing = ClientWindowController(profileLibrary: library)
+        defer {
+            controller.close()
+            existing.close()
+        }
+        existing.restoreOpenTab(server: saved.profile, character: character)
+        let group = ClientTabGroup(controller)
+        group.add(existing)
+
+        var quickConnectRequested = false
+        controller.onQuickConnectProfile = { _, _, _ in
+            quickConnectRequested = true
+        }
+
+        let item = try XCTUnwrap(controller.quickConnectMenuForTesting.item(withTitle: "Single World — Hero"))
+        let action = try XCTUnwrap(item.action)
+
+        XCTAssertTrue(NSApplication.shared.sendAction(action, to: item.target, from: item))
+        XCTAssertFalse(quickConnectRequested)
+        XCTAssertEqual(group.controllers.count, 2)
     }
 }

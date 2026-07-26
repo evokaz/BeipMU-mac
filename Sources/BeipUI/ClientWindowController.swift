@@ -345,6 +345,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     var onClose: (() -> Void)?
     var onRequestCloseLastTab: ((ClientWindowController) -> Bool)?
     var onTabStateChange: (() -> Void)?
+    var onQuickConnectProfile: ((ClientWindowController, ServerProfile, CharacterProfile?) -> Void)?
     var onThemeChange: ((WorkspaceThemeSettings) -> Void)?
     var onTextWindowSettingsChange: (() -> Void)?
     var onInputHeightChange: ((Double) -> Void)?
@@ -539,6 +540,16 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             serverName: currentServer?.name,
             characterName: currentCharacter?.name
         )
+    }
+
+    func representsSavedProfile(_ server: ServerProfile, character: CharacterProfile?) -> Bool {
+        currentServer?.id == server.id && currentCharacter?.id == character?.id
+    }
+
+    func tabGroupContainsSavedProfile(_ server: ServerProfile, character: CharacterProfile?) -> Bool {
+        (sessionTabGroup?.controllers ?? [self]).contains {
+            $0.representsSavedProfile(server, character: character)
+        }
     }
 
     func restoreOpenTab(server: ServerProfile, character: CharacterProfile?) {
@@ -998,6 +1009,11 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
               }) else { return }
         let character = target.characterID.flatMap { characterID in
             server.characters.first { $0.id == characterID }
+        }
+        guard !tabGroupContainsSavedProfile(server.profile, character: character) else { return }
+        if let onQuickConnectProfile {
+            onQuickConnectProfile(self, server.profile, character)
+            return
         }
         startSession(
             server.profile,
@@ -2188,6 +2204,14 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             master: master,
             policy: profileLibrary.workspace.projection.connectionPolicy
         )
+    }
+
+    func startSavedProfileSession(
+        _ server: ServerProfile,
+        character: CharacterProfile?,
+        policy: ConnectionPolicy
+    ) {
+        startSession(server, character: character, policy: policy)
     }
 
     func windowWillUseStandardFrame(_ window: NSWindow, defaultFrame newFrame: NSRect) -> NSRect {
