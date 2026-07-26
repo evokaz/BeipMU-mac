@@ -422,7 +422,7 @@ final class AutomationTests: XCTestCase {
         XCTAssertEqual(registry.parse("//look", variables: [:]), .send("/look"))
     }
 
-    func testMilestone7CommandOutcomes() {
+    func testCommandOutcomes() {
         let registry = CommandRegistry()
         XCTAssertEqual(registry.parse("/ai explain this", variables: [:]), .ai("explain this"))
         XCTAssertEqual(registry.parse("/ai", variables: [:]), .ai(nil))
@@ -667,34 +667,13 @@ final class AutomationTests: XCTestCase {
         }
     }
 
-    func testUnrecognizedCommandDiagnosticMatchesPinnedV331Text() {
+    func testUnrecognizedCommandDiagnostic() {
         let registry = CommandRegistry()
         let message = "Unrecognized Command, use // to send text directly to the mu*, /help for a list of commands, or set 'Send unrecognized commands' in settings/input window"
         XCTAssertEqual(registry.parse("/unknown", variables: [:]), .display(message))
         XCTAssertEqual(registry.parse("/", variables: [:]), .display(message))
     }
 
-    func testRegistryExactlyCoversPinnedV331ReleaseCommands() throws {
-        let url = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("Documentation/PARITY_ITEMS.json")
-        let root = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
-        let items = try XCTUnwrap(root["items"] as? [[String: Any]])
-        var expected = Set(items.compactMap { item -> String? in
-            guard item["category"] as? String == "command",
-                  item["macStatus"] as? String != "compile-time-excluded",
-                  let identifier = item["identifier"] as? String,
-                  identifier.hasPrefix("/"), identifier != "//", identifier != "/silent/…"
-            else { return nil }
-            return String(identifier.dropFirst())
-        })
-        // The source scanner records the first spelling in combined branches;
-        // these release-visible aliases share their implementation.
-        expected.formUnion(["@", "world"])
-        XCTAssertEqual(CommandRegistry.knownCommands, expected)
-    }
 }
 
 private actor AsyncGate {

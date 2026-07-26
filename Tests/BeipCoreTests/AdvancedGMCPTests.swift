@@ -154,8 +154,8 @@ final class AdvancedGMCPTests: XCTestCase {
             package: "beip.tilemap.info",
             payload: #"{"Lighthouse":{"map-size":"32,32","encoding":"zbase64_8"}}"#
         ))
-        let upstreamFixture = "tZBBCsIwEEVXuc5g9Qqz9h9AvVNRcS0URGh13YXo1mM5bRI6xsmiWj80/eHNHz5xbjqRZWnq3fSfxqPYSMErtxdgBk5q5gPzs5+5QStywdwPLblabzrzwIXPmodEKbblcCQ8IjFbRt0YXL7rDry/H5DkvcSV4aibFXR/3xGt0T8OAIVcFvb7dUGX4xH8xGcixUn/i2HUzs+9cvy9Rk5Hk1Oap2/3W/wF"
-        _ = try state.consume(.init(package: "beip.tilemap.data", payload: "{\"Lighthouse\":\"\(upstreamFixture)\"}"))
+        let compressedFixture = "tZBBCsIwEEVXuc5g9Qqz9h9AvVNRcS0URGh13YXo1mM5bRI6xsmiWj80/eHNHz5xbjqRZWnq3fSfxqPYSMErtxdgBk5q5gPzs5+5QStywdwPLblabzrzwIXPmodEKbblcCQ8IjFbRt0YXL7rDry/H5DkvcSV4aibFXR/3xGt0T8OAIVcFvb7dUGX4xH8xGcixUn/i2HUzs+9cvy9Rk5Hk1Oap2/3W/wF"
+        _ = try state.consume(.init(package: "beip.tilemap.data", payload: "{\"Lighthouse\":\"\(compressedFixture)\"}"))
         XCTAssertEqual(state.tileMaps["Lighthouse"]?.tiles.count, 1024)
 
         XCTAssertThrowsError(try state.consume(.init(

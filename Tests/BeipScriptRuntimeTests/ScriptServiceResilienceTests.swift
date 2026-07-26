@@ -146,7 +146,7 @@ private final class M9ScriptServiceListener: NSObject, NSXPCListenerDelegate, @u
     }
 }
 
-final class Milestone9ScriptServiceResilienceTests: XCTestCase {
+final class ScriptServiceResilienceTests: XCTestCase {
     private let watchdogInterval: TimeInterval = 0.08
 
     func testInfiniteScriptExpiresWatchdogReconnectsAndPreservesHostState() async {

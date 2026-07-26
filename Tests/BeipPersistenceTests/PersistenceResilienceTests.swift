@@ -2,7 +2,7 @@
 import Foundation
 import XCTest
 
-final class Milestone9ResilienceTests: XCTestCase {
+final class PersistenceResilienceTests: XCTestCase {
     private let validConfig = """
     Version=331
     Connections

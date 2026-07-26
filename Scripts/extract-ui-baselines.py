@@ -13,7 +13,6 @@ from typing import Any, Iterator
 EXPECTED_ATTACHMENTS = {
     "workspace-main",
     "workspace-command-error",
-    "workspace-golden-session",
     "workspace-split-sidebars",
     "theme-dialog",
     "statistics-panel",

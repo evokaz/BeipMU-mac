@@ -3,10 +3,10 @@ import Foundation
 @testable import BeipUI
 import XCTest
 
-final class Milestone9MediaWebViewResilienceTests: XCTestCase {
+final class MediaWebViewResilienceTests: XCTestCase {
     @MainActor
     func testClientMediaFailureMatrixIsBoundedRetryableAndRemainsUsable() async throws {
-        let validMedia = try Data(contentsOf: Self.fixtureURL("M9/seed/Assets/notify.wav"))
+        let validMedia = try Data(contentsOf: Self.fixtureURL("notify.wav"))
         let cases: [(name: String, step: M9MediaLoader.Step)] = [
             ("dns", .urlError(.cannotFindHost)),
             ("refusal", .urlError(.cannotConnectToHost)),

@@ -50,7 +50,7 @@ final class WorkspacePreferencesTests: XCTestCase {
 
     @MainActor
     func testAIWindowUsesNativeAccessibleSurfaceAndProfileState() throws {
-        let controller = AIWindowController(profileKey: "milestone7")
+        let controller = AIWindowController(profileKey: "ai-profile")
         controller.updateEndpoint(URL(string: "https://example.invalid/ai")!)
         controller.showResponse("answer", for: "question")
         controller.showWindow(nil)

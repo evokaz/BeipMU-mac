@@ -230,7 +230,6 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         }
         appendClient("Welcome to BeipMU for Mac. Choose Connection → Connect… to begin.")
         runStartupScriptIfNeeded()
-        loadWindowsGoldenSessionFixtureIfRequested()
         updateWindowTitle()
     }
 
@@ -3264,26 +3263,6 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter
     }()
-
-    /// Deterministic UI-only projection of the normalized v331 golden byte
-    /// trace. Protocol parsing remains covered by TelnetParserTests; this path
-    /// proves that the resulting prompt and ANSI line reach the native output
-    /// surface with the same text and color semantics.
-    private func loadWindowsGoldenSessionFixtureIfRequested() {
-        let environment = ProcessInfo.processInfo.environment
-        guard environment["BEIPMU_UI_TESTING"] == "1",
-              environment["BEIPMU_UI_GOLDEN_SESSION"] == "1" else { return }
-        output.clear()
-        let text = "Golden prompt> Golden room"
-        let roomStart = "Golden prompt> ".utf16.count
-        let green = TextStyle(foreground: .init(red: 0, green: 205, blue: 0))
-        output.append(.init(
-            text: text,
-            runs: [.init(range: roomStart..<text.utf16.count, style: green)],
-            source: .server
-        ))
-        appendError("Remote connection closed.")
-    }
 
     private func appendClient(_ text: String) { output.append(.init(text: text, source: .client)) }
 

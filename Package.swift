@@ -12,7 +12,6 @@ let package = Package(
         .library(name: "BeipUI", targets: ["BeipUI"]),
         .library(name: "BeipScriptRuntime", targets: ["BeipScriptRuntime"]),
         .executable(name: "BeipWorkspaceBenchmark", targets: ["BeipWorkspaceBenchmark"]),
-        .executable(name: "BeipM9PortableEdits", targets: ["BeipM9PortableEdits"]),
     ],
     targets: [
         .target(name: "BeipCore"),
@@ -49,11 +48,6 @@ let package = Package(
             name: "BeipWorkspaceBenchmark",
             dependencies: ["BeipCore"],
             path: "Benchmarks/WorkspaceBenchmark"
-        ),
-        .executableTarget(
-            name: "BeipM9PortableEdits",
-            dependencies: ["BeipAutomation", "BeipPersistence"],
-            path: "Tools/M9PortableEdits"
         ),
         .testTarget(name: "BeipCoreTests", dependencies: ["BeipCore"]),
         .testTarget(name: "BeipProtocolsTests", dependencies: ["BeipProtocols", "BeipCore", "BeipTestSupport"]),

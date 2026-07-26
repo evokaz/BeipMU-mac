@@ -4,7 +4,7 @@ import BeipTestSupport
 import Foundation
 import XCTest
 
-final class Milestone9ProtocolNetworkResilienceTests: XCTestCase {
+final class ProtocolNetworkResilienceTests: XCTestCase {
     func testMalformedAndOversizedProtocolInputsAreBoundedAndRecoveryContinues() throws {
         var telnet = TelnetParser()
         let oversizedLine = Data(repeating: 65, count: TelnetParser.maximumLineBytes + 1)

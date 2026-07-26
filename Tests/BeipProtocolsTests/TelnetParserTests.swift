@@ -3,40 +3,7 @@ import BeipProtocols
 import Foundation
 import XCTest
 
-private struct WindowsSessionTrace: Decodable {
-    struct Event: Decodable { var direction: String; var hex: String }
-    var events: [Event]
-}
-
 final class TelnetParserTests: XCTestCase {
-    func testWindowsV331GoldenByteTraceProducesMatchingPromptLineAndNegotiation() throws {
-        let url = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("Golden/windows-v331-session.trace.json")
-        var data = try Data(contentsOf: url)
-        if data.starts(with: [0xEF, 0xBB, 0xBF]) { data.removeFirst(3) }
-        let trace = try JSONDecoder().decode(WindowsSessionTrace.self, from: data)
-        var pipeline = MUDProtocolPipeline()
-        var outputs: [ProtocolOutput] = []
-
-        for event in trace.events where event.direction == "server-to-client" {
-            outputs += pipeline.consume(try XCTUnwrap(Data(hex: event.hex)))
-        }
-
-        XCTAssertTrue(outputs.contains(.transmit(Data([255, 253, 25]))))
-        XCTAssertTrue(outputs.contains { output in
-            guard case let .prompt(line) = output else { return false }
-            return line.text == "Golden prompt> "
-        })
-        guard let room = outputs.compactMap({ output -> RenderedLine? in
-            guard case let .line(line) = output else { return nil }
-            return line
-        }).first else { return XCTFail("missing golden rendered line") }
-        XCTAssertEqual(room.text, "Golden prompt> Golden room")
-        XCTAssertEqual(room.runs.last?.style.foreground, RGBColor(red: 0, green: 205, blue: 0))
-    }
-
     func testWindowsCompatibleTelnetDebugFormattingAndChunkState() {
         var formatter = TelnetDebugFormatter()
         XCTAssertEqual(

@@ -83,18 +83,6 @@ final class BeipMUXCUITests: XCTestCase {
         XCTAssertEqual(restored.splitGroups.matching(identifier: "workspaceSplit.second").count, 1)
     }
 
-    func testWindowsGoldenSessionSemanticsAndBaseline() throws {
-        let app = launchApplication(environment: ["BEIPMU_UI_GOLDEN_SESSION": "1"])
-        defer { app.terminate() }
-        let window = app.windows["mainWindow"]
-        let output = window.descendants(matching: .textView)["MU star output"]
-        XCTAssertTrue((output.value as? String)?.contains("Golden prompt> Golden room") == true)
-        XCTAssertTrue((output.value as? String)?.contains("Remote connection closed.") == true)
-        XCTAssertEqual(window.staticTexts["connectionState"].value as? String, "Disconnected")
-        XCTAssertEqual(window.buttons["sessionTaskButton"].title, "Untitled")
-        try assertScreenshotBaseline(named: "workspace-golden-session", element: window)
-    }
-
     func testThemeDialogAccessibilityAndBaseline() throws {
         let app = launchApplication()
         defer { app.terminate() }

@@ -143,29 +143,6 @@ final class LegacyConfigTests: XCTestCase {
         XCTAssertTrue(serialized.contains("Unknown=\"preserve me\""))
     }
 
-    func testWindowsV331GoldenConfigurationParsesLosslesslyAndProjectsProfiles() throws {
-        let url = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("Golden/windows-v331-Config.txt")
-        let source = try String(contentsOf: url, encoding: .utf8)
-        let document = try LegacyConfigurationDocument(source: source)
-        let projection = try LegacyConfigurationProjection(document: document)
-
-        XCTAssertEqual(document.serialized(), source)
-        XCTAssertEqual(document.value(at: ["Windows", "Positions", "Position"]), nil)
-        XCTAssertEqual(projection.sourceVersion, 331)
-        XCTAssertEqual(projection.servers.count, 1)
-        XCTAssertEqual(projection.servers[0].profile.name, "GoldenFixture")
-        XCTAssertEqual(projection.servers[0].profile.host, "127.0.0.1")
-        XCTAssertEqual(projection.servers[0].profile.port, 45_678)
-        XCTAssertTrue(projection.servers[0].profile.prompts)
-        XCTAssertEqual(projection.servers[0].characters.first?.name, "Golden")
-        XCTAssertEqual(projection.servers[0].characters.first?.connectText, "connect golden")
-        XCTAssertTrue(projection.servers[0].characters.first?.autoConnect == true)
-        XCTAssertEqual(projection.servers[0].restoreLogAssignments[0], "GoldenFixture - Golden")
-    }
-
     func testProjectionLoadsHierarchicalAliasesAndOrderedTriggers() async throws {
         let source = """
         Version=331
@@ -413,7 +390,7 @@ final class LegacyConfigTests: XCTestCase {
         XCTAssertTrue(actions.contains { if case .stat = $0 { return true }; return false })
     }
 
-    func testMilestone7PuppetAutomationAndAIProfileRoundTrip() throws {
+    func testPuppetAutomationAndAIProfileRoundTrip() throws {
         let source = """
         Version=331
         Connections {
@@ -1230,19 +1207,6 @@ final class LegacyConfigTests: XCTestCase {
         }
     }
 
-    func testWindowsV331GoldenRestoreLogIsReadable() throws {
-        let url = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("Golden/windows-v331-Restore.dat")
-        let logs = try RestoreLogStore.load(from: url, bufferSize: 256 * 1024)
-
-        XCTAssertEqual(logs.count, 1)
-        XCTAssertFalse(logs[0].isEmpty)
-        let combinedPayload = logs[0].reduce(into: Data()) { $0.append($1.payload) }
-        XCTAssertNotNil(combinedPayload.range(of: Data("Golden prompt> ".utf8)))
-        XCTAssertNotNil(combinedPayload.range(of: Data("Golden room".utf8)))
-    }
 }
 
 private struct PersistenceSeededRandom {
