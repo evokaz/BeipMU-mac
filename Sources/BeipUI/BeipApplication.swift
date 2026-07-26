@@ -1,5 +1,6 @@
 import AppKit
 import BeipCore
+import BeipPersistence
 
 @MainActor
 public enum BeipApplication {
@@ -27,6 +28,8 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     private var configurationManager: ConfigurationManagerWindowController?
     private var keyboardShortcuts = KeyboardShortcutStore.load()
     private var shortcutItems: [ShortcutAction: NSMenuItem] = [:]
+    private var isRestoringTabs = false
+    private var isTerminating = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSWindow.allowsAutomaticWindowTabbing = false
@@ -35,7 +38,10 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         }
         keyboardShortcuts = KeyboardShortcutStore.load(from: profileLibrary.keyEquivalents)
         configureMenu()
-        newWindow(nil)
+        if ProcessInfo.processInfo.environment["BEIPMU_UI_TEST_RESET"] == "1"
+            || !restoreOpenTabs() {
+            newWindow(nil)
+        }
         NSApplication.shared.activate(ignoringOtherApps: true)
         activeController?.startPerformanceSoakIfRequested()
         activeController?.startM10ScaleIfRequested()
@@ -49,6 +55,8 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        saveOpenTabs()
+        isTerminating = true
         windows.forEach { $0.prepareForApplicationTermination() }
         return .terminateNow
     }
@@ -57,6 +65,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         let controller = makeController()
         controller.showWindow(sender)
         controller.startDeviceMediaAuditIfRequested()
+        saveOpenTabs()
     }
 
     @discardableResult
@@ -88,6 +97,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         let group = parent.sessionTabGroup ?? ClientTabGroup(parent)
         group.add(controller)
         group.select(controller, sender: sender)
+        saveOpenTabs()
     }
 
     @objc func newInputWindow(_ sender: Any?) { activeController?.showNewInputWindow() }
@@ -99,7 +109,17 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         controller.onClose = { [weak self, weak controller] in
             guard let self, let controller else { return }
             self.windows.removeAll { $0 === controller }
+            self.saveOpenTabs()
         }
+        controller.onRequestCloseLastTab = { [weak self] controller in
+            guard let self, !self.isTerminating else { return false }
+            DispatchQueue.main.async { [weak self, weak controller] in
+                guard let self, let controller else { return }
+                self.replaceLastTab(controller)
+            }
+            return true
+        }
+        controller.onTabStateChange = { [weak self] in self?.saveOpenTabs() }
         controller.onThemeChange = { [weak self] theme in
             self?.windows.forEach { $0.applyThemeSettings(theme) }
         }
@@ -107,6 +127,95 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
             self?.windows.forEach { $0.reloadTextWindowPreferences() }
         }
         return controller
+    }
+
+    private func replaceLastTab(_ controller: ClientWindowController) {
+        let replacement = makeController()
+        if let frame = controller.window?.frame {
+            replacement.window?.setFrame(frame, display: false)
+        }
+        replacement.showWindow(nil)
+        replacement.window?.makeKeyAndOrderFront(nil)
+        replacement.focusCommandInput()
+        controller.closeForTabReplacement()
+    }
+
+    @discardableResult
+    private func restoreOpenTabs() -> Bool {
+        guard let savedGroups = profileLibrary.openTabGroups, !savedGroups.isEmpty else {
+            return false
+        }
+        isRestoringTabs = true
+        defer {
+            isRestoringTabs = false
+            saveOpenTabs()
+        }
+
+        for savedGroup in savedGroups where !savedGroup.tabs.isEmpty {
+            let controllers = savedGroup.tabs.map { savedTab -> ClientWindowController in
+                let controller = makeController()
+                if let savedServer = profileLibrary.workspace.servers.first(where: {
+                    $0.profile.id == savedTab.serverID
+                        || $0.profile.name == savedTab.serverName
+                }) {
+                    let character = savedServer.characters.first {
+                        $0.id == savedTab.characterID || $0.name == savedTab.characterName
+                    }
+                    controller.restoreOpenTab(
+                        server: savedServer.profile,
+                        character: character
+                    )
+                }
+                if let frameString = savedGroup.frame {
+                    let frame = NSRectFromString(frameString)
+                    if frame.width > 0, frame.height > 0 {
+                        controller.window?.setFrame(frame, display: false)
+                    }
+                }
+                return controller
+            }
+            guard let first = controllers.first else { continue }
+            if controllers.count == 1 {
+                first.showWindow(nil)
+                continue
+            }
+            let group = ClientTabGroup(first)
+            controllers.dropFirst().forEach { group.add($0) }
+            let selectedIndex = min(max(savedGroup.selectedTab, 0), controllers.count - 1)
+            group.select(controllers[selectedIndex], sender: nil)
+        }
+        return !windows.isEmpty
+    }
+
+    private func saveOpenTabs() {
+        guard !isRestoringTabs, !isTerminating, !windows.isEmpty else { return }
+        var seenGroups: Set<ObjectIdentifier> = []
+        var groups: [MacConfigurationSidecar.OpenTabGroup] = []
+
+        for controller in windows {
+            if let group = controller.sessionTabGroup {
+                let identifier = ObjectIdentifier(group)
+                guard seenGroups.insert(identifier).inserted else { continue }
+                let controllers = group.controllers
+                guard !controllers.isEmpty else { continue }
+                let selected = group.selectedController.flatMap { selected in
+                    controllers.firstIndex { $0 === selected }
+                } ?? 0
+                let frame = group.selectedController?.window?.frame
+                    ?? controllers.first?.window?.frame
+                groups.append(.init(
+                    tabs: controllers.map(\.persistedOpenTab),
+                    selectedTab: selected,
+                    frame: frame.map(NSStringFromRect)
+                ))
+            } else {
+                groups.append(.init(
+                    tabs: [controller.persistedOpenTab],
+                    frame: controller.window.map { NSStringFromRect($0.frame) }
+                ))
+            }
+        }
+        try? profileLibrary.saveOpenTabGroups(groups)
     }
 
     @objc func connect(_ sender: Any?) { activeController?.showConnectDialog() }

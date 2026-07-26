@@ -140,6 +140,7 @@ final class ClientTabGroup {
         entries.append(WeakController(controller))
         controller.sessionTabGroup = self
         refreshTabs()
+        controller.tabStateDidChange()
     }
 
     func select(_ controller: ClientWindowController?, sender: Any?) {
@@ -154,6 +155,7 @@ final class ClientTabGroup {
         controller.window?.makeKeyAndOrderFront(sender)
         controller.focusCommandInput()
         refreshTabs()
+        controller.tabStateDidChange()
     }
 
     func prepareToClose(_ controller: ClientWindowController) {
@@ -177,6 +179,7 @@ final class ClientTabGroup {
         guard controllers.contains(where: { $0 === controller }) else { return }
         selectedController = controller
         refreshTabs()
+        controller.tabStateDidChange()
     }
 
     func controllerWillClose(_ controller: ClientWindowController) {
@@ -212,6 +215,7 @@ final class ClientTabGroup {
         } else {
             refreshTabs()
         }
+        controller.tabStateDidChange()
     }
 
     func refreshTabs() {
@@ -333,11 +337,14 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private var baseWindowTitle = "Untitled"
     private var scriptTitlePrefix = ""
     private var isMuted = false
+    private var bypassLastTabReplacement = false
     private var connectionStateText = "Disconnected"
     private weak var taskbarView: NSStackView?
     private var tracksInputHeight = false
     private static var didRunStartupScript = false
     var onClose: (() -> Void)?
+    var onRequestCloseLastTab: ((ClientWindowController) -> Bool)?
+    var onTabStateChange: (() -> Void)?
     var onThemeChange: ((WorkspaceThemeSettings) -> Void)?
     var onTextWindowSettingsChange: (() -> Void)?
     var timestampsEnabled: Bool {
@@ -504,8 +511,63 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if !bypassLastTabReplacement,
+           (sessionTabGroup?.controllers.count ?? 1) == 1,
+           onRequestCloseLastTab?(self) == true {
+            return false
+        }
         sessionTabGroup?.prepareToClose(self)
         return true
+    }
+
+    func closeForTabReplacement() {
+        bypassLastTabReplacement = true
+        close()
+    }
+
+    func tabStateDidChange() {
+        onTabStateChange?()
+    }
+
+    var persistedOpenTab: MacConfigurationSidecar.OpenTab {
+        .init(
+            serverID: currentServer?.id,
+            characterID: currentCharacter?.id,
+            serverName: currentServer?.name,
+            characterName: currentCharacter?.name
+        )
+    }
+
+    func restoreOpenTab(server: ServerProfile, character: CharacterProfile?) {
+        currentServer = server
+        currentCharacter = character
+        currentPuppet = nil
+        variables = profileLibrary.workspace.projection.variables(
+            for: server,
+            character: character,
+            puppet: nil
+        )
+        let automation = profileLibrary.workspace.projection.automationGroups(
+            for: server,
+            character: character,
+            puppet: nil
+        )
+        aliasGroups = automation.aliases
+        triggerGroups = automation.triggers
+        keyboardMacroGroups = profileLibrary.workspace.projection.macroGroups(
+            for: server,
+            character: character,
+            puppet: nil
+        )
+        baseWindowTitle = character.map { "\($0.name) @ \(server.name)" } ?? server.name
+        applyTextWindowSettings()
+        applyInputWindowSettings()
+        dockController.setNotes(preferences.characterNotes[notesKey] ?? "")
+        if let layout = preferences.workspaceLayouts[notesKey] ?? preferences.workspaceLayout {
+            dockController.apply(layout: layout)
+        }
+        updateWindowTitle()
+        refreshDiagnostics()
     }
 
     func windowDidResize(_ notification: Notification) {
@@ -962,8 +1024,16 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     func reconnect() {
-        guard let session else {
+        guard let server = currentServer else {
             appendError("No previous connection to reconnect.")
+            return
+        }
+        guard let session else {
+            startSession(
+                server,
+                character: currentCharacter,
+                policy: profileLibrary.workspace.projection.connectionPolicy
+            )
             return
         }
         Task { await session.reconnect() }
@@ -2192,6 +2262,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             let suffix = puppet.map { " / \($0.name)" } ?? ""
             return "\(character.name) @ \(server.name)\(suffix)"
         } ?? server.name
+        tabStateDidChange()
         updateWindowTitle()
         dockController.setNotes(preferences.characterNotes[notesKey] ?? "")
         if let layout = preferences.workspaceLayouts[notesKey] ?? preferences.workspaceLayout {

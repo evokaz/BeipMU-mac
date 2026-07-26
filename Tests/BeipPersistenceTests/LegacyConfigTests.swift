@@ -1046,7 +1046,26 @@ final class LegacyConfigTests: XCTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let url = directory.appendingPathComponent("Config.mac.json")
-        let sidecar = MacConfigurationSidecar(keyEquivalents: ["Connect": "@["])
+        let serverID = UUID()
+        let characterID = UUID()
+        let sidecar = MacConfigurationSidecar(
+            keyEquivalents: ["Connect": "@["],
+            openTabGroups: [
+                .init(
+                    tabs: [
+                        .init(
+                            serverID: serverID,
+                            characterID: characterID,
+                            serverName: "LambdaMOO",
+                            characterName: "Player"
+                        ),
+                        .init(),
+                    ],
+                    selectedTab: 1,
+                    frame: "{{20, 30}, {980, 700}}"
+                ),
+            ]
+        )
         try MacSidecarStore.save(sidecar, to: url)
         XCTAssertEqual(try MacSidecarStore.load(from: url), sidecar)
     }

@@ -62,9 +62,23 @@ final class ProfileLibrary {
         (try? MacSidecarStore.load(from: sidecarURL).keyEquivalents) ?? [:]
     }
 
+    var openTabGroups: [MacConfigurationSidecar.OpenTabGroup]? {
+        try? MacSidecarStore.load(from: sidecarURL).openTabGroups
+    }
+
     func saveKeyEquivalents(_ values: [String: String]) throws {
         var sidecar = try MacSidecarStore.load(from: sidecarURL)
         sidecar.keyEquivalents = values
+        try FileManager.default.createDirectory(
+            at: sidecarURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try MacSidecarStore.save(sidecar, to: sidecarURL)
+    }
+
+    func saveOpenTabGroups(_ groups: [MacConfigurationSidecar.OpenTabGroup]) throws {
+        var sidecar = try MacSidecarStore.load(from: sidecarURL)
+        sidecar.openTabGroups = groups
         try FileManager.default.createDirectory(
             at: sidecarURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
