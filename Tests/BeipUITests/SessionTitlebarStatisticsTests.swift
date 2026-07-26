@@ -119,6 +119,52 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
     }
 
     @MainActor
+    func testActiveSessionTabKeepsLoggingIndicatorVisibleBesideTruncatedTitle() throws {
+        var workspace = try LegacyConfigurationWorkspace.empty(isDirty: false)
+        let serverID = workspace.addServer(named: "MyRhost With A Very Long World Name")
+        let characterID = try workspace.addCharacter(toServerID: serverID, named: "Wizard")
+        let savedServer = try XCTUnwrap(workspace.servers.first)
+        let savedCharacter = try XCTUnwrap(savedServer.characters.first { $0.id == characterID })
+        let logURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("txt")
+
+        let controller = ClientWindowController(profileLibrary: ProfileLibrary(workspace: workspace))
+        defer {
+            controller.close()
+            try? FileManager.default.removeItem(at: logURL)
+        }
+        controller.restoreOpenTab(server: savedServer.profile, character: savedCharacter)
+        controller.startLogForTesting(at: logURL)
+        controller.showWindow(nil)
+
+        let content = try XCTUnwrap(controller.window?.contentView)
+        content.layoutSubtreeIfNeeded()
+        let activeTab = try XCTUnwrap(
+            recursiveSubviews(of: content)
+                .first { $0.accessibilityIdentifier() == "activeSessionTab" }
+        )
+        activeTab.layoutSubtreeIfNeeded()
+
+        let titleLabel = try XCTUnwrap(
+            recursiveSubviews(of: activeTab)
+                .compactMap { $0 as? NSTextField }
+                .first { $0.accessibilityIdentifier() == "sessionTabTitle" }
+        )
+        let indicators = try XCTUnwrap(
+            recursiveSubviews(of: activeTab)
+                .compactMap { $0 as? NSTextField }
+                .first { $0.accessibilityIdentifier() == "sessionTabIndicators" }
+        )
+
+        XCTAssertEqual(indicators.stringValue, "📝")
+        XCTAssertFalse(indicators.isHidden)
+        XCTAssertGreaterThan(indicators.frame.width, 0)
+        XCTAssertLessThanOrEqual(titleLabel.frame.maxX, indicators.frame.minX - 4.5)
+        XCTAssertLessThanOrEqual(indicators.frame.maxX, activeTab.bounds.maxX - 9.5)
+    }
+
+    @MainActor
     func testApplicationButtonMenuMatchesLegacyNavigation() throws {
         let library = ProfileLibrary(workspace: try .empty(isDirty: false))
         let controller = ClientWindowController(profileLibrary: library)

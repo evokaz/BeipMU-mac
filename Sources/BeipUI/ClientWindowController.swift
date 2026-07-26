@@ -19,12 +19,19 @@ private final class SessionWindowTabItemView: NSView {
     }
 
     private let titleLabel = ClickThroughLabel(labelWithString: "")
+    private let trailingIndicatorLabel = ClickThroughLabel(labelWithString: "")
     private let closeButton = NSButton()
     private var tracking: NSTrackingArea?
     private var selected = false
     private let tabColor: NSColor?
 
-    init(title: String, selected: Bool, color: NSColor?, targetController: ClientWindowController) {
+    init(
+        title: String,
+        trailingIndicators: String,
+        selected: Bool,
+        color: NSColor?,
+        targetController: ClientWindowController
+    ) {
         self.targetController = targetController
         self.selected = selected
         tabColor = color
@@ -43,6 +50,16 @@ private final class SessionWindowTabItemView: NSView {
         titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         addSubview(titleLabel)
 
+        trailingIndicatorLabel.stringValue = trailingIndicators
+        trailingIndicatorLabel.font = .systemFont(ofSize: 13)
+        trailingIndicatorLabel.lineBreakMode = .byClipping
+        trailingIndicatorLabel.maximumNumberOfLines = 1
+        trailingIndicatorLabel.translatesAutoresizingMaskIntoConstraints = false
+        trailingIndicatorLabel.setAccessibilityIdentifier("sessionTabIndicators")
+        trailingIndicatorLabel.setContentHuggingPriority(.required, for: .horizontal)
+        trailingIndicatorLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        addSubview(trailingIndicatorLabel)
+
         closeButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close tab")
         closeButton.imageScaling = .scaleProportionallyDown
         closeButton.isBordered = false
@@ -59,11 +76,15 @@ private final class SessionWindowTabItemView: NSView {
 
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
-        setAccessibilityLabel("\(title) tab")
+        setAccessibilityLabel("\([title, trailingIndicators].filter { !$0.isEmpty }.joined(separator: " ")) tab")
         setAccessibilityIdentifier(selected ? "activeSessionTab" : "sessionTab")
 
         let minimumWidth = widthAnchor.constraint(greaterThanOrEqualToConstant: 132)
         minimumWidth.priority = .defaultLow
+        let titleToIndicators = titleLabel.trailingAnchor.constraint(
+            equalTo: trailingIndicatorLabel.leadingAnchor,
+            constant: trailingIndicators.isEmpty ? 0 : -5
+        )
         NSLayoutConstraint.activate([
             heightAnchor.constraint(equalToConstant: 28),
             minimumWidth,
@@ -73,8 +94,10 @@ private final class SessionWindowTabItemView: NSView {
             closeButton.widthAnchor.constraint(equalToConstant: 16),
             closeButton.heightAnchor.constraint(equalToConstant: 16),
             titleLabel.leadingAnchor.constraint(equalTo: closeButton.trailingAnchor, constant: 5),
-            titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            titleToIndicators,
             titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            trailingIndicatorLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            trailingIndicatorLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
         updateBackground(hovered: false)
     }
@@ -3681,7 +3704,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         let selectedController = sessionTabGroup?.selectedController ?? self
         for controller in controllers {
             let tab = SessionWindowTabItemView(
-                title: controller.sessionTabTitle,
+                title: controller.sessionTabText,
+                trailingIndicators: controller.sessionTabTrailingIndicators,
                 selected: controller === selectedController,
                 color: controller.sessionTabColor,
                 targetController: controller
@@ -3698,11 +3722,24 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         window?.firstResponder === input
     }
 
+    func startLogForTesting(at url: URL) {
+        startLog(template: url.path, history: .none)
+    }
+
     private var sessionTabTitle: String {
+        [sessionTabText, sessionTabTrailingIndicators].filter { !$0.isEmpty }.joined(separator: " ")
+    }
+
+    private var sessionTabText: String {
         let activity = unreadCount > 0 ? "● " : ""
-        let mute = isMuted ? " 🔇" : ""
-        let logging = logWriters.isEmpty ? "" : " 📝"
-        return activity + scriptTitlePrefix + baseWindowTitle + mute + logging
+        return activity + scriptTitlePrefix + baseWindowTitle
+    }
+
+    private var sessionTabTrailingIndicators: String {
+        [
+            isMuted ? "🔇" : nil,
+            logWriters.isEmpty ? nil : "📝",
+        ].compactMap { $0 }.joined(separator: " ")
     }
 
     private func updateWindowTitle() {
