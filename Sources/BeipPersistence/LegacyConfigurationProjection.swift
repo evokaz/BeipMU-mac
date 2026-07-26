@@ -225,9 +225,12 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
                     name: characterName,
                     connectText: properties.value("Connect") ?? "",
                     password: properties.value("Password") ?? "",
+                    info: properties.value("Info") ?? "",
                     autoConnect: properties.bool("ConnectAtStartup") ?? false,
                     idleTimeout: Self.idleTimeout(properties),
                     idleText: properties.value("IdleString") ?? "",
+                    logFilename: properties.value("LogFileName") ?? "",
+                    logAppendsDate: (properties.value("LogFileNameTimeFormat").flatMap(Int.init) ?? 0) & 0b110 != 0,
                     variables: Self.variables(properties),
                     puppets: puppets
                 )
@@ -323,10 +326,8 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
     }
 
     public func automaticLog(for server: ServerProfile, character: CharacterProfile?) -> (filename: String, appendsDate: Bool)? {
-        guard let selected = servers.first(where: { $0.profile.id == server.id }), let character else { return nil }
-        let scope = selected.automation.scope(for: character)
-        guard !scope.automaticLogFilename.isEmpty else { return nil }
-        return (scope.automaticLogFilename, scope.automaticLogAppendsDate)
+        guard let character, !character.logFilename.isEmpty else { return nil }
+        return (character.logFilename, character.logAppendsDate)
     }
 
     public func startupConnections() -> [ConnectionRequest] {
@@ -428,6 +429,12 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
                     character.password, default: "",
                     at: characterBase + ["Password"], in: &result
                 )
+                if sourceVersion >= 261 || !character.info.isEmpty {
+                    try Self.upsert(
+                        character.info, default: "",
+                        at: characterBase + ["Info"], in: &result
+                    )
+                }
                 try Self.upsert(
                     Self.flag(character.autoConnect), default: "false",
                     at: characterBase + ["ConnectAtStartup"], quoted: false, in: &result
@@ -441,6 +448,14 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
                     try result.upsertValue(String(Int(timeout / 60)), at: characterBase + ["IdleTimeout"], quoted: false)
                     try result.upsertValue(character.idleText, at: characterBase + ["IdleString"])
                 }
+                try Self.upsert(
+                    character.logFilename, default: "",
+                    at: characterBase + ["LogFileName"], in: &result
+                )
+                try Self.upsert(
+                    character.logAppendsDate ? "6" : "0", default: "0",
+                    at: characterBase + ["LogFileNameTimeFormat"], quoted: false, in: &result
+                )
                 for puppet in character.puppets {
                     let puppetBase = characterBase + ["Puppets", puppet.name]
                     try result.upsertValue(puppet.receivePrefix, at: puppetBase + ["ReceivePrefix"])

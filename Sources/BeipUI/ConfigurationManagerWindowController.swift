@@ -31,10 +31,13 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
     private var webViewPolicyPopup: NSPopUpButton?
     private var aiEndpointField: NSTextField?
     private var aiModelField: NSTextField?
-    private var connectField: NSTextField?
-    private var passwordField: NSSecureTextField?
+    private var connectField: NSTextView?
+    private var characterInfoField: NSTextView?
+    private var passwordField: NSTextField?
+    private var passwordContainer: NSView?
     private var idleMinutesField: NSTextField?
     private var idleTextField: NSTextField?
+    private var characterLogFilenameField: NSTextField?
     private var receivePrefixField: NSTextField?
     private var sendPrefixField: NSTextField?
     private var puppetLogFilenameField: NSTextField?
@@ -50,7 +53,10 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
             backing: .buffered,
             defer: false
         )
-        window.minSize = NSSize(width: 720, height: 520)
+        window.minSize = NSSize(width: 860, height: 560)
+        window.title = "Worlds & Characters"
+        window.setAccessibilityIdentifier("configurationManager")
+        window.titlebarSeparatorStyle = .line
         super.init(window: window)
         window.setFrameAutosaveName("BeipMUConfigurationManager")
         window.center()
@@ -69,15 +75,16 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
     private func configureUI(in window: NSWindow) {
         let sidebar = NSStackView()
         sidebar.orientation = .vertical
-        sidebar.spacing = 8
-        sidebar.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 8)
+        sidebar.spacing = 10
+        sidebar.edgeInsets = NSEdgeInsets(top: 16, left: 14, bottom: 12, right: 10)
 
         let title = NSTextField(labelWithString: "Worlds & Characters")
-        title.font = .systemFont(ofSize: 15, weight: .semibold)
+        title.font = .systemFont(ofSize: 13, weight: .semibold)
+        title.textColor = .secondaryLabelColor
         sidebar.addArrangedSubview(title)
 
         table.headerView = nil
-        table.rowHeight = 28
+        table.rowHeight = 30
         table.style = .sourceList
         table.addTableColumn(NSTableColumn(identifier: .init("Profile")))
         table.delegate = self
@@ -93,16 +100,24 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
         let addCharacter = NSButton(title: "+ Character", target: self, action: #selector(addCharacter(_:)))
         let addPuppet = NSButton(title: "+ Puppet", target: self, action: #selector(addPuppet(_:)))
         let remove = NSButton(title: "Remove", target: self, action: #selector(removeSelection(_:)))
-        let buttons = NSStackView(views: [addWorld, addCharacter, addPuppet, NSView(), remove])
-        buttons.orientation = .horizontal
+        [addWorld, addCharacter, addPuppet, remove].forEach { $0.controlSize = .small }
+        let addButtons = NSStackView(views: [addWorld, addCharacter, addPuppet])
+        addButtons.orientation = .horizontal
+        addButtons.spacing = 6
+        let removeRow = NSStackView(views: [NSView(), remove])
+        removeRow.orientation = .horizontal
+        removeRow.spacing = 6
+        let buttons = NSStackView(views: [addButtons, removeRow])
+        buttons.orientation = .vertical
+        buttons.alignment = .width
         buttons.spacing = 6
         sidebar.addArrangedSubview(buttons)
-        sidebar.widthAnchor.constraint(equalToConstant: 300).isActive = true
+        sidebar.widthAnchor.constraint(equalToConstant: 280).isActive = true
 
         detailStack.orientation = .vertical
-        detailStack.alignment = .leading
-        detailStack.spacing = 12
-        detailStack.edgeInsets = NSEdgeInsets(top: 20, left: 24, bottom: 20, right: 24)
+        detailStack.alignment = .width
+        detailStack.spacing = 16
+        detailStack.edgeInsets = NSEdgeInsets(top: 24, left: 28, bottom: 28, right: 28)
         detailStack.translatesAutoresizingMaskIntoConstraints = false
         let detailDocument = NSView()
         detailDocument.translatesAutoresizingMaskIntoConstraints = false
@@ -120,12 +135,15 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
             detailDocument.heightAnchor.constraint(greaterThanOrEqualTo: detailScroll.contentView.heightAnchor),
         ])
 
-        let split = NSSplitView()
-        split.isVertical = true
-        split.dividerStyle = .thin
-        split.addArrangedSubview(sidebar)
-        split.addArrangedSubview(detailScroll)
-        split.setHoldingPriority(.defaultHigh, forSubviewAt: 0)
+        let divider = NSBox()
+        divider.boxType = .separator
+        divider.widthAnchor.constraint(equalToConstant: 1).isActive = true
+        detailScroll.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        detailScroll.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let split = NSStackView(views: [sidebar, divider, detailScroll])
+        split.orientation = .horizontal
+        split.alignment = .height
+        split.spacing = 0
 
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.lineBreakMode = .byTruncatingMiddle
@@ -142,12 +160,14 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
         root.alignment = .width
         root.spacing = 0
         root.translatesAutoresizingMaskIntoConstraints = false
-        window.contentView = root
+        let contentView = NSView()
+        window.contentView = contentView
+        contentView.addSubview(root)
         NSLayoutConstraint.activate([
-            root.leadingAnchor.constraint(equalTo: window.contentView!.leadingAnchor),
-            root.trailingAnchor.constraint(equalTo: window.contentView!.trailingAnchor),
-            root.topAnchor.constraint(equalTo: window.contentView!.topAnchor),
-            root.bottomAnchor.constraint(equalTo: window.contentView!.bottomAnchor),
+            root.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            root.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            root.topAnchor.constraint(equalTo: contentView.topAnchor),
+            root.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
             footer.heightAnchor.constraint(equalToConstant: 48),
         ])
     }
@@ -191,7 +211,7 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
         }
         rebuildDetails()
         let dirty = library.workspace.isDirty ? " — Edited" : ""
-        window?.title = "\(library.displayName)\(dirty)"
+        window?.title = "Worlds & Characters\(dirty)"
         if let recovery = library.workspace.recoveredFrom {
             statusLabel.stringValue = "Recovered read-only source from \(recovery.lastPathComponent); save to commit it."
         } else {
@@ -289,20 +309,66 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
     private func buildCharacterForm(serverID: UUID, characterID: UUID) {
         guard let character = library.workspace.servers.first(where: { $0.profile.id == serverID })?
             .characters.first(where: { $0.id == characterID }) else { return }
-        addHeading("Character", subtitle: "Login, startup, and idle behavior")
+        addHeading("Character", subtitle: "")
         let name = textField(character.name, identifier: "characterName")
-        let connect = textField(character.connectText, identifier: "characterConnectText")
+        let connect = multilineTextField(character.connectText, identifier: "characterConnectText")
+        let info = multilineInfoField(character.info)
         let password = NSSecureTextField(string: character.password)
         password.setAccessibilityIdentifier("characterPassword")
+        password.placeholderString = "Replaces %PASSWORD% in the connect string"
+        let passwordRow = passwordControl(password)
         let idleMinutes = textField(character.idleTimeout.map { String(Int($0 / 60)) } ?? "", identifier: "characterIdleMinutes")
+        idleMinutes.alignment = .right
+        idleMinutes.widthAnchor.constraint(equalToConstant: 64).isActive = true
         let idleText = textField(character.idleText, identifier: "characterIdleText")
-        nameField = name; connectField = connect; passwordField = password
+        idleText.placeholderString = "Command to send while idle"
+        let logFilename = textField(character.logFilename, identifier: "characterLogFilename")
+        logFilename.placeholderString = "Automatic log file"
+        nameField = name; passwordField = password; passwordContainer = passwordRow
         idleMinutesField = idleMinutes; idleTextField = idleText
-        detailStack.addArrangedSubview(grid([
-            ("Name:", name), ("Connect text:", connect), ("Password:", password),
-            ("Idle minutes:", idleMinutes), ("Idle command:", idleText),
-        ]))
-        addCheck("autoConnect", "Connect at startup", character.autoConnect)
+        characterLogFilenameField = logFilename
+        let characterForm = NSStackView(views: [
+            formRow("Name:", control: name),
+            formRow("Password:", control: passwordRow),
+            formRow("Connect String:", control: connect, alignsToTop: true),
+            formRow("Info:", control: info, alignsToTop: true),
+        ])
+        characterForm.orientation = .vertical
+        characterForm.alignment = .width
+        characterForm.spacing = 10
+        characterForm.setAccessibilityIdentifier("characterForm")
+        detailStack.addArrangedSubview(characterForm)
+        characterForm.widthAnchor.constraint(equalTo: detailStack.widthAnchor, constant: -56).isActive = true
+
+        let autoConnect = check("autoConnect", "Connect automatically when BeipMU opens", character.autoConnect)
+        let idleEnabled = character.idleTimeout != nil
+        let idleCheck = check("idleEnabled", "When idle for", idleEnabled, action: #selector(toggleIdle(_:)))
+        let minutesLabel = NSTextField(labelWithString: "minutes, send")
+        let idleRow = NSStackView(views: [idleCheck, idleMinutes, minutesLabel, idleText])
+        idleRow.orientation = .horizontal
+        idleRow.alignment = .centerY
+        idleRow.spacing = 8
+        idleText.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        idleText.widthAnchor.constraint(greaterThanOrEqualToConstant: 180).isActive = true
+        let chooseLog = NSButton(title: "Log File…", target: self, action: #selector(chooseCharacterLogFile(_:)))
+        chooseLog.setAccessibilityIdentifier("chooseCharacterLogFile")
+        let logRow = NSStackView(views: [chooseLog, logFilename])
+        logRow.orientation = .horizontal
+        logRow.spacing = 8
+        logFilename.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let logDate = check(
+            "characterLogDate",
+            "Append current date to log file name",
+            character.logAppendsDate
+        )
+        let behavior = NSStackView(views: [idleRow, autoConnect, logRow, logDate])
+        behavior.orientation = .vertical
+        behavior.alignment = .width
+        behavior.spacing = 10
+        behavior.setAccessibilityIdentifier("characterBehavior")
+        detailStack.addArrangedSubview(behavior)
+        behavior.widthAnchor.constraint(equalTo: detailStack.widthAnchor, constant: -56).isActive = true
+        updateIdleControls(enabled: idleEnabled)
         addApplyButton()
     }
 
@@ -335,11 +401,12 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
 
     private func addHeading(_ title: String, subtitle: String) {
         let heading = NSTextField(labelWithString: title)
-        heading.font = .systemFont(ofSize: 22, weight: .semibold)
+        heading.font = .systemFont(ofSize: 24, weight: .semibold)
         let detail = NSTextField(labelWithString: subtitle)
         detail.textColor = .secondaryLabelColor
+        detail.font = .systemFont(ofSize: 13)
         detailStack.addArrangedSubview(heading)
-        detailStack.addArrangedSubview(detail)
+        if !subtitle.isEmpty { detailStack.addArrangedSubview(detail) }
     }
 
     private func textField(_ value: String, identifier: String) -> NSTextField {
@@ -347,6 +414,91 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
         field.setAccessibilityIdentifier(identifier)
         field.widthAnchor.constraint(greaterThanOrEqualToConstant: 320).isActive = true
         return field
+    }
+
+    private func multilineTextField(_ value: String, identifier: String) -> NSScrollView {
+        let text = NSTextView()
+        text.string = value
+        text.isRichText = false
+        text.isAutomaticQuoteSubstitutionEnabled = false
+        text.isAutomaticDashSubstitutionEnabled = false
+        text.font = .systemFont(ofSize: NSFont.systemFontSize)
+        text.textContainerInset = NSSize(width: 5, height: 6)
+        text.setAccessibilityIdentifier(identifier)
+        let scroll = NSScrollView()
+        scroll.documentView = text
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .bezelBorder
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.heightAnchor.constraint(equalToConstant: 86).isActive = true
+        scroll.widthAnchor.constraint(greaterThanOrEqualToConstant: 360).isActive = true
+        connectField = text
+        return scroll
+    }
+
+    private func multilineInfoField(_ value: String) -> NSScrollView {
+        let retainedConnectField = connectField
+        let scroll = multilineTextField(value, identifier: "characterInfo")
+        characterInfoField = connectField
+        connectField = retainedConnectField
+        return scroll
+    }
+
+    private func passwordControl(_ secureField: NSSecureTextField) -> NSView {
+        let show = NSButton(title: "Show", target: self, action: #selector(togglePassword(_:)))
+        show.setButtonType(.pushOnPushOff)
+        show.setAccessibilityIdentifier("showCharacterPassword")
+        let stack = NSStackView(views: [secureField, show])
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 10
+        secureField.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        return stack
+    }
+
+    private func section(title: String, subtitle: String, content: NSView) -> NSBox {
+        let heading = NSTextField(labelWithString: title)
+        heading.font = .systemFont(ofSize: 13, weight: .semibold)
+        let detail = NSTextField(wrappingLabelWithString: subtitle)
+        detail.textColor = .secondaryLabelColor
+        detail.font = .systemFont(ofSize: 11)
+        let stack = NSStackView(views: [heading, detail, content])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 9
+        stack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        stack.setContentCompressionResistancePriority(.required, for: .vertical)
+        stack.setContentHuggingPriority(.required, for: .vertical)
+        detail.maximumNumberOfLines = 0
+        detail.lineBreakMode = .byWordWrapping
+        detail.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        content.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let box = NSBox()
+        box.boxType = .custom
+        box.borderColor = .separatorColor
+        box.cornerRadius = 8
+        box.fillColor = .controlBackgroundColor
+        box.setAccessibilityIdentifier(title == "Account" ? "characterAccountSection" : "characterBehaviorSection")
+        box.contentViewMargins = NSSize(width: 14, height: 14)
+        box.contentView = stack
+        box.setContentHuggingPriority(.required, for: .vertical)
+        box.setContentCompressionResistancePriority(.required, for: .vertical)
+        box.heightAnchor.constraint(equalTo: stack.heightAnchor, constant: 28).isActive = true
+        return box
+    }
+
+    private func formRow(_ title: String, control: NSView, alignsToTop: Bool = false) -> NSStackView {
+        let label = NSTextField(labelWithString: title)
+        label.alignment = .right
+        label.widthAnchor.constraint(equalToConstant: 100).isActive = true
+        label.setContentHuggingPriority(.required, for: .horizontal)
+        control.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        control.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let row = NSStackView(views: [label, control])
+        row.orientation = .horizontal
+        row.alignment = alignsToTop ? .top : .centerY
+        row.spacing = 10
+        return row
     }
 
     private func grid(_ rows: [(String, NSView)]) -> NSGridView {
@@ -359,24 +511,37 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
     }
 
     private func addCheck(_ key: String, _ title: String, _ enabled: Bool) {
-        let button = NSButton(checkboxWithTitle: title, target: nil, action: nil)
+        detailStack.addArrangedSubview(check(key, title, enabled))
+    }
+
+    private func check(
+        _ key: String,
+        _ title: String,
+        _ enabled: Bool,
+        action: Selector? = nil
+    ) -> NSButton {
+        let button = NSButton(checkboxWithTitle: title, target: action == nil ? nil : self, action: action)
         button.state = enabled ? .on : .off
         button.setAccessibilityIdentifier(key)
         checks[key] = button
-        detailStack.addArrangedSubview(button)
+        return button
     }
 
     private func addApplyButton() {
         let button = NSButton(title: "Apply Changes", target: self, action: #selector(applyChanges(_:)))
         button.bezelStyle = .rounded
         button.setAccessibilityIdentifier("applyProfileChanges")
-        detailStack.addArrangedSubview(button)
+        let row = NSStackView(views: [button, NSView()])
+        row.orientation = .horizontal
+        detailStack.addArrangedSubview(row)
     }
 
     private func clearControls() {
         nameField = nil; hostField = nil; portField = nil; encodingPopup = nil; webViewPolicyPopup = nil
         aiEndpointField = nil; aiModelField = nil
-        connectField = nil; passwordField = nil; idleMinutesField = nil; idleTextField = nil
+        connectField = nil; characterInfoField = nil; passwordField = nil; passwordContainer = nil
+        idleMinutesField = nil; idleTextField = nil
+        characterLogFilenameField = nil
         receivePrefixField = nil; sendPrefixField = nil; checks = [:]
         puppetLogFilenameField = nil; puppetCharacterLogPrefixField = nil
     }
@@ -465,11 +630,16 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
                     guard let nameField else { return }
                     try workspace.updateCharacter(id: character, inServerID: server) { value in
                         value.name = nameField.stringValue
-                        value.connectText = connectField?.stringValue ?? ""
+                        value.connectText = connectField?.string ?? ""
                         value.password = passwordField?.stringValue ?? ""
+                        value.info = characterInfoField?.string ?? ""
                         value.autoConnect = checked("autoConnect")
-                        value.idleTimeout = idleMinutesField.flatMap { $0.stringValue.isEmpty ? nil : TimeInterval($0.doubleValue * 60) }
-                        value.idleText = idleTextField?.stringValue ?? ""
+                        value.idleTimeout = checked("idleEnabled")
+                            ? TimeInterval(max(0, idleMinutesField?.doubleValue ?? 0) * 60)
+                            : nil
+                        value.idleText = checked("idleEnabled") ? (idleTextField?.stringValue ?? "") : ""
+                        value.logFilename = characterLogFilenameField?.stringValue ?? ""
+                        value.logAppendsDate = checked("characterLogDate")
                     }
                 case let .puppet(server, character, puppet):
                     guard let nameField else { return }
@@ -502,6 +672,46 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
     }
 
     private func checked(_ key: String) -> Bool { checks[key]?.state == .on }
+
+    @objc private func toggleIdle(_ sender: NSButton) {
+        updateIdleControls(enabled: sender.state == .on)
+    }
+
+    private func updateIdleControls(enabled: Bool) {
+        idleMinutesField?.isEnabled = enabled
+        idleTextField?.isEnabled = enabled
+        if enabled, idleMinutesField?.stringValue.isEmpty == true {
+            idleMinutesField?.stringValue = "5"
+        }
+    }
+
+    @objc private func togglePassword(_ sender: NSButton) {
+        guard let current = passwordField, let container = passwordContainer as? NSStackView else { return }
+        let replacement: NSTextField
+        if sender.state == .on {
+            replacement = NSTextField(string: current.stringValue)
+        } else {
+            replacement = NSSecureTextField(string: current.stringValue)
+        }
+        replacement.placeholderString = "Used for %PASSWORD% in the connect text"
+        replacement.setAccessibilityIdentifier("characterPassword")
+        replacement.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let index = container.arrangedSubviews.firstIndex(of: current) ?? 0
+        container.removeArrangedSubview(current)
+        current.removeFromSuperview()
+        container.insertArrangedSubview(replacement, at: index)
+        passwordField = replacement
+    }
+
+    @objc private func chooseCharacterLogFile(_ sender: Any?) {
+        let panel = NSSavePanel()
+        panel.title = "Choose Character Log File"
+        panel.nameFieldStringValue = characterLogFilenameField?.stringValue.isEmpty == false
+            ? characterLogFilenameField!.stringValue
+            : "Character.log"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        characterLogFilenameField?.stringValue = url.path
+    }
 
     private var selectedServerID: UUID? {
         switch selection {

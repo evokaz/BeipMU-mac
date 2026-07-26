@@ -32,7 +32,7 @@ public struct ServerProfile: Identifiable, Sendable, Hashable, Codable {
         name: String,
         host: String,
         port: UInt16,
-        encoding: TextEncoding = .cp1252,
+        encoding: TextEncoding = .utf8,
         usesTLS: Bool = false,
         verifiesCertificate: Bool = false,
         forceIPv4: Bool = false,
@@ -71,9 +71,12 @@ public struct CharacterProfile: Identifiable, Sendable, Hashable, Codable {
     public var name: String
     public var connectText: String
     public var password: String
+    public var info: String
     public var autoConnect: Bool
     public var idleTimeout: TimeInterval?
     public var idleText: String
+    public var logFilename: String
+    public var logAppendsDate: Bool
     public var variables: [String: String]
     public var puppets: [PuppetProfile]
 
@@ -82,9 +85,12 @@ public struct CharacterProfile: Identifiable, Sendable, Hashable, Codable {
         name: String,
         connectText: String = "",
         password: String = "",
+        info: String = "",
         autoConnect: Bool = false,
         idleTimeout: TimeInterval? = nil,
         idleText: String = "",
+        logFilename: String = "",
+        logAppendsDate: Bool = false,
         variables: [String: String] = [:],
         puppets: [PuppetProfile] = []
     ) {
@@ -92,9 +98,12 @@ public struct CharacterProfile: Identifiable, Sendable, Hashable, Codable {
         self.name = name
         self.connectText = connectText
         self.password = password
+        self.info = info
         self.autoConnect = autoConnect
         self.idleTimeout = idleTimeout
         self.idleText = idleText
+        self.logFilename = logFilename
+        self.logAppendsDate = logAppendsDate
         self.variables = variables
         self.puppets = puppets
     }

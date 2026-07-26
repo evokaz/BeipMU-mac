@@ -834,6 +834,7 @@ final class LegacyConfigTests: XCTestCase {
         let existingID = try XCTUnwrap(workspace.servers.first?.profile.id)
         let newID = workspace.addServer(named: "Existing")
         XCTAssertEqual(workspace.servers.map(\.profile.name), ["Existing", "Existing 2"])
+        XCTAssertEqual(workspace.servers.last?.profile.encoding, .utf8)
 
         try workspace.updateServer(id: newID) {
             $0.profile.name = "New World"
@@ -844,7 +845,10 @@ final class LegacyConfigTests: XCTestCase {
         let characterID = try workspace.addCharacter(toServerID: newID, named: "Player")
         try workspace.updateCharacter(id: characterID, inServerID: newID) {
             $0.connectText = "connect player"
+            $0.info = "Primary character"
             $0.autoConnect = true
+            $0.logFilename = "logs/player.html"
+            $0.logAppendsDate = true
         }
         let puppetID = try workspace.addPuppet(
             toCharacterID: characterID,
@@ -867,6 +871,9 @@ final class LegacyConfigTests: XCTestCase {
         XCTAssertEqual(reparsed.servers.map(\.profile.name), ["New World"])
         XCTAssertEqual(reparsed.servers[0].profile.host, "new.example")
         XCTAssertEqual(reparsed.servers[0].characters[0].connectText, "connect player")
+        XCTAssertEqual(reparsed.servers[0].characters[0].info, "Primary character")
+        XCTAssertEqual(reparsed.servers[0].characters[0].logFilename, "logs/player.html")
+        XCTAssertTrue(reparsed.servers[0].characters[0].logAppendsDate)
         XCTAssertEqual(reparsed.servers[0].characters[0].puppets[0].sendPrefix, "tell Helper ")
         XCTAssertFalse(rendered.serialized().contains("WindowsOnly=\"preserve\""))
 
