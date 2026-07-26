@@ -2,6 +2,51 @@ import AppKit
 import BeipCore
 
 @MainActor
+final class InputHistoryWindowController: NSWindowController, NSWindowDelegate {
+    private let textView: NSTextView
+    var onClose: (() -> Void)?
+
+    init(entries: [String]) {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 320),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .utilityWindow],
+            backing: .buffered,
+            defer: false
+        )
+        let scroll = NSTextView.scrollableTextView()
+        textView = scroll.documentView as! NSTextView
+        super.init(window: window)
+        window.delegate = self
+        window.title = "Input History"
+        window.minSize = NSSize(width: 360, height: 220)
+        window.setFrameAutosaveName("BeipMUInputHistory")
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.isRichText = false
+        textView.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
+        textView.setAccessibilityIdentifier("inputHistoryText")
+        window.contentView = scroll
+        window.center()
+        update(entries)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    func update(_ entries: [String]) {
+        textView.string = entries.isEmpty ? "No input history." : entries.joined(separator: "\n")
+    }
+
+    func applyTheme(_ palette: WorkspaceThemePalette) {
+        window?.appearance = palette.appearance
+        window?.backgroundColor = palette.chrome
+        textView.textColor = palette.foreground
+        textView.backgroundColor = palette.background
+    }
+
+    func windowWillClose(_ notification: Notification) { onClose?() }
+}
+
+@MainActor
 final class SecondaryInputWindowController: NSWindowController, NSWindowDelegate {
     private(set) var prefix: String
     let logicalTitle: String

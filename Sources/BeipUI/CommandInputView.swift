@@ -91,6 +91,7 @@ final class CommandInputView: NSTextView {
     }
 
     var appliedSettingsForTesting: InputWindowSettings { settings }
+    var historyEntriesForDisplay: [String] { commandHistory.entries }
 
     override func keyDown(with event: NSEvent) {
         if onMacro?(event) == true { return }

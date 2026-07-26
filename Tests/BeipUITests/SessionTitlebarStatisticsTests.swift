@@ -178,18 +178,94 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
                 "Tools",
                 "Logging…",
                 "Settings…",
+                "Global Output Settings…",
+                "Global Input Settings…",
                 "Help",
                 "Close all Windows and Exit",
             ]
         )
-        XCTAssertNotNil(menu.item(withTitle: "Windows")?.submenu)
-        XCTAssertNotNil(menu.item(withTitle: "Tools")?.submenu)
         XCTAssertNotNil(menu.item(withTitle: "Help")?.submenu)
         XCTAssertEqual(menu.item(withTitle: "Logging…")?.keyEquivalent, "l")
         XCTAssertEqual(
             menu.item(withTitle: "Logging…")?.keyEquivalentModifierMask,
             [.control]
         )
+        XCTAssertEqual(
+            menu.item(withTitle: "Global Output Settings…")?.action,
+            #selector(ApplicationDelegate.globalTextWindowSettings(_:))
+        )
+        XCTAssertEqual(
+            menu.item(withTitle: "Global Input Settings…")?.action,
+            #selector(ApplicationDelegate.globalInputWindowSettings(_:))
+        )
+
+        let windowsMenu = try XCTUnwrap(menu.item(withTitle: "Windows")?.submenu)
+        XCTAssertEqual(
+            windowsMenu.items.filter { !$0.isSeparatorItem }.map(\.title),
+            [
+                "New Tab",
+                "New Window",
+                "New Input Window",
+                "New Edit Window",
+                "Toggle Input History Window",
+                "Toggle Image Window",
+                "Toggle Map Window",
+                "Toggle Character Notes Window",
+                "Copy all window settings",
+                "Paste all window settings",
+                "Show Hidden Captions",
+            ]
+        )
+        XCTAssertEqual(windowsMenu.item(withTitle: "New Tab")?.action, #selector(ApplicationDelegate.newTab(_:)))
+        XCTAssertEqual(windowsMenu.item(withTitle: "New Window")?.action, #selector(ApplicationDelegate.newWindow(_:)))
+        XCTAssertEqual(windowsMenu.item(withTitle: "New Input Window")?.action, #selector(ApplicationDelegate.newInputWindow(_:)))
+        XCTAssertEqual(windowsMenu.item(withTitle: "New Edit Window")?.action, #selector(ApplicationDelegate.newEditWindow(_:)))
+        XCTAssertEqual(
+            windowsMenu.item(withTitle: "Toggle Input History Window")?.action,
+            #selector(ApplicationDelegate.toggleInputHistoryWindow(_:))
+        )
+        XCTAssertEqual(windowsMenu.item(withTitle: "Toggle Image Window")?.action, #selector(ApplicationDelegate.toggleImageWindow(_:)))
+        XCTAssertEqual(windowsMenu.item(withTitle: "Toggle Map Window")?.action, #selector(ApplicationDelegate.toggleMapWindow(_:)))
+        XCTAssertEqual(
+            windowsMenu.item(withTitle: "Toggle Character Notes Window")?.action,
+            #selector(ApplicationDelegate.toggleCharacterNotesWindow(_:))
+        )
+        XCTAssertEqual(windowsMenu.item(withTitle: "Copy all window settings")?.action, #selector(ApplicationDelegate.copyAllWindowSettings(_:)))
+        XCTAssertEqual(windowsMenu.item(withTitle: "Paste all window settings")?.action, #selector(ApplicationDelegate.pasteAllWindowSettings(_:)))
+        XCTAssertEqual(windowsMenu.item(withTitle: "Show Hidden Captions")?.action, #selector(ApplicationDelegate.showHiddenCaptions(_:)))
+        XCTAssertEqual(windowsMenu.item(withTitle: "New Tab")?.keyEquivalent, "t")
+        XCTAssertEqual(windowsMenu.item(withTitle: "New Window")?.keyEquivalent, "n")
+        XCTAssertEqual(windowsMenu.item(withTitle: "New Tab")?.keyEquivalentModifierMask, [.control])
+        XCTAssertEqual(windowsMenu.item(withTitle: "New Window")?.keyEquivalentModifierMask, [.control])
+
+        let toolsMenu = try XCTUnwrap(menu.item(withTitle: "Tools")?.submenu)
+        XCTAssertEqual(
+            toolsMenu.items.filter { !$0.isSeparatorItem }.map(\.title),
+            [
+                "Triggers…",
+                "Macros…",
+                "Aliases…",
+                "Trigger Debugger",
+                "Alias Debugger",
+                "Network Debugger",
+                "Smart Paste…",
+            ]
+        )
+        XCTAssertEqual(toolsMenu.item(withTitle: "Triggers…")?.action, #selector(ApplicationDelegate.editTriggers(_:)))
+        XCTAssertEqual(toolsMenu.item(withTitle: "Macros…")?.action, #selector(ApplicationDelegate.editMacros(_:)))
+        XCTAssertEqual(toolsMenu.item(withTitle: "Aliases…")?.action, #selector(ApplicationDelegate.editAliases(_:)))
+        XCTAssertEqual(toolsMenu.item(withTitle: "Trigger Debugger")?.action, #selector(ApplicationDelegate.debugTriggers(_:)))
+        XCTAssertEqual(toolsMenu.item(withTitle: "Alias Debugger")?.action, #selector(ApplicationDelegate.debugAliases(_:)))
+        XCTAssertEqual(toolsMenu.item(withTitle: "Network Debugger")?.action, #selector(ApplicationDelegate.debugNetwork(_:)))
+        XCTAssertEqual(toolsMenu.item(withTitle: "Smart Paste…")?.action, #selector(ApplicationDelegate.smartPaste(_:)))
+        XCTAssertEqual(toolsMenu.item(withTitle: "Triggers…")?.keyEquivalent, "t")
+        XCTAssertEqual(toolsMenu.item(withTitle: "Macros…")?.keyEquivalent, "m")
+        XCTAssertEqual(toolsMenu.item(withTitle: "Aliases…")?.keyEquivalent, "a")
+        XCTAssertEqual(toolsMenu.item(withTitle: "Smart Paste…")?.keyEquivalent, "v")
+        XCTAssertEqual(toolsMenu.item(withTitle: "Triggers…")?.keyEquivalentModifierMask, [.control, .shift])
+        XCTAssertEqual(toolsMenu.item(withTitle: "Macros…")?.keyEquivalentModifierMask, [.control, .shift])
+        XCTAssertEqual(toolsMenu.item(withTitle: "Aliases…")?.keyEquivalentModifierMask, [.control, .shift])
+        XCTAssertEqual(toolsMenu.item(withTitle: "Smart Paste…")?.keyEquivalentModifierMask, [.control, .shift])
     }
 
     @MainActor

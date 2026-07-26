@@ -312,6 +312,9 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     @objc func reconnect(_ sender: Any?) { activeController?.reconnect() }
     @objc func logging(_ sender: Any?) { activeController?.showLoggingControls() }
     @objc func statistics(_ sender: Any?) { activeController?.showConnectionStatistics() }
+    @objc func editTriggers(_ sender: Any?) { activeController?.showAutomationEditor(.triggers) }
+    @objc func editMacros(_ sender: Any?) { activeController?.showAutomationEditor(.macros) }
+    @objc func editAliases(_ sender: Any?) { activeController?.showAutomationEditor(.aliases) }
     @objc func debugNetwork(_ sender: Any?) { activeController?.showNetworkDebugger() }
     @objc func debugAliases(_ sender: Any?) { activeController?.showAutomationDebugger(.aliases) }
     @objc func debugTriggers(_ sender: Any?) { activeController?.showAutomationDebugger(.triggers) }
@@ -327,6 +330,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     @objc func copyOutputHTML(_ sender: Any?) { activeController?.copyOutputAsHTML() }
     @objc func toggleOutputMarker(_ sender: Any?) { activeController?.toggleOutputMarker() }
     @objc func toggleOutputSplit(_ sender: Any?) { activeController?.toggleOutputSplit() }
+    @objc func smartPaste(_ sender: Any?) { activeController?.smartPaste(sender) }
     @objc func toggleStickyInput(_ sender: Any?) { activeController?.toggleStickyInput() }
     @objc func toggleSpellChecking(_ sender: Any?) { activeController?.toggleSpellChecking() }
     @objc func setInputPrefix(_ sender: Any?) { activeController?.showInputPrefixDialog() }
@@ -338,6 +342,13 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     @objc func globalInputWindowSettings(_ sender: Any?) { activeController?.showGlobalInputWindowSettings() }
     @objc func themeSettings(_ sender: Any?) { activeController?.showThemeSettings() }
     @objc func toggleMute(_ sender: Any?) { activeController?.toggleMute() }
+    @objc func toggleInputHistoryWindow(_ sender: Any?) { activeController?.toggleInputHistoryWindow() }
+    @objc func toggleImageWindow(_ sender: Any?) { activeController?.toggleImageWindow() }
+    @objc func toggleMapWindow(_ sender: Any?) { activeController?.toggleMapWindow() }
+    @objc func toggleCharacterNotesWindow(_ sender: Any?) { activeController?.toggleCharacterNotesWindow() }
+    @objc func copyAllWindowSettings(_ sender: Any?) { activeController?.copyAllWindowSettings() }
+    @objc func pasteAllWindowSettings(_ sender: Any?) { activeController?.pasteAllWindowSettings() }
+    @objc func showHiddenCaptions(_ sender: Any?) { activeController?.showHiddenCaptions() }
     @objc func showNotes(_ sender: Any?) { activeController?.showCharacterNotes() }
     @objc func showDiagnostics(_ sender: Any?) { activeController?.showSessionDiagnostics() }
     @objc func showAtlas(_ sender: Any?) { activeController?.showAtlas() }

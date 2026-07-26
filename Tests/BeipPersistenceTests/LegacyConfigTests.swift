@@ -323,6 +323,77 @@ final class LegacyConfigTests: XCTestCase {
         XCTAssertEqual(paragraph?.horizontalRule, true)
     }
 
+    func testWorkspaceUpdatesFullTriggerSurfaceAndPreservesUnknownFields() throws {
+        let source = """
+        Version=331
+        Connections {
+          Triggers { Active=true
+            { Description="Old" FutureTriggerField="keep me" FindString { MatchText="old" }
+              Send { Active=true Send="old send" }
+            }
+          }
+        }
+        """
+        var workspace = try LegacyConfigurationWorkspace(document: .init(source: source))
+        let trigger = Trigger(
+            description: "Updated",
+            match: .init(
+                text: "HP: ([0-9]+)",
+                isRegularExpression: true,
+                matchCase: true,
+                startsWith: true,
+                endsWith: true,
+                wholeWord: true
+            ),
+            disabled: true,
+            stopProcessing: true,
+            oncePerLine: true,
+            awayPresent: true,
+            awayPresentOnce: true,
+            away: false,
+            cooldown: 12,
+            multiline: .init(lineLimit: 3, timeLimit: 4),
+            actions: [
+                .color(foreground: .init(red: 1, green: 2, blue: 3), background: .init(red: 4, green: 5, blue: 6), wholeLine: true),
+                .colorDefault(foreground: true, background: false, wholeLine: true),
+                .colorHash(foreground: false, background: true, wholeLine: true),
+                .font(face: "Menlo", size: 15, useDefault: false, wholeLine: true),
+                .appearance(.init(bold: true, italic: true, underline: true, strikeout: true, blink: .fast), wholeLine: true),
+                .paragraph(.init(alignment: .right, leftIndent: 1, rightIndent: 2, topPadding: 3, bottomPadding: 4, background: .black, borderWidth: 5, borderStyle: .round, strokeWidth: 6, strokeColor: .white, strokeStyle: .bottom)),
+                .gag(display: true, log: true),
+                .activateWindow,
+                .activity(important: true),
+                .suppressActivity,
+                .spawn(.init(title: "Pages", tabGroup: "Tells", captureUntil: "END", onlyChildrenDuringCapture: true, clear: true, showTab: true, gagLog: true, copy: true)),
+                .stat(.init(title: "Stats", name: "HP", prefix: "01", value: "$1", kind: .range, addsToExistingInteger: true, lower: "0", upper: "100", color: .white, rangeColor: .init(red: 0, green: 255, blue: 0), nameAlignment: .left, font: .init(name: "Menlo", size: 13, bold: true))),
+                .sound("notify.wav"),
+                .speech("hit $1", wholeLine: true),
+                .send("score $1", captureIndex: 1, expandVariables: true, sendOnClick: true),
+                .notification,
+                .replaceHTML("<b>$1</b>", expandVariables: true),
+                .avatar("https://example.test/avatar.png"),
+                .script("Sample"),
+            ]
+        )
+
+        try workspace.updateGlobalTrigger(at: 0, trigger: trigger)
+        let rendered = try workspace.renderedDocument()
+        let serialized = rendered.serialized()
+        let reloaded = try LegacyConfigurationProjection(document: rendered)
+        let actions = try XCTUnwrap(reloaded.automation.triggers.triggers.first?.actions)
+
+        XCTAssertTrue(serialized.contains("FutureTriggerField=\"keep me\""))
+        XCTAssertTrue(serialized.contains("Description=\"Updated\""))
+        XCTAssertTrue(serialized.contains("Disabled=true"))
+        XCTAssertTrue(actions.contains(.send("score $1", captureIndex: 1, expandVariables: true, sendOnClick: true)))
+        XCTAssertTrue(actions.contains(.replaceHTML("<b>$1</b>", expandVariables: true)))
+        XCTAssertTrue(actions.contains(.speech("hit $1", wholeLine: true)))
+        XCTAssertTrue(actions.contains(.avatar("https://example.test/avatar.png")))
+        XCTAssertTrue(actions.contains(.script("Sample")))
+        XCTAssertTrue(actions.contains { if case .stat = $0 { return true }; return false })
+        XCTAssertTrue(actions.contains { if case .spawn = $0 { return true }; return false })
+    }
+
     func testProjectionLoadsWindowsLoggingDefaultsAndCharacterAutolog() throws {
         let source = """
         Version=331

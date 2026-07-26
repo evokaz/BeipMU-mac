@@ -290,6 +290,17 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         var children: [Trigger]
     }
 
+    private struct WindowSettingsClipboard: Codable {
+        var globalTextWindowSettings: TextWindowSettings
+        var worldTextWindowSettings: [String: TextWindowSettingsOverride]
+        var characterTextWindowSettings: [String: TextWindowSettingsOverride]
+        var tabTextWindowSettings: [String: TextWindowSettingsOverride]
+        var globalInputWindowSettings: InputWindowSettings
+        var worldInputWindowSettings: [String: InputWindowSettingsOverride]
+        var characterInputWindowSettings: [String: InputWindowSettingsOverride]
+        var tabInputWindowSettings: [String: InputWindowSettingsOverride]
+    }
+
     private final class SimpleEditUploadState {
         let reference: String
         let type: String
@@ -344,6 +355,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private var preservingAIPlacement = false
     private var grabPrefix: String?
     private var secondaryInputWindows: [SecondaryInputWindowController] = []
+    private var inputHistoryWindow: InputHistoryWindowController?
     private var editWindows: [EditWindowController] = []
     private var statisticsWindow: SessionStatisticsWindowController?
     private var triggerStatisticsWindows: [String: TriggerStatisticsWindowController] = [:]
@@ -537,6 +549,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         }
         dockController?.prepareForOwnerClose()
         secondaryInputWindows.forEach { $0.close() }
+        inputHistoryWindow?.close()
         editWindows.forEach { $0.close() }
         statisticsTask?.cancel()
         titlebarStatisticsTask?.cancel()
@@ -842,16 +855,16 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
 
         let windowsMenu = NSMenu(title: "Windows")
         windowsMenu.addItem(applicationMenuItem(
-            title: "New Window",
-            action: #selector(ApplicationDelegate.newWindow(_:)),
-            keyEquivalent: "n",
-            modifiers: [.command]
-        ))
-        windowsMenu.addItem(applicationMenuItem(
             title: "New Tab",
             action: #selector(ApplicationDelegate.newTab(_:)),
             keyEquivalent: "t",
-            modifiers: [.command]
+            modifiers: [.control]
+        ))
+        windowsMenu.addItem(applicationMenuItem(
+            title: "New Window",
+            action: #selector(ApplicationDelegate.newWindow(_:)),
+            keyEquivalent: "n",
+            modifiers: [.control]
         ))
         windowsMenu.addItem(applicationMenuItem(
             title: "New Input Window",
@@ -862,47 +875,36 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             action: #selector(ApplicationDelegate.newEditWindow(_:))
         ))
         windowsMenu.addItem(.separator())
-
-        let minimize = NSMenuItem(
-            title: "Minimize",
-            action: #selector(NSWindow.miniaturize(_:)),
-            keyEquivalent: "m"
-        )
-        minimize.keyEquivalentModifierMask = [.command]
-        minimize.target = window
-        minimize.isEnabled = window != nil
-        windowsMenu.addItem(minimize)
         windowsMenu.addItem(applicationMenuItem(
-            title: "Zoom",
-            action: #selector(ApplicationDelegate.maximizeWindow(_:))
+            title: "Toggle Input History Window",
+            action: #selector(ApplicationDelegate.toggleInputHistoryWindow(_:))
         ))
-
-        let visibleWindows = NSApplication.shared.windows.filter {
-            $0.isVisible && !($0 is NSPanel)
-        }
-        if !visibleWindows.isEmpty {
-            windowsMenu.addItem(.separator())
-            for visibleWindow in visibleWindows {
-                let item = NSMenuItem(
-                    title: visibleWindow.title.isEmpty ? "Untitled Window" : visibleWindow.title,
-                    action: #selector(NSWindow.makeKeyAndOrderFront(_:)),
-                    keyEquivalent: ""
-                )
-                item.target = visibleWindow
-                item.isEnabled = true
-                item.state = visibleWindow === window ? .on : .off
-                windowsMenu.addItem(item)
-            }
-        }
+        windowsMenu.addItem(applicationMenuItem(
+            title: "Toggle Image Window",
+            action: #selector(ApplicationDelegate.toggleImageWindow(_:))
+        ))
+        windowsMenu.addItem(applicationMenuItem(
+            title: "Toggle Map Window",
+            action: #selector(ApplicationDelegate.toggleMapWindow(_:))
+        ))
+        windowsMenu.addItem(applicationMenuItem(
+            title: "Toggle Character Notes Window",
+            action: #selector(ApplicationDelegate.toggleCharacterNotesWindow(_:))
+        ))
         windowsMenu.addItem(.separator())
-        let front = NSMenuItem(
-            title: "Bring All to Front",
-            action: #selector(NSApplication.arrangeInFront(_:)),
-            keyEquivalent: ""
-        )
-        front.target = NSApplication.shared
-        front.isEnabled = true
-        windowsMenu.addItem(front)
+        windowsMenu.addItem(applicationMenuItem(
+            title: "Copy all window settings",
+            action: #selector(ApplicationDelegate.copyAllWindowSettings(_:))
+        ))
+        windowsMenu.addItem(applicationMenuItem(
+            title: "Paste all window settings",
+            action: #selector(ApplicationDelegate.pasteAllWindowSettings(_:))
+        ))
+        windowsMenu.addItem(.separator())
+        windowsMenu.addItem(applicationMenuItem(
+            title: "Show Hidden Captions",
+            action: #selector(ApplicationDelegate.showHiddenCaptions(_:))
+        ))
         let windows = NSMenuItem(title: "Windows", action: nil, keyEquivalent: "")
         windows.submenu = windowsMenu
         windows.isEnabled = true
@@ -910,29 +912,41 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
 
         let toolsMenu = NSMenu(title: "Tools")
         toolsMenu.addItem(applicationMenuItem(
-            title: "Connect…",
-            action: #selector(ApplicationDelegate.connect(_:))
+            title: "Triggers…",
+            action: #selector(ApplicationDelegate.editTriggers(_:)),
+            keyEquivalent: "t",
+            modifiers: [.control, .shift]
         ))
         toolsMenu.addItem(applicationMenuItem(
-            title: "Disconnect",
-            action: #selector(ApplicationDelegate.disconnect(_:))
+            title: "Macros…",
+            action: #selector(ApplicationDelegate.editMacros(_:)),
+            keyEquivalent: "m",
+            modifiers: [.control, .shift]
         ))
         toolsMenu.addItem(applicationMenuItem(
-            title: "Reconnect",
-            action: #selector(ApplicationDelegate.reconnect(_:))
+            title: "Aliases…",
+            action: #selector(ApplicationDelegate.editAliases(_:)),
+            keyEquivalent: "a",
+            modifiers: [.control, .shift]
         ))
         toolsMenu.addItem(.separator())
         toolsMenu.addItem(applicationMenuItem(
-            title: "Worlds & Characters…",
-            action: #selector(ApplicationDelegate.manageProfiles(_:))
+            title: "Trigger Debugger",
+            action: #selector(ApplicationDelegate.debugTriggers(_:))
         ))
         toolsMenu.addItem(applicationMenuItem(
-            title: "Network Debugger…",
+            title: "Alias Debugger",
+            action: #selector(ApplicationDelegate.debugAliases(_:))
+        ))
+        toolsMenu.addItem(applicationMenuItem(
+            title: "Network Debugger",
             action: #selector(ApplicationDelegate.debugNetwork(_:))
         ))
         toolsMenu.addItem(applicationMenuItem(
-            title: "Atlas Map…",
-            action: #selector(ApplicationDelegate.showAtlas(_:))
+            title: "Smart Paste…",
+            action: #selector(ApplicationDelegate.smartPaste(_:)),
+            keyEquivalent: "v",
+            modifiers: [.control, .shift]
         ))
         let tools = NSMenuItem(title: "Tools", action: nil, keyEquivalent: "")
         tools.submenu = toolsMenu
@@ -948,6 +962,14 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         menu.addItem(applicationMenuItem(
             title: "Settings…",
             action: #selector(ApplicationDelegate.settings(_:))
+        ))
+        menu.addItem(applicationMenuItem(
+            title: "Global Output Settings…",
+            action: #selector(ApplicationDelegate.globalTextWindowSettings(_:))
+        ))
+        menu.addItem(applicationMenuItem(
+            title: "Global Input Settings…",
+            action: #selector(ApplicationDelegate.globalInputWindowSettings(_:))
         ))
 
         let helpMenu = NSMenu(title: "Help")
@@ -1178,6 +1200,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         preferences.outputSplit = output.isSplit
         savePreferences()
     }
+    func smartPaste(_ sender: Any?) { input.paste(sender) }
     func toggleStickyInput() {
         updateActiveInputWindowSettings { $0.keepsTextOnSubmit.toggle() }
     }
@@ -1342,6 +1365,115 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             dockController.setPlacement(preferences.lastDockedPlacement)
         }
         dockController.selectNotes()
+    }
+
+    func toggleInputHistoryWindow() {
+        if let inputHistoryWindow, inputHistoryWindow.window?.isVisible == true {
+            inputHistoryWindow.close()
+            return
+        }
+        let controller = inputHistoryWindow ?? InputHistoryWindowController(entries: input.historyEntriesForDisplay)
+        inputHistoryWindow = controller
+        controller.onClose = { [weak self] in self?.inputHistoryWindow = nil }
+        controller.update(input.historyEntriesForDisplay)
+        controller.applyTheme(preferences.theme.palette)
+        controller.showWindow(nil)
+        if let owner = window, let child = controller.window, child.parent == nil {
+            owner.addChildWindow(child, ordered: .above)
+        }
+        controller.window?.makeKeyAndOrderFront(nil)
+    }
+
+    func toggleImageWindow() {
+        if let imageViewerWindow, imageViewerWindow.window?.isVisible == true {
+            imageViewerWindow.close()
+            return
+        }
+        let viewer = imageViewerWindow ?? ImageViewerWindowController()
+        imageViewerWindow = viewer
+        viewer.onClose = { [weak self] in self?.imageViewerWindow = nil }
+        if let owner = window, let child = viewer.window, child.parent == nil {
+            owner.addChildWindow(child, ordered: .above)
+        }
+        viewer.showWindow(nil)
+        viewer.window?.makeKeyAndOrderFront(nil)
+    }
+
+    func toggleMapWindow() {
+        if atlasWindow?.window?.isVisible == true {
+            closeAtlasSurface()
+        } else {
+            showAtlas()
+        }
+    }
+
+    func toggleCharacterNotesWindow() {
+        if dockController.placement != .hidden, dockController.containsPane(.notes) {
+            dockController.setPlacement(.hidden)
+        } else {
+            showCharacterNotes()
+        }
+    }
+
+    func copyAllWindowSettings() {
+        let bundle = WindowSettingsClipboard(
+            globalTextWindowSettings: preferences.globalTextWindowSettings,
+            worldTextWindowSettings: preferences.worldTextWindowSettings,
+            characterTextWindowSettings: preferences.characterTextWindowSettings,
+            tabTextWindowSettings: preferences.tabTextWindowSettings,
+            globalInputWindowSettings: preferences.globalInputWindowSettings,
+            worldInputWindowSettings: preferences.worldInputWindowSettings,
+            characterInputWindowSettings: preferences.characterInputWindowSettings,
+            tabInputWindowSettings: preferences.tabInputWindowSettings
+        )
+        guard let data = try? JSONEncoder().encode(bundle),
+              let value = String(data: data, encoding: .utf8) else {
+            appendError("Unable to copy window settings.")
+            return
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(value, forType: .string)
+        appendClient("Copied all window settings.")
+    }
+
+    func pasteAllWindowSettings() {
+        guard let value = NSPasteboard.general.string(forType: .string),
+              let data = value.data(using: .utf8),
+              let bundle = try? JSONDecoder().decode(WindowSettingsClipboard.self, from: data) else {
+            appendError("Clipboard does not contain BeipMU window settings.")
+            return
+        }
+        preferences.globalTextWindowSettings = bundle.globalTextWindowSettings.normalized
+        preferences.worldTextWindowSettings = bundle.worldTextWindowSettings.mapValues {
+            .init(usesGlobalSettings: $0.usesGlobalSettings, settings: $0.settings.normalized)
+        }
+        preferences.characterTextWindowSettings = bundle.characterTextWindowSettings.mapValues {
+            .init(usesGlobalSettings: $0.usesGlobalSettings, settings: $0.settings.normalized)
+        }
+        preferences.tabTextWindowSettings = bundle.tabTextWindowSettings.mapValues {
+            .init(usesGlobalSettings: $0.usesGlobalSettings, settings: $0.settings.normalized)
+        }
+        preferences.globalInputWindowSettings = bundle.globalInputWindowSettings.normalized
+        preferences.worldInputWindowSettings = bundle.worldInputWindowSettings.mapValues {
+            .init(usesGlobalSettings: $0.usesGlobalSettings, settings: $0.settings.normalized)
+        }
+        preferences.characterInputWindowSettings = bundle.characterInputWindowSettings.mapValues {
+            .init(usesGlobalSettings: $0.usesGlobalSettings, settings: $0.settings.normalized)
+        }
+        preferences.tabInputWindowSettings = bundle.tabInputWindowSettings.mapValues {
+            .init(usesGlobalSettings: $0.usesGlobalSettings, settings: $0.settings.normalized)
+        }
+        synchronizeLegacyGlobalTextSettings()
+        synchronizeLegacyGlobalInputSettings()
+        applyTextWindowSettings()
+        applyInputWindowSettings()
+        savePreferences()
+        onTextWindowSettingsChange?()
+        appendClient("Pasted all window settings.")
+    }
+
+    func showHiddenCaptions() {
+        appendClient("Hidden captions are not currently tracked by this Mac-native workspace.")
     }
 
     func showSessionDiagnostics() {
