@@ -102,6 +102,9 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         controller.onThemeChange = { [weak self] theme in
             self?.windows.forEach { $0.applyThemeSettings(theme) }
         }
+        controller.onTextWindowSettingsChange = { [weak self] in
+            self?.windows.forEach { $0.reloadTextWindowPreferences() }
+        }
         return controller
     }
 
@@ -199,6 +202,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     @objc func convertTabs(_ sender: Any?) { activeController?.applyInputConversion(.tabs) }
     @objc func convertSpaces(_ sender: Any?) { activeController?.applyInputConversion(.spaces) }
     @objc func settings(_ sender: Any?) { activeController?.showWorkspaceSettings() }
+    @objc func globalTextWindowSettings(_ sender: Any?) { activeController?.showGlobalTextWindowSettings() }
     @objc func themeSettings(_ sender: Any?) { activeController?.showThemeSettings() }
     @objc func toggleMute(_ sender: Any?) { activeController?.toggleMute() }
     @objc func showNotes(_ sender: Any?) { activeController?.showCharacterNotes() }
@@ -341,6 +345,11 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         appMenu.addItem(withTitle: "About BeipMU", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Settings…", action: #selector(settings(_:)), keyEquivalent: ",")
+        appMenu.addItem(
+            withTitle: "Global Text Window Settings…",
+            action: #selector(globalTextWindowSettings(_:)),
+            keyEquivalent: ""
+        )
         appMenu.addItem(withTitle: "Theme…", action: #selector(themeSettings(_:)), keyEquivalent: "")
         appMenu.addItem(withTitle: "Keyboard Shortcuts…", action: #selector(configureKeyboardShortcuts(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())

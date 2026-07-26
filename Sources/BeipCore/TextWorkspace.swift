@@ -71,6 +71,14 @@ public struct OutputHistory: Sendable {
         return result
     }
 
+    @discardableResult
+    public mutating func remove(id: UUID) -> RenderedLine? {
+        guard let index = storage[storageStart...].firstIndex(where: { $0.id == id }) else { return nil }
+        let result = storage.remove(at: index)
+        compactStorageIfNeeded()
+        return result
+    }
+
     public mutating func clear() {
         storage.removeAll(keepingCapacity: true)
         storageStart = 0

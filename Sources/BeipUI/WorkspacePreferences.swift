@@ -19,6 +19,73 @@ struct WorkspaceThemeSettings: Codable, Equatable {
     var accentHex = "#32A8FF"
 }
 
+struct TextWindowSettings: Codable, Equatable {
+    var fontName = "Menlo"
+    var fontSize = 13.0
+    var foregroundHex = "#E6E6E6"
+    var backgroundHex = "#0D0D0D"
+    var webLinkHex = "#32A8FF"
+    var invertBrightness = false
+    var usesFanFoldBackgrounds = false
+    var fanFoldFirstHex = "#0D0D0D"
+    var fanFoldSecondHex = "#151515"
+    var historyLimit = 10_000
+    var wrappedLineIndent = 10
+    var paragraphSpacing = 0
+    var usesFixedWidth = false
+    var fixedWidthCharacters = 80
+    var smoothScrolling = false
+    var scrollsToBottomOnNewText = true
+    var splitsOnPageUp = true
+    var marginLeft = 0
+    var marginRight = 0
+    var marginTop = 0
+    var marginBottom = 0
+    var showsTime = false
+    var uses24HourTime = true
+    var showsDate = false
+    var showsDateTimeToolTip = true
+    var showsSelectionCopiedPopup = true
+    var showsNewContentMarkers = true
+
+    var normalized: Self {
+        var value = self
+        value.fontSize = max(6, min(96, value.fontSize))
+        value.historyLimit = max(100, value.historyLimit)
+        value.wrappedLineIndent = max(0, min(500, value.wrappedLineIndent))
+        value.paragraphSpacing = max(0, min(100, value.paragraphSpacing))
+        value.fixedWidthCharacters = max(20, min(1_000, value.fixedWidthCharacters))
+        value.marginLeft = max(0, min(500, value.marginLeft))
+        value.marginRight = max(0, min(500, value.marginRight))
+        value.marginTop = max(0, min(500, value.marginTop))
+        value.marginBottom = max(0, min(500, value.marginBottom))
+        return value
+    }
+}
+
+struct TextWindowSettingsOverride: Codable, Equatable {
+    var usesGlobalSettings = true
+    var settings = TextWindowSettings()
+}
+
+struct TextWindowSettingsIdentity: Equatable {
+    var world: String?
+    var character: String?
+    var tab: String?
+
+    private static func key(_ components: [String?]) -> String? {
+        let values = components.compactMap { value -> String? in
+            guard let value, !value.isEmpty else { return nil }
+            return value.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        }
+        return values.isEmpty ? nil : values.joined(separator: "/")
+    }
+
+    var worldKey: String? { Self.key([world]) }
+    var characterKey: String? { Self.key([world, character]) }
+    var tabKey: String? { Self.key([world, character, tab]) }
+}
+
 struct SpawnTabGroupPreferences: Codable, Equatable {
     var title: String
     var tabs: [String]
@@ -89,6 +156,10 @@ struct WorkspacePreferences: Codable, Equatable {
     var checksSpelling = true
     var speechVoiceIdentifier: String?
     var theme = WorkspaceThemeSettings()
+    var globalTextWindowSettings = TextWindowSettings()
+    var worldTextWindowSettings: [String: TextWindowSettingsOverride] = [:]
+    var characterTextWindowSettings: [String: TextWindowSettingsOverride] = [:]
+    var tabTextWindowSettings: [String: TextWindowSettingsOverride] = [:]
     var logging = SessionLogOptions()
     var dockPlacement: WorkspaceDockPlacement = .hidden
     var lastDockedPlacement: WorkspaceDockPlacement = .right
@@ -112,6 +183,10 @@ struct WorkspacePreferences: Codable, Equatable {
         checksSpelling: Bool = true,
         speechVoiceIdentifier: String? = nil,
         theme: WorkspaceThemeSettings = .init(),
+        globalTextWindowSettings: TextWindowSettings = .init(),
+        worldTextWindowSettings: [String: TextWindowSettingsOverride] = [:],
+        characterTextWindowSettings: [String: TextWindowSettingsOverride] = [:],
+        tabTextWindowSettings: [String: TextWindowSettingsOverride] = [:],
         logging: SessionLogOptions = .init(),
         dockPlacement: WorkspaceDockPlacement = .hidden,
         lastDockedPlacement: WorkspaceDockPlacement = .right,
@@ -134,6 +209,10 @@ struct WorkspacePreferences: Codable, Equatable {
         self.checksSpelling = checksSpelling
         self.speechVoiceIdentifier = speechVoiceIdentifier
         self.theme = theme
+        self.globalTextWindowSettings = globalTextWindowSettings
+        self.worldTextWindowSettings = worldTextWindowSettings
+        self.characterTextWindowSettings = characterTextWindowSettings
+        self.tabTextWindowSettings = tabTextWindowSettings
         self.logging = logging
         self.dockPlacement = dockPlacement
         self.lastDockedPlacement = lastDockedPlacement
@@ -159,6 +238,30 @@ struct WorkspacePreferences: Codable, Equatable {
         checksSpelling = try values.decodeIfPresent(Bool.self, forKey: .checksSpelling) ?? true
         speechVoiceIdentifier = try values.decodeIfPresent(String.self, forKey: .speechVoiceIdentifier)
         theme = try values.decodeIfPresent(WorkspaceThemeSettings.self, forKey: .theme) ?? .init()
+        if let saved = try values.decodeIfPresent(TextWindowSettings.self, forKey: .globalTextWindowSettings) {
+            globalTextWindowSettings = saved
+        } else {
+            globalTextWindowSettings = .init(
+                foregroundHex: theme.foregroundHex,
+                backgroundHex: theme.backgroundHex,
+                webLinkHex: theme.accentHex,
+                usesFanFoldBackgrounds: usesFanFoldBackgrounds,
+                historyLimit: outputHistoryLimit,
+                showsTime: showsTimestamps
+            )
+        }
+        worldTextWindowSettings = try values.decodeIfPresent(
+            [String: TextWindowSettingsOverride].self,
+            forKey: .worldTextWindowSettings
+        ) ?? [:]
+        characterTextWindowSettings = try values.decodeIfPresent(
+            [String: TextWindowSettingsOverride].self,
+            forKey: .characterTextWindowSettings
+        ) ?? [:]
+        tabTextWindowSettings = try values.decodeIfPresent(
+            [String: TextWindowSettingsOverride].self,
+            forKey: .tabTextWindowSettings
+        ) ?? [:]
         logging = try values.decodeIfPresent(SessionLogOptions.self, forKey: .logging) ?? .init()
         dockPlacement = try values.decodeIfPresent(WorkspaceDockPlacement.self, forKey: .dockPlacement) ?? .hidden
         lastDockedPlacement = try values.decodeIfPresent(WorkspaceDockPlacement.self, forKey: .lastDockedPlacement) ?? .right
@@ -192,6 +295,16 @@ enum WorkspacePreferencesStore {
         }
         result.workspaceLayout = result.workspaceLayout?.normalized
         result.workspaceLayouts = result.workspaceLayouts.mapValues(\.normalized)
+        result.globalTextWindowSettings = result.globalTextWindowSettings.normalized
+        result.worldTextWindowSettings = result.worldTextWindowSettings.mapValues {
+            .init(usesGlobalSettings: $0.usesGlobalSettings, settings: $0.settings.normalized)
+        }
+        result.characterTextWindowSettings = result.characterTextWindowSettings.mapValues {
+            .init(usesGlobalSettings: $0.usesGlobalSettings, settings: $0.settings.normalized)
+        }
+        result.tabTextWindowSettings = result.tabTextWindowSettings.mapValues {
+            .init(usesGlobalSettings: $0.usesGlobalSettings, settings: $0.settings.normalized)
+        }
         return result
     }
 
@@ -210,5 +323,24 @@ enum WorkspacePreferencesStore {
         guard ProcessInfo.processInfo.environment["BEIPMU_UI_TESTING"] == "1",
               let defaults = UserDefaults(suiteName: uiTestSuiteName) else { return .standard }
         return defaults
+    }
+}
+
+extension WorkspacePreferences {
+    func textWindowSettings(for identity: TextWindowSettingsIdentity) -> TextWindowSettings {
+        var resolved = globalTextWindowSettings
+        if let key = identity.tabKey, let override = tabTextWindowSettings[key] {
+            resolved = override.usesGlobalSettings ? globalTextWindowSettings : override.settings
+        } else if let key = identity.characterKey, let override = characterTextWindowSettings[key] {
+            resolved = override.usesGlobalSettings ? globalTextWindowSettings : override.settings
+        } else if let key = identity.worldKey, let override = worldTextWindowSettings[key] {
+            resolved = override.usesGlobalSettings ? globalTextWindowSettings : override.settings
+        }
+        // These helper behaviors are intentionally global, matching the original
+        // Text Window Settings contract.
+        resolved.showsDateTimeToolTip = globalTextWindowSettings.showsDateTimeToolTip
+        resolved.showsSelectionCopiedPopup = globalTextWindowSettings.showsSelectionCopiedPopup
+        resolved.showsNewContentMarkers = globalTextWindowSettings.showsNewContentMarkers
+        return resolved
     }
 }

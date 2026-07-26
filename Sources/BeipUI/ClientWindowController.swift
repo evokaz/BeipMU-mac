@@ -119,8 +119,12 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private static var didRunStartupScript = false
     var onClose: (() -> Void)?
     var onThemeChange: ((WorkspaceThemeSettings) -> Void)?
-    var timestampsEnabled: Bool { preferences.showsTimestamps }
-    var fanFoldEnabled: Bool { preferences.usesFanFoldBackgrounds }
+    var onTextWindowSettingsChange: (() -> Void)?
+    var timestampsEnabled: Bool {
+        let settings = activeTextWindowSettings
+        return settings.showsTime || settings.showsDate
+    }
+    var fanFoldEnabled: Bool { activeTextWindowSettings.usesFanFoldBackgrounds }
     var stickyInputEnabled: Bool { preferences.stickyInput }
     var spellCheckingEnabled: Bool { preferences.checksSpelling }
     var outputSplitEnabled: Bool { output.isSplit }
@@ -432,14 +436,10 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
 
     func toggleOutputPause() { output.togglePaused() }
     func toggleTimestamps() {
-        preferences.showsTimestamps.toggle()
-        output.showsTimestamps = preferences.showsTimestamps
-        savePreferences()
+        updateActiveTextWindowSettings { $0.showsTime.toggle() }
     }
     func toggleFanFold() {
-        preferences.usesFanFoldBackgrounds.toggle()
-        output.usesFanFoldBackgrounds = preferences.usesFanFoldBackgrounds
-        savePreferences()
+        updateActiveTextWindowSettings { $0.usesFanFoldBackgrounds.toggle() }
     }
     func copyOutputAsPlainText() { output.copySelectionAsPlainText() }
     func copyOutputAsHTML() { output.copySelectionAsHTML() }
@@ -654,6 +654,134 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         }
     }
 
+    private func outputContextMenu() -> NSMenu {
+        let menu = NSMenu(title: "Output")
+        func add(_ title: String, _ action: Selector, enabled: Bool = true, state: NSControl.StateValue = .off) {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            item.isEnabled = enabled
+            item.state = state
+            menu.addItem(item)
+        }
+        add("Find…", #selector(contextFind(_:)))
+        add(
+            output.isPaused ? "Resume" : "Pause",
+            #selector(contextPause(_:)),
+            state: output.isPaused ? .on : .off
+        )
+        add("Split", #selector(contextSplit(_:)), state: output.isSplit ? .on : .off)
+        add("Copy screen to clipboard", #selector(contextCopyScreen(_:)), enabled: output.visibleLineCount > 0)
+        menu.addItem(.separator())
+        add("Clear", #selector(contextClear(_:)), enabled: output.visibleLineCount > 0)
+        add("Delete Line", #selector(contextDeleteLine(_:)), enabled: output.hasSelectedLine)
+        menu.addItem(.separator())
+        let tabKey = textWindowIdentity.tabKey
+        let usesGlobal = activeTextWindowUsesGlobalSettings
+        add(
+            "Use global settings",
+            #selector(contextUseGlobalSettings(_:)),
+            enabled: tabKey != nil,
+            state: usesGlobal ? .on : .off
+        )
+        add("Settings…", #selector(contextTextWindowSettings(_:)))
+        return menu
+    }
+
+    func outputContextMenuForTesting() -> NSMenu {
+        outputContextMenu()
+    }
+
+    @objc private func contextFind(_ sender: Any?) { showFindDialog() }
+    @objc private func contextPause(_ sender: Any?) { toggleOutputPause() }
+    @objc private func contextSplit(_ sender: Any?) { toggleOutputSplit() }
+    @objc private func contextCopyScreen(_ sender: Any?) { output.copyScreenToClipboard() }
+    @objc private func contextClear(_ sender: Any?) { clearOutput() }
+    @objc private func contextDeleteLine(_ sender: Any?) { output.removeSelectedLine() }
+    @objc private func contextTextWindowSettings(_ sender: Any?) {
+        showTextWindowSettings(initialScope: textWindowIdentity.tabKey == nil ? .global : .tab)
+    }
+
+    @objc private func contextUseGlobalSettings(_ sender: Any?) {
+        guard let key = textWindowIdentity.tabKey else { return }
+        let newValue = !activeTextWindowUsesGlobalSettings
+        var entry = preferences.tabTextWindowSettings[key]
+            ?? .init(usesGlobalSettings: newValue, settings: activeTextWindowSettings)
+        entry.usesGlobalSettings = newValue
+        preferences.tabTextWindowSettings[key] = entry
+        applyTextWindowSettings()
+        savePreferences()
+        onTextWindowSettingsChange?()
+    }
+
+    func showGlobalTextWindowSettings() {
+        showTextWindowSettings(initialScope: .global)
+    }
+
+    private func showTextWindowSettings(initialScope: TextWindowSettingsEditorView.Scope) {
+        let identity = textWindowIdentity
+        let global = preferences.globalTextWindowSettings
+        var states: [TextWindowSettingsEditorView.Scope: TextWindowSettingsEditorView.State] = [
+            .global: .init(
+                label: "Global",
+                override: .init(usesGlobalSettings: false, settings: global)
+            ),
+        ]
+        if let key = identity.worldKey {
+            states[.world] = .init(
+                label: "World — \(identity.world ?? "")",
+                override: preferences.worldTextWindowSettings[key]
+                    ?? .init(usesGlobalSettings: true, settings: global)
+            )
+        }
+        if let key = identity.characterKey {
+            states[.character] = .init(
+                label: "Character — \(identity.character ?? "")",
+                override: preferences.characterTextWindowSettings[key]
+                    ?? .init(usesGlobalSettings: true, settings: global)
+            )
+        }
+        if let key = identity.tabKey {
+            states[.tab] = .init(
+                label: "Tab — \(identity.tab ?? "")",
+                override: preferences.tabTextWindowSettings[key]
+                    ?? .init(usesGlobalSettings: true, settings: global)
+            )
+        }
+
+        let editor = TextWindowSettingsEditorView(
+            states: states,
+            initialScope: states[initialScope] == nil ? .global : initialScope
+        )
+        let alert = NSAlert()
+        alert.messageText = initialScope == .global ? "Global Text Window Settings" : "Text Window Settings"
+        alert.informativeText = "Customize the global defaults or override them for this world, character, or tab."
+        alert.addButton(withTitle: "Apply")
+        alert.addButton(withTitle: "Cancel")
+        alert.accessoryView = editor
+        let finish: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            guard response == .alertFirstButtonReturn, let self else { return }
+            editor.commit()
+            if let state = editor.states[.global] {
+                self.preferences.globalTextWindowSettings = state.override.settings.normalized
+            }
+            if let key = identity.worldKey, let state = editor.states[.world] {
+                self.preferences.worldTextWindowSettings[key] = state.override
+            }
+            if let key = identity.characterKey, let state = editor.states[.character] {
+                self.preferences.characterTextWindowSettings[key] = state.override
+            }
+            if let key = identity.tabKey, let state = editor.states[.tab] {
+                self.preferences.tabTextWindowSettings[key] = state.override
+            }
+            self.synchronizeLegacyGlobalTextSettings()
+            self.applyTextWindowSettings()
+            self.savePreferences()
+            self.onTextWindowSettingsChange?()
+        }
+        if let window { alert.beginSheetModal(for: window, completionHandler: finish) }
+        else { finish(alert.runModal()) }
+    }
+
     func showWorkspaceSettings() {
         let alert = NSAlert()
         alert.messageText = "Workspace Settings"
@@ -711,11 +839,15 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             self.preferences.outputHistoryLimit = max(100, historyLimit.integerValue)
             self.preferences.showsTimestamps = timestamps.state == .on
             self.preferences.usesFanFoldBackgrounds = fanFold.state == .on
+            self.preferences.globalTextWindowSettings.historyLimit = self.preferences.outputHistoryLimit
+            self.preferences.globalTextWindowSettings.showsTime = self.preferences.showsTimestamps
+            self.preferences.globalTextWindowSettings.usesFanFoldBackgrounds = self.preferences.usesFanFoldBackgrounds
             self.preferences.stickyInput = sticky.state == .on
             self.preferences.checksSpelling = spelling.state == .on
             self.preferences.speechVoiceIdentifier = speechVoice.selectedItem?.representedObject as? String
             self.applyPreferences()
             self.savePreferences()
+            self.onTextWindowSettingsChange?()
             do {
                 try self.profileLibrary.mutate {
                     $0.updateScripting {
@@ -1209,6 +1341,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         input.onSmartPaste = { [weak self] lines in self?.handleSmartPaste(lines) ?? false }
         input.onMacro = { [weak self] event in self?.handleKeyboardMacro(event) ?? false }
         output.onAction = { [weak self] action in self?.perform(action) }
+        output.onContextMenu = { [weak self] _ in self?.outputContextMenu() }
         output.onPauseChange = { [weak self] paused, pending in
             guard let self else { return }
             self.activityLabel.stringValue = paused ? "Paused\(pending > 0 ? " — \(pending) new" : "")" : ""
@@ -1373,6 +1506,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         currentCharacter = character
         currentPuppet = puppet
         puppetMaster = master
+        applyTextWindowSettings()
         variables = profileLibrary.workspace.projection.variables(for: server, character: character, puppet: puppet)
         let automation = profileLibrary.workspace.projection.automationGroups(for: server, character: character, puppet: puppet)
         aliasGroups = automation.aliases
@@ -2754,9 +2888,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     private func applyPreferences() {
-        output.historyLimit = preferences.outputHistoryLimit
-        output.showsTimestamps = preferences.showsTimestamps
-        output.usesFanFoldBackgrounds = preferences.usesFanFoldBackgrounds
+        applyTextWindowSettings()
         if output.isSplit != preferences.outputSplit { output.toggleSplit() }
         input.behavior = .init(prefix: preferences.inputPrefix, isSticky: preferences.stickyInput)
         input.isContinuousSpellCheckingEnabled = preferences.checksSpelling
@@ -2764,6 +2896,71 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     private func savePreferences() { WorkspacePreferencesStore.save(preferences) }
+
+    private var textWindowIdentity: TextWindowSettingsIdentity {
+        .init(
+            world: currentServer?.name,
+            character: currentCharacter?.name,
+            tab: currentServer == nil ? nil : (currentPuppet?.name ?? "Main")
+        )
+    }
+
+    private var activeTextWindowSettings: TextWindowSettings {
+        preferences.textWindowSettings(for: textWindowIdentity)
+    }
+
+    private var activeTextWindowUsesGlobalSettings: Bool {
+        let identity = textWindowIdentity
+        if let key = identity.tabKey, let entry = preferences.tabTextWindowSettings[key] {
+            return entry.usesGlobalSettings
+        }
+        if let key = identity.characterKey, let entry = preferences.characterTextWindowSettings[key] {
+            return entry.usesGlobalSettings
+        }
+        if let key = identity.worldKey, let entry = preferences.worldTextWindowSettings[key] {
+            return entry.usesGlobalSettings
+        }
+        return true
+    }
+
+    private func applyTextWindowSettings() {
+        output.applySettings(activeTextWindowSettings)
+    }
+
+    private func updateActiveTextWindowSettings(_ update: (inout TextWindowSettings) -> Void) {
+        let identity = textWindowIdentity
+        if let key = identity.tabKey {
+            var entry = preferences.tabTextWindowSettings[key]
+                ?? .init(usesGlobalSettings: false, settings: activeTextWindowSettings)
+            entry.usesGlobalSettings = false
+            update(&entry.settings)
+            entry.settings = entry.settings.normalized
+            preferences.tabTextWindowSettings[key] = entry
+        } else {
+            update(&preferences.globalTextWindowSettings)
+            preferences.globalTextWindowSettings = preferences.globalTextWindowSettings.normalized
+            synchronizeLegacyGlobalTextSettings()
+        }
+        applyTextWindowSettings()
+        savePreferences()
+        onTextWindowSettingsChange?()
+    }
+
+    private func synchronizeLegacyGlobalTextSettings() {
+        let global = preferences.globalTextWindowSettings
+        preferences.outputHistoryLimit = global.historyLimit
+        preferences.showsTimestamps = global.showsTime || global.showsDate
+        preferences.usesFanFoldBackgrounds = global.usesFanFoldBackgrounds
+    }
+
+    func reloadTextWindowPreferences() {
+        let saved = WorkspacePreferencesStore.load()
+        preferences.globalTextWindowSettings = saved.globalTextWindowSettings
+        preferences.worldTextWindowSettings = saved.worldTextWindowSettings
+        preferences.characterTextWindowSettings = saved.characterTextWindowSettings
+        preferences.tabTextWindowSettings = saved.tabTextWindowSettings
+        applyTextWindowSettings()
+    }
 
     private var notesKey: String {
         ([currentServer?.name, currentCharacter?.name, currentPuppet?.name].compactMap { $0 }.joined(separator: "/").isEmpty

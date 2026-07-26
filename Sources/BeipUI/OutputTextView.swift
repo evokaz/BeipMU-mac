@@ -10,6 +10,12 @@ final class OutputTextView: NSObject {
     private let scrollView: NSScrollView
     var onAction: ((LinkAction) -> Void)?
     var onPauseChange: ((Bool, Int) -> Void)?
+    var onContextMenu: ((NSEvent) -> NSMenu?)? {
+        didSet {
+            outputView.onContextMenu = onContextMenu
+            secondaryOutputView?.onContextMenu = onContextMenu
+        }
+    }
 
     private let outputView: VirtualizedOutputView
     private var secondaryOutputView: VirtualizedOutputView?
@@ -21,6 +27,8 @@ final class OutputTextView: NSObject {
     private var lineContentRanges: [UUID: NSRange] = [:]
     private var currentMatchIndex: Int?
     private var currentSearchSignature: SearchSignature?
+    private var settings = TextWindowSettings()
+    private var automaticMarkerID: UUID?
 
     private struct SearchSignature: Equatable {
         var query: String
@@ -51,14 +59,32 @@ final class OutputTextView: NSObject {
         set { history.limit = newValue; rebuild(preservingScrollPosition: true) }
     }
 
-    func applyTheme(_ palette: WorkspaceThemePalette) {
-        defaultForeground = palette.foreground
-        defaultBackground = palette.background
-        scrollView.backgroundColor = palette.background
-        secondaryScrollView?.backgroundColor = palette.background
-        outputView.canvasBackgroundColor = palette.background
-        secondaryOutputView?.canvasBackgroundColor = palette.background
+    var hasSelectedLine: Bool { outputView.selectedItemID != nil }
+    var appliedSettingsForTesting: TextWindowSettings { settings }
+    var primaryOutputViewForTesting: VirtualizedOutputView { outputView }
+
+    func applySettings(_ suppliedSettings: TextWindowSettings) {
+        settings = suppliedSettings.normalized
+        let foreground = NSColor(hexString: settings.foregroundHex) ?? .textColor
+        let background = NSColor(hexString: settings.backgroundHex) ?? .textBackgroundColor
+        defaultForeground = settings.invertBrightness ? foreground.invertingBrightness : foreground
+        defaultBackground = settings.invertBrightness ? background.invertingBrightness : background
+        history.limit = settings.historyLimit
+        showsTimestamps = settings.showsTime || settings.showsDate
+        usesFanFoldBackgrounds = settings.usesFanFoldBackgrounds
+        timestampFormatter.dateFormat = timestampFormat
+        scrollView.backgroundColor = defaultBackground
+        secondaryScrollView?.backgroundColor = defaultBackground
+        configure(view: outputView)
+        if let secondaryOutputView { configure(view: secondaryOutputView) }
         rebuild(preservingScrollPosition: true)
+    }
+
+    func applyTheme(_ palette: WorkspaceThemePalette) {
+        // Text-window colors are independently configurable. The workspace theme
+        // still owns surrounding window chrome and supplies legacy defaults.
+        if settings.foregroundHex.isEmpty { defaultForeground = palette.foreground }
+        if settings.backgroundHex.isEmpty { defaultBackground = palette.background }
     }
 
     func capturedText(lineCount: Int, skipping skipCount: Int) -> String {
@@ -97,6 +123,8 @@ final class OutputTextView: NSObject {
         preferredScrollHeight.isActive = true
         super.init()
         outputView.onLink = { [weak self] url in self?.perform(url: url) }
+        outputView.onPageUp = { [weak self] in self?.splitOnPageUp() ?? false }
+        outputView.onSelectionCompleted = { [weak self] in self?.copySelectionAsPlainText() }
     }
 
     func clear() {
@@ -106,6 +134,7 @@ final class OutputTextView: NSObject {
         secondaryOutputView?.removeAll()
         currentMatchIndex = nil
         currentSearchSignature = nil
+        automaticMarkerID = nil
         notifyPauseChange()
         NSAccessibility.post(element: outputView, notification: .valueChanged)
     }
@@ -117,6 +146,16 @@ final class OutputTextView: NSObject {
         secondaryOutputView?.removeLast()
         currentMatchIndex = nil
         notifyPauseChange()
+    }
+
+    func removeSelectedLine() {
+        guard let id = outputView.selectedItemID, history.remove(id: id) != nil else {
+            NSSound.beep()
+            return
+        }
+        lineContentRanges.removeValue(forKey: id)
+        if automaticMarkerID == id { automaticMarkerID = nil }
+        rebuild(preservingScrollPosition: true)
     }
 
     func setPaused(_ paused: Bool) {
@@ -133,7 +172,7 @@ final class OutputTextView: NSObject {
     func togglePaused() { setPaused(!history.isPaused) }
 
     var terminalSize: (columns: UInt16, rows: UInt16) {
-        let font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        let font = defaultFont
         let cellWidth = max(1, ("M" as NSString).size(withAttributes: [.font: font]).width)
         let cellHeight = max(1, NSLayoutManager().defaultLineHeight(for: font))
         let contentSize = scrollView.contentSize
@@ -143,7 +182,6 @@ final class OutputTextView: NSObject {
     }
 
     func append(_ line: RenderedLine, terminator: String = "\n") {
-        let shouldFollowEnd = isScrolledNearEnd
         let expectedRemovalCount = max(0, history.count + 1 - history.limit)
         let removedIDs = history.oldestLineIDs(expectedRemovalCount)
         let removedCount = history.append(line)
@@ -159,8 +197,17 @@ final class OutputTextView: NSObject {
             let item = makeItem(for: line, terminator: terminator, lineIndex: history.count - 1)
             outputView.append(item)
             secondaryOutputView?.append(item)
-            if shouldFollowEnd { outputView.scrollToEnd() }
-            secondaryOutputView?.scrollToEnd()
+            if settings.scrollsToBottomOnNewText {
+                clearAutomaticMarker()
+                outputView.scrollToEnd(animated: settings.smoothScrolling)
+            } else if settings.showsNewContentMarkers, automaticMarkerID == nil {
+                automaticMarkerID = line.id
+                outputView.setMarker(itemID: line.id, marked: true)
+                secondaryOutputView?.setMarker(itemID: line.id, marked: true)
+            }
+            if settings.scrollsToBottomOnNewText {
+                secondaryOutputView?.scrollToEnd(animated: settings.smoothScrolling)
+            }
         }
         currentMatchIndex = nil
         NSAccessibility.post(element: outputView, notification: .valueChanged)
@@ -202,9 +249,14 @@ final class OutputTextView: NSObject {
     }
 
     func copySelectionAsPlainText() {
-        guard let selected = outputView.selectedString(), !selected.isEmpty else { return }
+        copySelectionAsPlainText(from: outputView)
+    }
+
+    private func copySelectionAsPlainText(from view: VirtualizedOutputView) {
+        guard let selected = view.selectedString(), !selected.isEmpty else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(selected, forType: .string)
+        showSelectionCopiedPopupIfNeeded()
     }
 
     func copySelectionAsHTML() {
@@ -216,6 +268,15 @@ final class OutputTextView: NSObject {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setData(data, forType: .html)
         NSPasteboard.general.setString(selected.string, forType: .string)
+        showSelectionCopiedPopupIfNeeded()
+    }
+
+    func copyScreenToClipboard() {
+        let text = visibleWindowLines.map(\.text).joined(separator: "\n")
+        guard !text.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        showSelectionCopiedPopupIfNeeded()
     }
 
     func selectAll() { outputView.selectAllContent() }
@@ -233,6 +294,13 @@ final class OutputTextView: NSObject {
         view.canvasBackgroundColor = defaultBackground
         view.autoresizingMask = [.width]
         view.onLink = { [weak self] url in self?.perform(url: url) }
+        view.onContextMenu = onContextMenu
+        view.onPageUp = { [weak self] in self?.splitOnPageUp() ?? false }
+        view.onSelectionCompleted = { [weak self, weak view] in
+            guard let view else { return }
+            self?.copySelectionAsPlainText(from: view)
+        }
+        configure(view: view)
         let secondary = Self.makeScrollView(documentView: view, backgroundColor: defaultBackground)
         secondary.setAccessibilityLabel("Live output split")
         secondaryOutputView = view
@@ -255,9 +323,62 @@ final class OutputTextView: NSObject {
         secondaryOutputView?.toggleMarker(itemID: id)
     }
 
-    private var isScrolledNearEnd: Bool {
-        let clip = scrollView.contentView.bounds
-        return clip.maxY >= outputView.bounds.height - 24
+    private var defaultFont: NSFont {
+        NSFont(name: settings.fontName, size: settings.fontSize)
+            ?? NSFont.monospacedSystemFont(ofSize: settings.fontSize, weight: .regular)
+    }
+
+    private var timestampFormat: String {
+        switch (settings.showsDate, settings.showsTime, settings.uses24HourTime) {
+        case (true, true, true): "yyyy-MM-dd HH:mm:ss"
+        case (true, true, false): "yyyy-MM-dd h:mm:ss a"
+        case (true, false, _): "yyyy-MM-dd"
+        case (false, true, true): "HH:mm:ss"
+        case (false, true, false): "h:mm:ss a"
+        case (false, false, _): ""
+        }
+    }
+
+    private func configure(view: VirtualizedOutputView) {
+        view.canvasBackgroundColor = defaultBackground
+        view.contentInsets = .init(
+            top: CGFloat(settings.marginTop + 7),
+            left: CGFloat(settings.marginLeft + 9),
+            bottom: CGFloat(settings.marginBottom + 7),
+            right: CGFloat(settings.marginRight + 9)
+        )
+        let cellWidth = max(1, ("M" as NSString).size(withAttributes: [.font: defaultFont]).width)
+        view.fixedContentWidth = settings.usesFixedWidth
+            ? CGFloat(settings.fixedWidthCharacters) * cellWidth
+            : nil
+    }
+
+    private func splitOnPageUp() -> Bool {
+        guard settings.splitsOnPageUp, !isSplit else { return false }
+        toggleSplit()
+        return true
+    }
+
+    private func clearAutomaticMarker() {
+        guard let id = automaticMarkerID else { return }
+        outputView.setMarker(itemID: id, marked: false)
+        secondaryOutputView?.setMarker(itemID: id, marked: false)
+        automaticMarkerID = nil
+    }
+
+    private func showSelectionCopiedPopupIfNeeded() {
+        guard settings.showsSelectionCopiedPopup else { return }
+        let label = NSTextField(labelWithString: "Copied")
+        label.font = .systemFont(ofSize: 12, weight: .medium)
+        label.textColor = .white
+        label.alignment = .center
+        label.wantsLayer = true
+        label.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.78).cgColor
+        label.layer?.cornerRadius = 6
+        label.frame = NSRect(x: max(8, containerView.bounds.midX - 42), y: 12, width: 84, height: 28)
+        label.autoresizingMask = [.minXMargin, .maxXMargin, .maxYMargin]
+        containerView.addSubview(label)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak label] in label?.removeFromSuperview() }
     }
 
     private func rebuild(
@@ -291,19 +412,21 @@ final class OutputTextView: NSObject {
         lineIndex: Int
     ) -> VirtualizedOutputView.Item {
         let timestamp = showsTimestamps ? "[\(timestampFormatter.string(from: line.timestamp))] " : ""
+        let toolTip: String? = settings.showsDateTimeToolTip
+            ? DateFormatter.localizedString(from: line.timestamp, dateStyle: .medium, timeStyle: .medium)
+            : nil
         let value = NSMutableAttributedString(string: timestamp + line.text + terminator, attributes: [
-            .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
+            .font: defaultFont,
             .foregroundColor: defaultForeground,
-            .toolTip: DateFormatter.localizedString(
-                from: line.timestamp,
-                dateStyle: .medium,
-                timeStyle: .medium
-            ),
         ])
+        if let toolTip {
+            value.addAttribute(.toolTip, value: toolTip, range: NSRange(location: 0, length: value.length))
+        }
         if !timestamp.isEmpty {
             value.addAttributes([
                 .foregroundColor: NSColor.secondaryLabelColor,
-                .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
+                .font: NSFont(name: settings.fontName, size: max(6, settings.fontSize - 1))
+                    ?? NSFont.monospacedSystemFont(ofSize: max(6, settings.fontSize - 1), weight: .regular),
             ], range: NSRange(location: 0, length: timestamp.utf16.count))
         }
         let textOffset = timestamp.utf16.count
@@ -311,17 +434,29 @@ final class OutputTextView: NSObject {
             let range = NSRange(location: textOffset + run.range.lowerBound, length: run.range.count)
             var attributes: [NSAttributedString.Key: Any] = [:]
             if let color = run.style.foreground {
-                attributes[.foregroundColor] = NSColor(color).withAlphaComponent(run.style.faint ? 0.55 : 1)
+                let foreground = NSColor(color)
+                attributes[.foregroundColor] = (settings.invertBrightness
+                    ? foreground.invertingBrightness
+                    : foreground).withAlphaComponent(run.style.faint ? 0.55 : 1)
             } else if run.style.faint {
                 attributes[.foregroundColor] = defaultForeground.withAlphaComponent(0.55)
             }
-            if let color = run.style.background { attributes[.backgroundColor] = NSColor(color) }
+            if let color = run.style.background {
+                let background = NSColor(color)
+                attributes[.backgroundColor] = settings.invertBrightness
+                    ? background.invertingBrightness
+                    : background
+            }
             var traits: NSFontTraitMask = []
             if run.style.bold { traits.insert(.boldFontMask) }
             if run.style.italic { traits.insert(.italicFontMask) }
-            let size = CGFloat(run.style.fontSize ?? 13)
-            let baseFont = run.style.fontFace.flatMap { NSFont(name: $0, size: size) }
-                ?? NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
+            let size = CGFloat(run.style.fontSize ?? settings.fontSize)
+            let baseFont = if run.style.fontFace == nil, run.style.fontSize == nil {
+                defaultFont
+            } else {
+                run.style.fontFace.flatMap { NSFont(name: $0, size: size) }
+                    ?? NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
+            }
             attributes[.font] = NSFontManager.shared.convert(
                 baseFont,
                 toHaveTrait: traits
@@ -332,6 +467,10 @@ final class OutputTextView: NSObject {
             if let action = run.style.link {
                 attributes[.link] = Self.url(for: action)
                 attributes[.cursor] = NSCursor.pointingHand
+                if run.style.foreground == nil {
+                    let link = NSColor(hexString: settings.webLinkHex) ?? .linkColor
+                    attributes[.foregroundColor] = settings.invertBrightness ? link.invertingBrightness : link
+                }
             }
             value.addAttributes(attributes, range: range)
         }
@@ -343,17 +482,27 @@ final class OutputTextView: NSObject {
         case .right: .right
         }
         paragraph.firstLineHeadIndent = CGFloat(line.paragraph.leftIndent)
-        paragraph.headIndent = CGFloat(line.paragraph.leftIndent + line.paragraph.wrappedIndent)
+        paragraph.headIndent = CGFloat(
+            line.paragraph.leftIndent + line.paragraph.wrappedIndent + Double(settings.wrappedLineIndent)
+        )
         paragraph.tailIndent = -CGFloat(line.paragraph.rightIndent)
         paragraph.paragraphSpacingBefore = CGFloat(line.paragraph.topPadding)
-        paragraph.paragraphSpacing = CGFloat(line.paragraph.bottomPadding)
+        paragraph.paragraphSpacing = CGFloat(line.paragraph.bottomPadding + Double(settings.paragraphSpacing))
         value.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: value.length))
         if let color = line.paragraph.background {
             value.addAttribute(.backgroundColor, value: NSColor(color), range: NSRange(location: 0, length: value.length))
         } else if usesFanFoldBackgrounds, lineIndex.isMultiple(of: 2) {
             value.addAttribute(
                 .backgroundColor,
-                value: defaultForeground.withAlphaComponent(0.035),
+                value: NSColor(hexString: settings.fanFoldFirstHex)
+                    ?? defaultForeground.withAlphaComponent(0.035),
+                range: NSRange(location: 0, length: value.length)
+            )
+        } else if usesFanFoldBackgrounds {
+            value.addAttribute(
+                .backgroundColor,
+                value: NSColor(hexString: settings.fanFoldSecondHex)
+                    ?? defaultForeground.withAlphaComponent(0.015),
                 range: NSRange(location: 0, length: value.length)
             )
         }
@@ -438,6 +587,16 @@ private extension NSColor {
             green: CGFloat(color.green) / 255,
             blue: CGFloat(color.blue) / 255,
             alpha: CGFloat(color.alpha) / 255
+        )
+    }
+
+    var invertingBrightness: NSColor {
+        guard let rgb = usingColorSpace(.deviceRGB) else { return self }
+        return NSColor(
+            calibratedRed: 1 - rgb.redComponent,
+            green: 1 - rgb.greenComponent,
+            blue: 1 - rgb.blueComponent,
+            alpha: rgb.alphaComponent
         )
     }
 }

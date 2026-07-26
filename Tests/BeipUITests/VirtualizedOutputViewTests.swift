@@ -115,6 +115,79 @@ final class VirtualizedOutputViewTests: XCTestCase {
         XCTAssertEqual(output.capturedText(lineCount: 3, skipping: 99), "")
     }
 
+    func testTextWindowSettingsDriveFontColorsMarginsWrappingAndDates() throws {
+        let output = OutputTextView()
+        let settings = TextWindowSettings(
+            fontName: "Menlo",
+            fontSize: 17,
+            foregroundHex: "#123456",
+            backgroundHex: "#102030",
+            webLinkHex: "#ABCDEF",
+            usesFanFoldBackgrounds: true,
+            fanFoldFirstHex: "#202020",
+            fanFoldSecondHex: "#303030",
+            historyLimit: 321,
+            wrappedLineIndent: 14,
+            paragraphSpacing: 5,
+            usesFixedWidth: true,
+            fixedWidthCharacters: 40,
+            marginLeft: 11,
+            marginRight: 12,
+            marginTop: 13,
+            marginBottom: 14,
+            showsTime: true,
+            uses24HourTime: true,
+            showsDate: true,
+            showsDateTimeToolTip: false
+        )
+        output.applySettings(settings)
+        output.append(.init(text: "Configured output", timestamp: Date(timeIntervalSince1970: 0)))
+        output.selectAll()
+
+        let view = output.primaryOutputViewForTesting
+        let selected = try XCTUnwrap(view.selectedAttributedString())
+        let contentLocation = (selected.string as NSString).range(of: "Configured output").location
+        let attributes = selected.attributes(at: contentLocation, effectiveRange: nil)
+        let font = try XCTUnwrap(attributes[.font] as? NSFont)
+        let paragraph = try XCTUnwrap(attributes[.paragraphStyle] as? NSParagraphStyle)
+        XCTAssertEqual(font.pointSize, 17, accuracy: 0.1)
+        XCTAssertEqual((attributes[.foregroundColor] as? NSColor)?.hexString, "#123456")
+        XCTAssertEqual((attributes[.backgroundColor] as? NSColor)?.hexString, "#202020")
+        XCTAssertEqual(paragraph.headIndent, 14, accuracy: 0.1)
+        XCTAssertEqual(paragraph.paragraphSpacing, 5, accuracy: 0.1)
+        XCTAssertNil(attributes[.toolTip])
+        XCTAssertTrue(selected.string.hasPrefix("[1970-01-01 "))
+        XCTAssertEqual(output.historyLimit, 321)
+        XCTAssertEqual(view.contentInsets.left, 20)
+        XCTAssertEqual(view.contentInsets.right, 21)
+        XCTAssertEqual(view.contentInsets.top, 20)
+        XCTAssertEqual(view.contentInsets.bottom, 21)
+        XCTAssertLessThan(view.effectiveContentWidthForTesting, 500)
+    }
+
+    func testTextWindowSettingsNormalizeUnsafeNumericValues() {
+        let normalized = TextWindowSettings(
+            fontSize: -20,
+            historyLimit: 1,
+            wrappedLineIndent: -3,
+            paragraphSpacing: 999,
+            fixedWidthCharacters: 2,
+            marginLeft: -1,
+            marginRight: 999,
+            marginTop: -4,
+            marginBottom: 999
+        ).normalized
+        XCTAssertEqual(normalized.fontSize, 6)
+        XCTAssertEqual(normalized.historyLimit, 100)
+        XCTAssertEqual(normalized.wrappedLineIndent, 0)
+        XCTAssertEqual(normalized.paragraphSpacing, 100)
+        XCTAssertEqual(normalized.fixedWidthCharacters, 20)
+        XCTAssertEqual(normalized.marginLeft, 0)
+        XCTAssertEqual(normalized.marginRight, 500)
+        XCTAssertEqual(normalized.marginTop, 0)
+        XCTAssertEqual(normalized.marginBottom, 500)
+    }
+
     func testSessionLogWriterAppendsHistoryLiveTextAndStopMarker() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("SessionLogWriterTests-\(UUID().uuidString)", isDirectory: true)

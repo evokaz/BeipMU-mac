@@ -111,6 +111,33 @@ final class BeipMUXCUITests: XCTestCase {
         XCTAssertTrue(sheet.waitForNonExistence(timeout: 3))
     }
 
+    func testTextWindowContextMenuAndGlobalSettingsAreAccessible() {
+        let app = launchApplication()
+        defer { app.terminate() }
+        let output = app.windows["mainWindow"].descendants(matching: .textView)["MU star output"]
+        output.rightClick()
+        for title in [
+            "Find…", "Pause", "Split", "Copy screen to clipboard", "Clear",
+            "Delete Line", "Use global settings", "Settings…",
+        ] {
+            XCTAssertTrue(app.menuItems[title].exists, "Missing output context-menu command: \(title)")
+        }
+        app.typeKey(.escape, modifierFlags: [])
+
+        app.menuBars.menuBarItems["BeipMU"].click()
+        app.menuItems["Global Text Window Settings…"].click()
+        let sheet = app.sheets.firstMatch
+        XCTAssertTrue(sheet.waitForExistence(timeout: 3))
+        XCTAssertTrue(sheet.popUpButtons["textSettingsScope"].exists)
+        XCTAssertTrue(sheet.popUpButtons["textSettingsFont"].exists)
+        XCTAssertTrue(sheet.textFields["textSettingsFontSize"].exists)
+        XCTAssertTrue(sheet.textFields["textSettingsHistory"].exists)
+        XCTAssertTrue(sheet.textFields["textSettingsWrappedIndent"].exists)
+        XCTAssertTrue(sheet.textFields["textSettingsFixedWidthCharacters"].exists)
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(sheet.waitForNonExistence(timeout: 3))
+    }
+
     func testStatisticsPanelAccessibilityAndBaseline() throws {
         let app = launchApplication()
         defer { app.terminate() }

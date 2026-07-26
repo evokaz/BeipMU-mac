@@ -26,6 +26,9 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     static let blinkAttribute = NSAttributedString.Key("BeipMUBlink")
 
     var onLink: ((URL) -> Void)?
+    var onContextMenu: ((NSEvent) -> NSMenu?)?
+    var onPageUp: (() -> Bool)?
+    var onSelectionCompleted: (() -> Void)?
     private(set) var renderedItemCount = 0
     private(set) var lastDrawnItemCount = 0
 
@@ -45,8 +48,12 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     private var imageTasks: [URL: Task<Void, Never>] = [:]
     private var animationTimer: Timer?
     private var displayOptions = AccessibilityDisplayOptions.current
-    private let horizontalInset: CGFloat = 9
-    private let verticalInset: CGFloat = 7
+    var contentInsets = NSEdgeInsets(top: 7, left: 9, bottom: 7, right: 9) {
+        didSet { rebuildMeasurements() }
+    }
+    var fixedContentWidth: CGFloat? {
+        didSet { rebuildMeasurements() }
+    }
     var canvasBackgroundColor = NSColor(calibratedWhite: 0.05, alpha: 1) {
         didSet { needsDisplay = true }
     }
@@ -75,11 +82,12 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     var isBlinkTimerActive: Bool { blinkTimer != nil }
     var isAnimationTimerActive: Bool { animationTimer != nil }
     var selectedRangeIsEmpty: Bool { anchor == nil || anchor == focus }
+    var effectiveContentWidthForTesting: CGFloat { contentWidth }
     var selectedItemID: UUID? { focus.flatMap { item(at: $0.item)?.id } }
     var firstVisibleItemID: UUID? {
         guard let clip = enclosingScrollView?.contentView.bounds else { return item(at: 0)?.id }
         let range = layoutIndex.visibleRange(
-            intersecting: Double(clip.minY - verticalInset)..<Double(clip.maxY - verticalInset)
+            intersecting: Double(clip.minY - contentInsets.top)..<Double(clip.maxY - contentInsets.top)
         )
         return item(at: range.lowerBound)?.id
     }
@@ -224,11 +232,26 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
 
     func selectedString() -> String? { selectedAttributedString()?.string }
 
-    func scrollToEnd() {
+    func scrollToEnd(animated: Bool = false) {
         guard let scrollView = enclosingScrollView else { return }
         let target = max(0, bounds.height - scrollView.contentSize.height)
-        scrollView.contentView.scroll(to: NSPoint(x: 0, y: target))
+        let point = NSPoint(x: 0, y: target)
+        if animated, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.12
+                scrollView.contentView.animator().setBoundsOrigin(point)
+            }
+        } else {
+            scrollView.contentView.scroll(to: point)
+        }
         scrollView.reflectScrolledClipView(scrollView.contentView)
+    }
+
+    func setMarker(itemID: UUID, marked: Bool) {
+        if marked { markedItems.insert(itemID) } else { markedItems.remove(itemID) }
+        if let physicalIndex = itemIndices[itemID] {
+            setNeedsDisplay(itemRect(at: physicalIndex - head))
+        }
     }
 
     func toggleMarker(itemID: UUID) {
@@ -242,7 +265,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
 
     func visibleItemCount(in rect: NSRect) -> Int {
         layoutIndex.visibleRange(
-            intersecting: Double(rect.minY - verticalInset)..<Double(rect.maxY - verticalInset)
+            intersecting: Double(rect.minY - contentInsets.top)..<Double(rect.maxY - contentInsets.top)
         ).count
     }
 
@@ -260,7 +283,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     override func draw(_ dirtyRect: NSRect) {
         canvasBackgroundColor.setFill()
         dirtyRect.fill()
-        let contentRange = Double(dirtyRect.minY - verticalInset)..<Double(dirtyRect.maxY - verticalInset)
+        let contentRange = Double(dirtyRect.minY - contentInsets.top)..<Double(dirtyRect.maxY - contentInsets.top)
         let visible = layoutIndex.visibleRange(intersecting: contentRange)
         lastDrawnItemCount = visible.count
         guard !visible.isEmpty, let context = NSGraphicsContext.current?.cgContext else { return }
@@ -269,8 +292,8 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
             guard let value = item(at: index), let y = layoutIndex.yOffset(for: index),
                   let height = layoutIndex.height(at: index) else { continue }
             let rect = NSRect(
-                x: horizontalInset,
-                y: verticalInset + CGFloat(y),
+                x: contentInsets.left,
+                y: contentInsets.top + CGFloat(y),
                 width: contentWidth,
                 height: CGFloat(height)
             )
@@ -356,6 +379,10 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
 
     override func mouseUp(with event: NSEvent) {
         defer { mouseDownPosition = nil }
+        if !selectedRangeIsEmpty {
+            onSelectionCompleted?()
+            return
+        }
         guard selectedRangeIsEmpty,
               let position = textPosition(at: convert(event.locationInWindow, from: nil)),
               position == mouseDownPosition,
@@ -372,6 +399,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
+        if let menu = onContextMenu?(event) { return menu }
         let menu = NSMenu()
         menu.addItem(withTitle: "Copy", action: #selector(copy(_:)), keyEquivalent: "")
         menu.addItem(withTitle: "Select All", action: #selector(selectAll(_:)), keyEquivalent: "")
@@ -392,6 +420,13 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     }
 
     override func selectAll(_ sender: Any?) { selectAllContent() }
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 116, onPageUp?() == true {
+            return
+        }
+        super.keyDown(with: event)
+    }
 
     func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
         switch item.action {
@@ -426,7 +461,10 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     }
 
     private var retainedItems: ArraySlice<Item> { storage[head...] }
-    private var contentWidth: CGFloat { max(1, bounds.width - horizontalInset * 2) }
+    private var contentWidth: CGFloat {
+        let available = max(1, bounds.width - contentInsets.left - contentInsets.right)
+        return min(available, fixedContentWidth ?? available)
+    }
 
     private func item(at logicalIndex: Int) -> Item? {
         guard logicalIndex >= 0, logicalIndex < itemCount else { return nil }
@@ -456,7 +494,10 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
 
     private func updateDocumentHeight() {
         let viewportHeight = enclosingScrollView?.contentSize.height ?? 0
-        let height = max(viewportHeight, CGFloat(layoutIndex.totalHeight) + verticalInset * 2)
+        let height = max(
+            viewportHeight,
+            CGFloat(layoutIndex.totalHeight) + contentInsets.top + contentInsets.bottom
+        )
         if abs(frame.height - height) > 0.5 {
             super.setFrameSize(NSSize(width: frame.width, height: height))
         }
@@ -471,7 +512,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
 
     private func itemRect(at index: Int) -> NSRect {
         guard let y = layoutIndex.yOffset(for: index), let height = layoutIndex.height(at: index) else { return .zero }
-        return NSRect(x: 0, y: verticalInset + y, width: bounds.width, height: height)
+        return NSRect(x: 0, y: contentInsets.top + y, width: bounds.width, height: height)
     }
 
     private func attributedTextForDrawing(_ item: Item, itemIndex: Int) -> NSAttributedString {
@@ -630,12 +671,12 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     }
 
     private func textPosition(at point: NSPoint) -> Position? {
-        guard let itemIndex = layoutIndex.index(atVerticalOffset: Double(point.y - verticalInset)),
+        guard let itemIndex = layoutIndex.index(atVerticalOffset: Double(point.y - contentInsets.top)),
               let value = item(at: itemIndex), let y = layoutIndex.yOffset(for: itemIndex),
               let height = layoutIndex.height(at: itemIndex) else { return nil }
         let local = CGPoint(
-            x: max(0, point.x - horizontalInset),
-            y: CGFloat(height) - (point.y - verticalInset - CGFloat(y))
+            x: max(0, point.x - contentInsets.left),
+            y: CGFloat(height) - (point.y - contentInsets.top - CGFloat(y))
         )
         let path = CGPath(
             rect: CGRect(x: 0, y: 0, width: contentWidth, height: CGFloat(height)),
@@ -726,7 +767,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     private func scrollSelectionToVisible() {
         guard let focus, let y = layoutIndex.yOffset(for: focus.item),
               let height = layoutIndex.height(at: focus.item) else { return }
-        scrollToVisible(NSRect(x: 0, y: verticalInset + y, width: bounds.width, height: height))
+        scrollToVisible(NSRect(x: 0, y: contentInsets.top + y, width: bounds.width, height: height))
     }
 
     private func adjustSelectionAfterRemovingFirst(_ count: Int) {

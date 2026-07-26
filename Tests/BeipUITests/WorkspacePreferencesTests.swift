@@ -161,6 +161,114 @@ final class WorkspacePreferencesTests: XCTestCase {
         XCTAssertEqual(WorkspacePreferencesStore.load(defaults: defaults), .init())
     }
 
+    func testTextWindowSettingsResolveAcrossWorldCharacterAndTabScopes() {
+        let identity = TextWindowSettingsIdentity(world: "Example World", character: "Builder", tab: "Main")
+        var preferences = WorkspacePreferences()
+        preferences.globalTextWindowSettings.fontSize = 12
+        preferences.globalTextWindowSettings.showsNewContentMarkers = false
+        preferences.worldTextWindowSettings[identity.worldKey!] = .init(
+            usesGlobalSettings: false,
+            settings: .init(fontSize: 14)
+        )
+        XCTAssertEqual(preferences.textWindowSettings(for: identity).fontSize, 14)
+
+        preferences.characterTextWindowSettings[identity.characterKey!] = .init(
+            usesGlobalSettings: false,
+            settings: .init(fontSize: 16)
+        )
+        XCTAssertEqual(preferences.textWindowSettings(for: identity).fontSize, 16)
+
+        preferences.tabTextWindowSettings[identity.tabKey!] = .init(
+            usesGlobalSettings: false,
+            settings: .init(fontSize: 18, showsNewContentMarkers: true)
+        )
+        let tab = preferences.textWindowSettings(for: identity)
+        XCTAssertEqual(tab.fontSize, 18)
+        XCTAssertFalse(tab.showsNewContentMarkers, "Help options always come from global settings")
+
+        preferences.tabTextWindowSettings[identity.tabKey!]?.usesGlobalSettings = true
+        XCTAssertEqual(preferences.textWindowSettings(for: identity).fontSize, 12)
+    }
+
+    func testTextWindowIdentityKeysAreStableAndNormalized() {
+        let first = TextWindowSettingsIdentity(world: "Café", character: "Éowyn", tab: "Main")
+        let second = TextWindowSettingsIdentity(world: "CAFE", character: "eowyn", tab: "main")
+        XCTAssertEqual(first.worldKey, second.worldKey)
+        XCTAssertEqual(first.characterKey, second.characterKey)
+        XCTAssertEqual(first.tabKey, second.tabKey)
+    }
+
+    func testLegacyOutputPreferencesMigrateIntoGlobalTextWindowSettings() throws {
+        let suiteName = "WorkspacePreferencesTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(
+            Data(##"{"outputHistoryLimit":2345,"showsTimestamps":true,"usesFanFoldBackgrounds":true,"theme":{"mode":"custom","foregroundHex":"#112233","backgroundHex":"#445566","accentHex":"#778899"}}"##.utf8),
+            forKey: "BeipMU.WorkspacePreferences.v1"
+        )
+
+        let migrated = WorkspacePreferencesStore.load(defaults: defaults).globalTextWindowSettings
+        XCTAssertEqual(migrated.historyLimit, 2_345)
+        XCTAssertTrue(migrated.showsTime)
+        XCTAssertTrue(migrated.usesFanFoldBackgrounds)
+        XCTAssertEqual(migrated.foregroundHex, "#112233")
+        XCTAssertEqual(migrated.backgroundHex, "#445566")
+        XCTAssertEqual(migrated.webLinkHex, "#778899")
+    }
+
+    @MainActor
+    func testOutputContextMenuContainsOriginalTextWindowCommands() throws {
+        let controller = ClientWindowController(profileLibrary: .init(workspace: try .empty(isDirty: false)))
+        defer { controller.close() }
+        let menu = controller.outputContextMenuForTesting()
+        XCTAssertEqual(
+            menu.items.filter { !$0.isSeparatorItem }.map(\.title),
+            [
+                "Find…", "Pause", "Split", "Copy screen to clipboard", "Clear",
+                "Delete Line", "Use global settings", "Settings…",
+            ]
+        )
+        XCTAssertEqual(menu.item(withTitle: "Use global settings")?.state, .on)
+        XCTAssertFalse(try XCTUnwrap(menu.item(withTitle: "Use global settings")).isEnabled)
+    }
+
+    @MainActor
+    func testTextWindowSettingsEditorPreservesChangesWhenSwitchingScopes() throws {
+        let editor = TextWindowSettingsEditorView(
+            states: [
+                .global: .init(
+                    label: "Global",
+                    override: .init(usesGlobalSettings: false, settings: .init(fontSize: 12))
+                ),
+                .tab: .init(
+                    label: "Tab — Main",
+                    override: .init(usesGlobalSettings: false, settings: .init(fontSize: 18))
+                ),
+            ],
+            initialScope: .global
+        )
+        let views = recursiveSubviews(of: editor)
+        let scope = try XCTUnwrap(
+            views.compactMap { $0 as? NSPopUpButton }
+                .first { $0.accessibilityIdentifier() == "textSettingsScope" }
+        )
+        let size = try XCTUnwrap(
+            views.compactMap { $0 as? NSTextField }
+                .first { $0.accessibilityIdentifier() == "textSettingsFontSize" }
+        )
+
+        scope.selectItem(at: 1)
+        scope.sendAction(scope.action, to: scope.target)
+        XCTAssertEqual(size.doubleValue, 18)
+        size.doubleValue = 19
+        scope.selectItem(at: 0)
+        scope.sendAction(scope.action, to: scope.target)
+        editor.commit()
+
+        XCTAssertEqual(editor.states[.global]?.override.settings.fontSize, 12)
+        XCTAssertEqual(editor.states[.tab]?.override.settings.fontSize, 19)
+    }
+
     func testOlderPreferencesDecodeWithoutWorkspaceLayoutFields() throws {
         let suiteName = "WorkspacePreferencesTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
