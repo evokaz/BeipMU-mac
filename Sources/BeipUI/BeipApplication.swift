@@ -126,6 +126,9 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         controller.onTextWindowSettingsChange = { [weak self] in
             self?.windows.forEach { $0.reloadTextWindowPreferences() }
         }
+        controller.onInputHeightChange = { [weak self] height in
+            self?.windows.forEach { $0.synchronizeInputHeight(height) }
+        }
         return controller
     }
 

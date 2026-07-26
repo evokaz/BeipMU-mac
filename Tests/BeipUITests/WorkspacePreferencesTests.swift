@@ -49,6 +49,45 @@ final class WorkspacePreferencesTests: XCTestCase {
     }
 
     @MainActor
+    func testHiddenWindowLayoutDoesNotOverwriteSavedInputHeight() throws {
+        let library = ProfileLibrary(workspace: try .empty(isDirty: false))
+        let controller = ClientWindowController(profileLibrary: library)
+        defer { controller.close() }
+        let window = try XCTUnwrap(controller.window)
+        let inputSplit = try XCTUnwrap(
+            recursiveSubviews(of: try XCTUnwrap(window.contentView))
+                .compactMap { $0 as? NSSplitView }
+                .first { $0.accessibilityIdentifier() == "commandInputSplit" }
+        )
+        let savedHeight = controller.inputHeightPreferenceForTesting
+
+        inputSplit.setPosition(80, ofDividerAt: 0)
+        controller.splitViewDidResizeSubviews(
+            Notification(name: NSSplitView.didResizeSubviewsNotification, object: inputSplit)
+        )
+
+        XCTAssertFalse(window.isVisible)
+        XCTAssertEqual(controller.inputHeightPreferenceForTesting, savedHeight)
+    }
+
+    @MainActor
+    func testInputHeightCanBeSynchronizedToHiddenTabs() throws {
+        let library = ProfileLibrary(workspace: try .empty(isDirty: false))
+        let controller = ClientWindowController(profileLibrary: library)
+        defer { controller.close() }
+        let inputSplit = try XCTUnwrap(
+            recursiveSubviews(of: try XCTUnwrap(controller.window?.contentView))
+                .compactMap { $0 as? NSSplitView }
+                .first { $0.accessibilityIdentifier() == "commandInputSplit" }
+        )
+
+        controller.synchronizeInputHeight(137)
+
+        XCTAssertEqual(controller.inputHeightPreferenceForTesting, 137)
+        XCTAssertEqual(inputSplit.subviews[1].frame.height, 137, accuracy: 1)
+    }
+
+    @MainActor
     func testAIWindowUsesNativeAccessibleSurfaceAndProfileState() throws {
         let controller = AIWindowController(profileKey: "ai-profile")
         controller.updateEndpoint(URL(string: "https://example.invalid/ai")!)

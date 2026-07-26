@@ -347,6 +347,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     var onTabStateChange: (() -> Void)?
     var onThemeChange: ((WorkspaceThemeSettings) -> Void)?
     var onTextWindowSettingsChange: (() -> Void)?
+    var onInputHeightChange: ((Double) -> Void)?
     var timestampsEnabled: Bool {
         let settings = activeTextWindowSettings
         return settings.showsTime || settings.showsDate
@@ -456,6 +457,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             if !window.setFrameUsingName("BeipMUClientWindow") { window.center() }
             window.setFrameAutosaveName("BeipMUClientWindow")
         }
+        restoreInputHeight()
+        tracksInputHeight = true
         appendClient("Welcome to BeipMU for Mac. Choose Connection → Connect… to begin.")
         runStartupScriptIfNeeded()
         updateWindowTitle()
@@ -602,12 +605,14 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
 
     func splitViewDidResizeSubviews(_ notification: Notification) {
         guard tracksInputHeight,
+              window?.isVisible == true,
               notification.object as? NSSplitView === inputSplitView,
               inputContainer.frame.height >= 30 else { return }
         let height = Double(inputContainer.frame.height)
         guard abs(preferences.inputHeight - height) >= 0.5 else { return }
         preferences.inputHeight = height
         savePreferences()
+        onInputHeightChange?(height)
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
@@ -1003,6 +1008,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
 
     var tabBarApplicationMenuForTesting: NSMenu { tabBarApplicationMenu() }
     var quickConnectMenuForTesting: NSMenu { quickConnectMenu() }
+    var inputHeightPreferenceForTesting: Double { preferences.inputHeight }
     var tabBarControlIdentifiersForTesting: [String] {
         [applicationMenuButton, quickConnectButton, profilesButton].compactMap {
             $0.accessibilityIdentifier()
@@ -2164,17 +2170,6 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         } else {
             dockController.apply(placement: preferences.dockPlacement, thickness: preferences.dockThickness)
         }
-        dockController.hostView.layoutSubtreeIfNeeded()
-        inputSplitView.setPosition(
-            max(
-                80,
-                inputSplitView.bounds.height
-                    - inputSplitView.dividerThickness
-                    - CGFloat(preferences.inputHeight)
-            ),
-            ofDividerAt: 0
-        )
-        tracksInputHeight = true
         applyInputWindowSettings()
         refreshDiagnostics()
         window.makeFirstResponder(input)
@@ -3787,6 +3782,28 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
 
     private func synchronizeLegacyGlobalInputSettings() {
         preferences.stickyInput = preferences.globalInputWindowSettings.keepsTextOnSubmit
+    }
+
+    private func restoreInputHeight() {
+        guard inputSplitView.bounds.height > 0 else { return }
+        inputSplitView.layoutSubtreeIfNeeded()
+        inputSplitView.setPosition(
+            max(
+                80,
+                inputSplitView.bounds.height
+                    - inputSplitView.dividerThickness
+                    - CGFloat(preferences.inputHeight)
+            ),
+            ofDividerAt: 0
+        )
+    }
+
+    func synchronizeInputHeight(_ height: Double) {
+        preferences.inputHeight = height
+        let wasTrackingInputHeight = tracksInputHeight
+        tracksInputHeight = false
+        restoreInputHeight()
+        tracksInputHeight = wasTrackingInputHeight
     }
 
     private func resizeInput(to height: CGFloat) {
