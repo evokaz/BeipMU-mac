@@ -184,6 +184,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         catch { NSApplication.shared.presentError(error) }
     }
     @objc func disconnect(_ sender: Any?) { activeController?.disconnect() }
+    @objc func reconnect(_ sender: Any?) { activeController?.reconnect() }
     @objc func logging(_ sender: Any?) { activeController?.showLoggingControls() }
     @objc func statistics(_ sender: Any?) { activeController?.showConnectionStatistics() }
     @objc func debugNetwork(_ sender: Any?) { activeController?.showNetworkDebugger() }
@@ -390,6 +391,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         connectionItem.submenu = connectionMenu
         addShortcutItem(to: connectionMenu, action: .connect, selector: #selector(connect(_:)), title: "Connect…")
         addShortcutItem(to: connectionMenu, action: .disconnect, selector: #selector(disconnect(_:)))
+        connectionMenu.addItem(withTitle: "Reconnect", action: #selector(reconnect(_:)), keyEquivalent: "")
         addShortcutItem(to: connectionMenu, action: .logging, selector: #selector(logging(_:)), title: "Logging…")
         connectionMenu.addItem(withTitle: "Statistics…", action: #selector(statistics(_:)), keyEquivalent: "")
         let debuggers = NSMenu(title: "Debuggers")

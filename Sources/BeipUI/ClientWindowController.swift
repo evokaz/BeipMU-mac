@@ -658,6 +658,14 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         Task { await session.disconnect() }
     }
 
+    func reconnect() {
+        guard let session else {
+            appendError("No previous connection to reconnect.")
+            return
+        }
+        Task { await session.reconnect() }
+    }
+
     func clearOutput() { output.clear() }
 
     func toggleOutputPause() { output.togglePaused() }
@@ -2991,10 +2999,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             for controller in controllers { controller.disconnect() }
         case let .reconnect(all):
             let controllers = all ? Self.openControllers : [self]
-            for controller in controllers {
-                guard let session = controller.session else { controller.appendError("No previous connection to reconnect."); continue }
-                Task { await session.reconnect() }
-            }
+            for controller in controllers { controller.reconnect() }
         case let .connect(address, character):
             if let saved = profileLibrary.workspace.servers.first(where: {
                 $0.profile.name.caseInsensitiveCompare(address) == .orderedSame
