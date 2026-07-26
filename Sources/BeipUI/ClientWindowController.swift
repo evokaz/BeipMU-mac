@@ -11,7 +11,14 @@ import UserNotifications
 @MainActor
 private final class SessionWindowTabItemView: NSView {
     weak var targetController: ClientWindowController?
-    private let selectButton = NSButton()
+    private final class ClickThroughLabel: NSTextField {
+        override var alignmentRectInsets: NSEdgeInsets {
+            NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
+        }
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    }
+
+    private let titleLabel = ClickThroughLabel(labelWithString: "")
     private let closeButton = NSButton()
     private var tracking: NSTrackingArea?
     private var selected = false
@@ -26,22 +33,28 @@ private final class SessionWindowTabItemView: NSView {
         wantsLayer = true
         layer?.cornerRadius = 7
 
-        selectButton.title = title
-        selectButton.isBordered = false
-        selectButton.font = .systemFont(ofSize: 13, weight: selected ? .semibold : .regular)
-        selectButton.target = self
-        selectButton.action = #selector(selectTab(_:))
-        selectButton.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(selectButton)
+        titleLabel.stringValue = title
+        titleLabel.font = .systemFont(ofSize: 13, weight: selected ? .semibold : .regular)
+        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.maximumNumberOfLines = 1
+        titleLabel.allowsExpansionToolTips = true
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.setAccessibilityIdentifier("sessionTabTitle")
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        addSubview(titleLabel)
 
         closeButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close tab")
         closeButton.imageScaling = .scaleProportionallyDown
         closeButton.isBordered = false
+        closeButton.focusRingType = .none
         closeButton.contentTintColor = .secondaryLabelColor
         closeButton.target = self
         closeButton.action = #selector(closeTab(_:))
         closeButton.translatesAutoresizingMaskIntoConstraints = false
         closeButton.isHidden = !selected
+        closeButton.toolTip = "Close tab"
+        closeButton.setAccessibilityLabel("Close tab")
+        closeButton.setAccessibilityIdentifier("sessionTabClose")
         addSubview(closeButton)
 
         setAccessibilityElement(true)
@@ -55,14 +68,13 @@ private final class SessionWindowTabItemView: NSView {
             heightAnchor.constraint(equalToConstant: 28),
             minimumWidth,
             widthAnchor.constraint(lessThanOrEqualToConstant: 220),
-            selectButton.leadingAnchor.constraint(equalTo: leadingAnchor),
-            selectButton.trailingAnchor.constraint(equalTo: trailingAnchor),
-            selectButton.topAnchor.constraint(equalTo: topAnchor),
-            selectButton.bottomAnchor.constraint(equalTo: bottomAnchor),
             closeButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 7),
             closeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
             closeButton.widthAnchor.constraint(equalToConstant: 16),
             closeButton.heightAnchor.constraint(equalToConstant: 16),
+            titleLabel.leadingAnchor.constraint(equalTo: closeButton.trailingAnchor, constant: 5),
+            titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
         updateBackground(hovered: false)
     }
@@ -94,6 +106,10 @@ private final class SessionWindowTabItemView: NSView {
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         updateBackground(hovered: false)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        selectTab(self)
     }
 
     private func updateBackground(hovered: Bool) {

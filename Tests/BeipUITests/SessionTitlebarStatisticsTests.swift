@@ -81,6 +81,44 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
     }
 
     @MainActor
+    func testSessionTabTitleDoesNotOverlapCloseButton() throws {
+        var workspace = try LegacyConfigurationWorkspace.empty(isDirty: false)
+        let serverID = workspace.addServer(named: "MyRhost With A Long World Name")
+        let characterID = try workspace.addCharacter(toServerID: serverID, named: "Wizard")
+        let savedServer = try XCTUnwrap(workspace.servers.first)
+        let savedCharacter = try XCTUnwrap(savedServer.characters.first { $0.id == characterID })
+
+        let controller = ClientWindowController(profileLibrary: ProfileLibrary(workspace: workspace))
+        defer { controller.close() }
+        controller.restoreOpenTab(server: savedServer.profile, character: savedCharacter)
+        controller.showWindow(nil)
+
+        let content = try XCTUnwrap(controller.window?.contentView)
+        content.layoutSubtreeIfNeeded()
+        let activeTab = try XCTUnwrap(
+            recursiveSubviews(of: content)
+                .first { $0.accessibilityIdentifier() == "activeSessionTab" }
+        )
+        activeTab.layoutSubtreeIfNeeded()
+
+        let closeButton = try XCTUnwrap(
+            recursiveSubviews(of: activeTab)
+                .compactMap { $0 as? NSButton }
+                .first { $0.accessibilityIdentifier() == "sessionTabClose" }
+        )
+        let titleLabel = try XCTUnwrap(
+            recursiveSubviews(of: activeTab)
+                .compactMap { $0 as? NSTextField }
+                .first { $0.accessibilityIdentifier() == "sessionTabTitle" }
+        )
+
+        XCTAssertFalse(closeButton.isHidden)
+        XCTAssertGreaterThanOrEqual(titleLabel.frame.minX, closeButton.frame.maxX + 4.5)
+        XCTAssertLessThanOrEqual(titleLabel.frame.maxX, activeTab.bounds.maxX - 9.5)
+        XCTAssertEqual(titleLabel.lineBreakMode, .byTruncatingTail)
+    }
+
+    @MainActor
     func testApplicationButtonMenuMatchesLegacyNavigation() throws {
         let library = ProfileLibrary(workspace: try .empty(isDirty: false))
         let controller = ClientWindowController(profileLibrary: library)
@@ -192,5 +230,11 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
         XCTAssertTrue(NSApplication.shared.sendAction(action, to: item.target, from: item))
         XCTAssertFalse(quickConnectRequested)
         XCTAssertEqual(group.controllers.count, 2)
+    }
+
+    @MainActor
+    private func recursiveSubviews(of root: NSView?) -> [NSView] {
+        guard let root else { return [] }
+        return [root] + root.subviews.flatMap { recursiveSubviews(of: $0) }
     }
 }
