@@ -14,7 +14,7 @@ swift test
 ./Scripts/test-ui.sh
 ./Scripts/profile-app-soak.sh
 xcodegen generate
-xcodebuild -workspace BeipMU.xcodeproj/project.xcworkspace -scheme BeipMU \
+xcodebuild -project BeipMU.xcodeproj -scheme BeipMU \
   -configuration Debug -derivedDataPath DerivedData build
 ```
 
@@ -105,6 +105,10 @@ macOS 26 Apple-silicon closure passes 295 Swift tests, seven XCUITests, the
 reviewed visual baselines, performance/RSS/leak gates, and 750 generated parity
 rows. Assisted VoiceOver/audio/device gates also pass. The universal archive
 retains an Intel slice, but Intel remains untested and unsupported.
+Milestone 11 Sprints 11.0–11.4 have frozen the Windows v331 baseline, repeated
+the clean release gates, inspected the candidate package, and published the
+final parity report and release notes. The final build, tag, push, and manual
+distribution handoff remain.
 
 Milestones 6 and 7 are complete. The 750-row matrix now has explicit release
 dispositions, typed accepted evidence, preservation-only round-trip coverage,

@@ -8,7 +8,7 @@ distribution="$repo_dir/dist"
 cd "$repo_dir"
 ./Scripts/generate-project.sh
 xcodebuild \
-  -workspace BeipMU.xcodeproj/project.xcworkspace \
+  -project BeipMU.xcodeproj \
   -scheme BeipMU \
   -configuration Release \
   -derivedDataPath "$derived_data" \
