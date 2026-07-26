@@ -279,6 +279,62 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
     }
 
     @MainActor
+    func testSessionTabContextMenuTargetsTheRightClickedTab() throws {
+        var workspace = try LegacyConfigurationWorkspace.empty(isDirty: false)
+        let world = workspace.addServer(named: "Single World")
+        _ = try workspace.addCharacter(toServerID: world, named: "Hero")
+        let saved = try XCTUnwrap(workspace.servers.first)
+        let character = try XCTUnwrap(saved.characters.first)
+        let library = ProfileLibrary(workspace: workspace)
+        let first = ClientWindowController(profileLibrary: library)
+        let second = ClientWindowController(profileLibrary: library)
+        defer {
+            first.close()
+            second.close()
+        }
+
+        first.restoreOpenTab(server: saved.profile, character: character)
+        let group = ClientTabGroup(first)
+        group.add(second)
+        group.select(second, sender: nil)
+
+        let menu = first.sessionTabContextMenuForTesting
+        XCTAssertEqual(
+            menu.items.filter { !$0.isSeparatorItem }.map(\.title),
+            ["Disconnect", "Reconnect", "Close Tab"]
+        )
+
+        for item in menu.items where !item.isSeparatorItem {
+            XCTAssertTrue(item.target as AnyObject === first)
+        }
+        XCTAssertFalse(menu.item(withTitle: "Disconnect")?.isEnabled ?? true)
+        XCTAssertTrue(menu.item(withTitle: "Reconnect")?.isEnabled ?? false)
+    }
+
+    @MainActor
+    func testSessionTabContextMenuClosesBackgroundTab() throws {
+        let library = ProfileLibrary(workspace: try .empty(isDirty: false))
+        let first = ClientWindowController(profileLibrary: library)
+        let second = ClientWindowController(profileLibrary: library)
+        defer {
+            first.close()
+            second.close()
+        }
+        let group = ClientTabGroup(first)
+        group.add(second)
+        group.select(second, sender: nil)
+
+        let closeItem = try XCTUnwrap(first.sessionTabContextMenuForTesting.item(withTitle: "Close Tab"))
+        let action = try XCTUnwrap(closeItem.action)
+
+        XCTAssertTrue(NSApplication.shared.sendAction(action, to: closeItem.target, from: closeItem))
+        XCTAssertEqual(group.controllers.count, 1)
+        XCTAssertTrue(group.controllers.first === second)
+        XCTAssertNil(group.selectedController)
+        XCTAssertNil(second.sessionTabGroup)
+    }
+
+    @MainActor
     private func recursiveSubviews(of root: NSView?) -> [NSView] {
         guard let root else { return [] }
         return [root] + root.subviews.flatMap { recursiveSubviews(of: $0) }

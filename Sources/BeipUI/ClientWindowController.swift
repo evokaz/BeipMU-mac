@@ -135,6 +135,18 @@ private final class SessionWindowTabItemView: NSView {
         selectTab(self)
     }
 
+    override func rightMouseDown(with event: NSEvent) {
+        guard let menu = targetController?.sessionTabContextMenu() else {
+            super.rightMouseDown(with: event)
+            return
+        }
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        targetController?.sessionTabContextMenu()
+    }
+
     private func updateBackground(hovered: Bool) {
         layer?.backgroundColor = if selected {
             (tabColor ?? NSColor.controlColor).cgColor
@@ -1063,6 +1075,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
 
     var tabBarApplicationMenuForTesting: NSMenu { tabBarApplicationMenu() }
     var quickConnectMenuForTesting: NSMenu { quickConnectMenu() }
+    var sessionTabContextMenuForTesting: NSMenu { sessionTabContextMenu() }
     var inputHeightPreferenceForTesting: Double { preferences.inputHeight }
     var tabBarControlIdentifiersForTesting: [String] {
         [applicationMenuButton, quickConnectButton, profilesButton].compactMap {
@@ -1098,6 +1111,54 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             return
         }
         Task { await session.reconnect() }
+    }
+
+    func sessionTabContextMenu() -> NSMenu {
+        let menu = NSMenu(title: sessionTabTitle)
+        menu.autoenablesItems = false
+
+        let disconnectItem = NSMenuItem(
+            title: "Disconnect",
+            action: #selector(contextDisconnectTab(_:)),
+            keyEquivalent: ""
+        )
+        disconnectItem.target = self
+        disconnectItem.isEnabled = session != nil || currentPuppet != nil
+        menu.addItem(disconnectItem)
+
+        let reconnectItem = NSMenuItem(
+            title: "Reconnect",
+            action: #selector(contextReconnectTab(_:)),
+            keyEquivalent: ""
+        )
+        reconnectItem.target = self
+        reconnectItem.isEnabled = currentServer != nil && currentPuppet == nil
+        menu.addItem(reconnectItem)
+
+        menu.addItem(.separator())
+
+        let closeItem = NSMenuItem(
+            title: "Close Tab",
+            action: #selector(contextCloseTab(_:)),
+            keyEquivalent: ""
+        )
+        closeItem.target = self
+        closeItem.isEnabled = window != nil
+        menu.addItem(closeItem)
+
+        return menu
+    }
+
+    @objc private func contextDisconnectTab(_ sender: Any?) {
+        disconnect()
+    }
+
+    @objc private func contextReconnectTab(_ sender: Any?) {
+        reconnect()
+    }
+
+    @objc private func contextCloseTab(_ sender: Any?) {
+        window?.performClose(sender)
     }
 
     func clearOutput() { output.clear() }
