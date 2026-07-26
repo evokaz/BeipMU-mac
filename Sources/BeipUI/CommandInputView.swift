@@ -7,6 +7,8 @@ final class CommandInputView: NSTextView {
     var onSubmit: ((String) -> Void)?
     var onSmartPaste: (([String]) -> Bool)?
     var onMacro: ((NSEvent) -> Bool)?
+    var onPageUp: (() -> Bool)?
+    var onPageDown: (() -> Bool)?
     var onShowSettings: (() -> Void)?
     var onToggleUseGlobalSettings: (() -> Void)?
     var onPreferredHeightChange: ((CGFloat) -> Void)?
@@ -103,6 +105,10 @@ final class CommandInputView: NSTextView {
             if let next = commandHistory.next() { text = next }
         case 48 where modifiers.isDisjoint(with: [.control, .command, .option]):
             completeCurrentWord()
+        case 116 where modifiers.isDisjoint(with: [.control, .command, .option]) && onPageUp?() == true:
+            break
+        case 121 where modifiers.isDisjoint(with: [.control, .command, .option]) && onPageDown?() == true:
+            break
         default:
             commandHistory.resetNavigation()
             super.keyDown(with: event)

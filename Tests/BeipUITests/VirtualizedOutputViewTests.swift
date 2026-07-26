@@ -115,6 +115,68 @@ final class VirtualizedOutputViewTests: XCTestCase {
         XCTAssertEqual(output.capturedText(lineCount: 3, skipping: 99), "")
     }
 
+    func testSplitKeepsUpperScrollbackStationaryWhileLowerOutputFollowsNewText() throws {
+        let output = OutputTextView()
+        let host = NSView(frame: NSRect(x: 0, y: 0, width: 500, height: 320))
+        output.containerView.frame = host.bounds
+        host.addSubview(output.containerView)
+        output.containerView.layoutSubtreeIfNeeded()
+
+        (1...80).forEach { output.append(.init(text: "line \($0)")) }
+        XCTAssertGreaterThan(output.primaryScrollViewForTesting.contentView.bounds.origin.y, 0)
+
+        output.toggleSplit()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        output.containerView.layoutSubtreeIfNeeded()
+
+        let upperScrollback = try XCTUnwrap(output.secondaryScrollViewForTesting)
+        XCTAssertTrue(output.containerView.subviews.first === upperScrollback)
+        XCTAssertEqual(upperScrollback.borderType, .lineBorder)
+
+        let frozenOrigin = upperScrollback.contentView.bounds.origin.y
+        let liveOrigin = output.primaryScrollViewForTesting.contentView.bounds.origin.y
+        output.append(.init(text: "new live line"))
+        output.containerView.layoutSubtreeIfNeeded()
+
+        XCTAssertEqual(upperScrollback.contentView.bounds.origin.y, frozenOrigin, accuracy: 0.5)
+        XCTAssertGreaterThan(output.primaryScrollViewForTesting.contentView.bounds.origin.y, liveOrigin)
+    }
+
+    func testPageUpAndPageDownNavigateSplitScrollbackAndCloseAtBottom() throws {
+        let output = OutputTextView()
+        let host = NSView(frame: NSRect(x: 0, y: 0, width: 500, height: 320))
+        output.containerView.frame = host.bounds
+        host.addSubview(output.containerView)
+        output.containerView.layoutSubtreeIfNeeded()
+
+        (1...120).forEach { output.append(.init(text: "line \($0)")) }
+        let liveBottom = output.primaryScrollViewForTesting.contentView.bounds.origin.y
+
+        XCTAssertTrue(output.performPageUp())
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        output.containerView.layoutSubtreeIfNeeded()
+
+        let upperScrollback = try XCTUnwrap(output.secondaryScrollViewForTesting)
+        XCTAssertTrue(output.isSplit)
+        let afterPageUp = upperScrollback.contentView.bounds.origin.y
+        XCTAssertLessThan(afterPageUp, liveBottom)
+
+        XCTAssertTrue(output.performPageDown())
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        output.containerView.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(upperScrollback.contentView.bounds.origin.y, afterPageUp)
+
+        for _ in 0..<20 where output.isSplit && !isAtBottom(upperScrollback) {
+            XCTAssertTrue(output.performPageDown())
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        XCTAssertTrue(output.isSplit)
+        XCTAssertTrue(isAtBottom(upperScrollback))
+
+        XCTAssertTrue(output.performPageDown())
+        XCTAssertFalse(output.isSplit)
+    }
+
     func testTextWindowSettingsDriveFontColorsMarginsWrappingAndDates() throws {
         let output = OutputTextView()
         let settings = TextWindowSettings(
@@ -213,5 +275,10 @@ final class VirtualizedOutputViewTests: XCTestCase {
         XCTAssertTrue(result.contains("Typed&gt;look"))
         XCTAssertTrue(result.contains("Sent&gt;north"))
         XCTAssertTrue(result.contains("Logging stopped"))
+    }
+
+    private func isAtBottom(_ scrollView: NSScrollView) -> Bool {
+        let maxY = max(0, (scrollView.documentView?.bounds.height ?? 0) - scrollView.contentSize.height)
+        return maxY - scrollView.contentView.bounds.origin.y <= 1
     }
 }

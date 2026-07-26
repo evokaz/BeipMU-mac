@@ -2026,6 +2026,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         }
         controller.input.completionCandidates = CommandRegistry.knownCommands.map { "/" + $0 }.sorted()
         controller.input.onSmartPaste = { [weak self] lines in self?.handleSmartPaste(lines) ?? false }
+        controller.input.onPageUp = { [weak self] in self?.output.performPageUp() ?? false }
+        controller.input.onPageDown = { [weak self] in self?.output.performPageDown() ?? false }
         controller.input.onShowSettings = { [weak self] in
             guard let self else { return }
             self.showInputWindowSettings(initialScope: self.textWindowIdentity.tabKey == nil ? .global : .tab)
@@ -2192,6 +2194,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         input.onSubmit = { [weak self] text in self?.submitInput(text) }
         input.onSmartPaste = { [weak self] lines in self?.handleSmartPaste(lines) ?? false }
         input.onMacro = { [weak self] event in self?.handleKeyboardMacro(event) ?? false }
+        input.onPageUp = { [weak self] in self?.output.performPageUp() ?? false }
+        input.onPageDown = { [weak self] in self?.output.performPageDown() ?? false }
         input.onShowSettings = { [weak self] in
             guard let self else { return }
             self.showInputWindowSettings(initialScope: self.textWindowIdentity.tabKey == nil ? .global : .tab)

@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import BeipCore
 import BeipPersistence
@@ -322,6 +323,27 @@ final class WorkspacePreferencesTests: XCTestCase {
             conversion.items.map(\.title),
             ["Convert Returns to %R", "Convert Tabs to %T", "Convert Spaces to %B"]
         )
+    }
+
+    @MainActor
+    func testCommandInputForwardsPageKeysToOutputNavigation() throws {
+        let input = CommandInputView()
+        var pageUps = 0
+        var pageDowns = 0
+        input.onPageUp = {
+            pageUps += 1
+            return true
+        }
+        input.onPageDown = {
+            pageDowns += 1
+            return true
+        }
+
+        input.keyDown(with: try XCTUnwrap(pageKeyEvent(keyCode: 116)))
+        input.keyDown(with: try XCTUnwrap(pageKeyEvent(keyCode: 121)))
+
+        XCTAssertEqual(pageUps, 1)
+        XCTAssertEqual(pageDowns, 1)
     }
 
     @MainActor
@@ -914,5 +936,20 @@ final class WorkspacePreferencesTests: XCTestCase {
         XCTAssertTrue(controller.copySelection())
         XCTAssertTrue(controller.pasteSelection())
         XCTAssertEqual(controller.editor.atlas.maps[0].rooms.count, 2)
+    }
+
+    private func pageKeyEvent(keyCode: UInt16) -> NSEvent? {
+        NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "",
+            charactersIgnoringModifiers: "",
+            isARepeat: false,
+            keyCode: keyCode
+        )
     }
 }

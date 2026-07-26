@@ -28,6 +28,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     var onLink: ((URL) -> Void)?
     var onContextMenu: ((NSEvent) -> NSMenu?)?
     var onPageUp: (() -> Bool)?
+    var onPageDown: (() -> Bool)?
     var onSelectionCompleted: (() -> Void)?
     var onInteractionCompleted: (() -> Void)?
     private(set) var renderedItemCount = 0
@@ -427,6 +428,9 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
 
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 116, onPageUp?() == true {
+            return
+        }
+        if event.keyCode == 121, onPageDown?() == true {
             return
         }
         super.keyDown(with: event)

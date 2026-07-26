@@ -68,6 +68,8 @@ final class OutputTextView: NSObject {
     var hasSelectedLine: Bool { outputView.selectedItemID != nil }
     var appliedSettingsForTesting: TextWindowSettings { settings }
     var primaryOutputViewForTesting: VirtualizedOutputView { outputView }
+    var primaryScrollViewForTesting: NSScrollView { scrollView }
+    var secondaryScrollViewForTesting: NSScrollView? { secondaryScrollView }
 
     func applySettings(_ suppliedSettings: TextWindowSettings) {
         settings = suppliedSettings.normalized
@@ -129,7 +131,8 @@ final class OutputTextView: NSObject {
         preferredScrollHeight.isActive = true
         super.init()
         outputView.onLink = { [weak self] url in self?.perform(url: url) }
-        outputView.onPageUp = { [weak self] in self?.splitOnPageUp() ?? false }
+        outputView.onPageUp = { [weak self] in self?.performPageUp() ?? false }
+        outputView.onPageDown = { [weak self] in self?.performPageDown() ?? false }
         outputView.onSelectionCompleted = { [weak self] in self?.copySelectionAsPlainText() }
     }
 
@@ -210,9 +213,6 @@ final class OutputTextView: NSObject {
                 automaticMarkerID = line.id
                 outputView.setMarker(itemID: line.id, marked: true)
                 secondaryOutputView?.setMarker(itemID: line.id, marked: true)
-            }
-            if settings.scrollsToBottomOnNewText {
-                secondaryOutputView?.scrollToEnd(animated: settings.smoothScrolling)
             }
         }
         currentMatchIndex = nil
@@ -296,31 +296,83 @@ final class OutputTextView: NSObject {
             return
         }
 
+        enableSplit(scrollbackOrigin: scrollView.contentView.bounds.origin)
+    }
+
+    @discardableResult
+    func performPageUp() -> Bool {
+        guard settings.splitsOnPageUp else { return false }
+        let scrollbackOrigin = scrollView.contentView.bounds.origin
+        if !isSplit {
+            enableSplit(scrollbackOrigin: scrollbackOrigin) { [weak self] scrollView in
+                self?.scrollPage(in: scrollView, direction: -1)
+            }
+            return true
+        }
+        guard let secondaryScrollView else { return false }
+        scrollPage(in: secondaryScrollView, direction: -1)
+        return true
+    }
+
+    @discardableResult
+    func performPageDown() -> Bool {
+        guard settings.splitsOnPageUp else { return false }
+        let scrollbackOrigin = scrollView.contentView.bounds.origin
+        if !isSplit {
+            enableSplit(scrollbackOrigin: scrollbackOrigin) { [weak self] scrollView in
+                self?.scrollPage(in: scrollView, direction: 1)
+            }
+            return true
+        }
+        guard let secondaryScrollView else { return false }
+        if isAtBottom(secondaryScrollView) {
+            toggleSplit()
+        } else {
+            scrollPage(in: secondaryScrollView, direction: 1)
+        }
+        return true
+    }
+
+    private func enableSplit(
+        scrollbackOrigin: NSPoint,
+        scrollAdjustment: (@MainActor (NSScrollView) -> Void)? = nil
+    ) {
         let view = VirtualizedOutputView(frame: NSRect(x: 0, y: 0, width: max(1, outputView.bounds.width), height: 1))
         view.canvasBackgroundColor = defaultBackground
         view.autoresizingMask = [.width]
         view.onLink = { [weak self] url in self?.perform(url: url) }
         view.onContextMenu = onContextMenu
-        view.onPageUp = { [weak self] in self?.splitOnPageUp() ?? false }
+        view.onPageUp = { [weak self] in self?.performPageUp() ?? false }
+        view.onPageDown = { [weak self] in self?.performPageDown() ?? false }
         view.onSelectionCompleted = { [weak self, weak view] in
             guard let view else { return }
             self?.copySelectionAsPlainText(from: view)
         }
         configure(view: view)
         let secondary = Self.makeScrollView(documentView: view, backgroundColor: defaultBackground)
-        secondary.setAccessibilityLabel("Live output split")
+        secondary.setAccessibilityLabel("Paused output scrollback")
+        secondary.borderType = .lineBorder
         secondaryOutputView = view
         view.onInteractionCompleted = onInteractionCompleted
         secondaryScrollView = secondary
-        containerView.addArrangedSubview(secondary)
-        containerView.setHoldingPriority(.defaultLow, forSubviewAt: 1)
+        containerView.insertArrangedSubview(secondary, at: 0)
+        containerView.setHoldingPriority(.defaultLow, forSubviewAt: 0)
         secondary.heightAnchor.constraint(greaterThanOrEqualToConstant: 80).isActive = true
         view.setItems(currentItems())
-        view.scrollToEnd()
+        restoreScrollPosition(in: secondary, to: scrollbackOrigin)
+        scrollAdjustment?(secondary)
+        if settings.scrollsToBottomOnNewText {
+            outputView.scrollToEnd()
+        }
         DispatchQueue.main.async { [weak self] in
             guard let self, self.secondaryOutputView != nil else { return }
             self.containerView.layoutSubtreeIfNeeded()
             self.containerView.setPosition(self.containerView.bounds.height * 0.5, ofDividerAt: 0)
+            self.restoreScrollPosition(in: secondary, to: scrollbackOrigin)
+            scrollAdjustment?(secondary)
+            if self.settings.scrollsToBottomOnNewText {
+                self.outputView.scrollToEnd()
+            }
         }
     }
 
@@ -360,12 +412,6 @@ final class OutputTextView: NSObject {
             : nil
     }
 
-    private func splitOnPageUp() -> Bool {
-        guard settings.splitsOnPageUp, !isSplit else { return false }
-        toggleSplit()
-        return true
-    }
-
     private func clearAutomaticMarker() {
         guard let id = automaticMarkerID else { return }
         outputView.setMarker(itemID: id, marked: false)
@@ -394,6 +440,7 @@ final class OutputTextView: NSObject {
         preservingScrollPosition: Bool = false
     ) {
         let oldOrigin = scrollView.contentView.bounds.origin
+        let oldSecondaryOrigin = secondaryScrollView?.contentView.bounds.origin
         lineContentRanges.removeAll(keepingCapacity: true)
         let lines = history.lines
         let items = lines.enumerated().map { index, line in
@@ -408,9 +455,32 @@ final class OutputTextView: NSObject {
         if scrollToEnd {
             outputView.scrollToEnd()
         } else if preservingScrollPosition {
-            scrollView.contentView.scroll(to: oldOrigin)
-            scrollView.reflectScrolledClipView(scrollView.contentView)
+            restoreScrollPosition(in: scrollView, to: oldOrigin)
         }
+        if let secondaryScrollView, let oldSecondaryOrigin {
+            restoreScrollPosition(in: secondaryScrollView, to: oldSecondaryOrigin)
+        }
+    }
+
+    private func restoreScrollPosition(in scrollView: NSScrollView, to origin: NSPoint) {
+        let maxY = max(0, (scrollView.documentView?.bounds.height ?? 0) - scrollView.contentSize.height)
+        let point = NSPoint(x: origin.x, y: min(max(0, origin.y), maxY))
+        scrollView.contentView.scroll(to: point)
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+    }
+
+    private func scrollPage(in scrollView: NSScrollView, direction: CGFloat) {
+        let origin = scrollView.contentView.bounds.origin
+        let distance = max(1, scrollView.contentSize.height - 20)
+        restoreScrollPosition(
+            in: scrollView,
+            to: NSPoint(x: origin.x, y: origin.y + distance * direction)
+        )
+    }
+
+    private func isAtBottom(_ scrollView: NSScrollView) -> Bool {
+        let maxY = max(0, (scrollView.documentView?.bounds.height ?? 0) - scrollView.contentSize.height)
+        return maxY - scrollView.contentView.bounds.origin.y <= 1
     }
 
     private func makeItem(
