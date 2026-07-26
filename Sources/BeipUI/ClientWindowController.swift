@@ -9,7 +9,7 @@ import Darwin
 import UserNotifications
 
 @MainActor
-final class ClientWindowController: NSWindowController, NSWindowDelegate {
+final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSplitViewDelegate {
     private struct ActiveLog {
         var template: String
         var rollsOverDaily: Bool
@@ -40,6 +40,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
     private let profileLibrary: ProfileLibrary
     private let output = OutputTextView()
     private let input = CommandInputView()
+    private let inputSplitView = NSSplitView()
+    private let inputContainer = NSView()
     private let stateLabel = NSTextField(labelWithString: "Disconnected")
     private let activityLabel = NSTextField(labelWithString: "")
     private let tabButton = NSButton(title: "New Tab", target: nil, action: nil)
@@ -113,6 +115,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
     private var isMuted = false
     private var connectionStateText = "Disconnected"
     private weak var taskbarView: NSStackView?
+    private var tracksInputHeight = false
     private static var didRunStartupScript = false
     var onClose: (() -> Void)?
     var onThemeChange: ((WorkspaceThemeSettings) -> Void)?
@@ -281,6 +284,37 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
         guard let session else { return }
         let size = output.terminalSize
         Task { await session.updateWindowSize(columns: size.columns, rows: size.rows) }
+    }
+
+    func splitView(
+        _ splitView: NSSplitView,
+        constrainMinCoordinate proposedMinimumPosition: CGFloat,
+        ofSubviewAt dividerIndex: Int
+    ) -> CGFloat {
+        guard splitView === inputSplitView else { return proposedMinimumPosition }
+        return max(80, proposedMinimumPosition)
+    }
+
+    func splitView(
+        _ splitView: NSSplitView,
+        constrainMaxCoordinate proposedMaximumPosition: CGFloat,
+        ofSubviewAt dividerIndex: Int
+    ) -> CGFloat {
+        guard splitView === inputSplitView else { return proposedMaximumPosition }
+        return max(80, min(
+            proposedMaximumPosition,
+            splitView.bounds.height - splitView.dividerThickness - 64
+        ))
+    }
+
+    func splitViewDidResizeSubviews(_ notification: Notification) {
+        guard tracksInputHeight,
+              notification.object as? NSSplitView === inputSplitView,
+              inputContainer.frame.height >= 64 else { return }
+        let height = Double(inputContainer.frame.height)
+        guard abs(preferences.inputHeight - height) >= 0.5 else { return }
+        preferences.inputHeight = height
+        savePreferences()
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
@@ -1181,7 +1215,6 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
         }
         applyPreferences()
 
-        let inputContainer = NSView()
         inputContainer.addSubview(input.containerScrollView)
         NSLayoutConstraint.activate([
             input.containerScrollView.leadingAnchor.constraint(equalTo: inputContainer.leadingAnchor, constant: 8),
@@ -1189,12 +1222,21 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
             input.containerScrollView.topAnchor.constraint(equalTo: inputContainer.topAnchor, constant: 7),
             input.containerScrollView.bottomAnchor.constraint(equalTo: inputContainer.bottomAnchor, constant: -7),
             inputContainer.heightAnchor.constraint(greaterThanOrEqualToConstant: 64),
-            inputContainer.heightAnchor.constraint(lessThanOrEqualToConstant: 150),
         ])
 
+        inputSplitView.isVertical = false
+        inputSplitView.dividerStyle = .thin
+        inputSplitView.delegate = self
+        inputSplitView.setAccessibilityIdentifier("commandInputSplit")
+        inputSplitView.addArrangedSubview(output.containerView)
+        inputSplitView.addArrangedSubview(inputContainer)
+        inputSplitView.setHoldingPriority(.defaultLow, forSubviewAt: 0)
+        inputSplitView.setHoldingPriority(.defaultHigh, forSubviewAt: 1)
+        inputSplitView.setContentHuggingPriority(.defaultLow, for: .vertical)
+        inputSplitView.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+
         root.addArrangedSubview(taskbar)
-        root.addArrangedSubview(output.containerView)
-        root.addArrangedSubview(inputContainer)
+        root.addArrangedSubview(inputSplitView)
         let dockController = WorkspaceDockController(mainView: root, ownerWindow: window)
         self.dockController = dockController
         dockController.onPlacementChange = { [weak self] placement, thickness in
@@ -1251,6 +1293,17 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate {
         } else {
             dockController.apply(placement: preferences.dockPlacement, thickness: preferences.dockThickness)
         }
+        dockController.hostView.layoutSubtreeIfNeeded()
+        inputSplitView.setPosition(
+            max(
+                80,
+                inputSplitView.bounds.height
+                    - inputSplitView.dividerThickness
+                    - CGFloat(preferences.inputHeight)
+            ),
+            ofDividerAt: 0
+        )
+        tracksInputHeight = true
         refreshDiagnostics()
         window.makeFirstResponder(input)
     }

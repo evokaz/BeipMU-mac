@@ -85,6 +85,7 @@ struct WorkspacePreferences: Codable, Equatable {
     var outputSplit = false
     var stickyInput = false
     var inputPrefix = ""
+    var inputHeight: Double = 64
     var checksSpelling = true
     var speechVoiceIdentifier: String?
     var theme = WorkspaceThemeSettings()
@@ -107,6 +108,7 @@ struct WorkspacePreferences: Codable, Equatable {
         outputSplit: Bool = false,
         stickyInput: Bool = false,
         inputPrefix: String = "",
+        inputHeight: Double = 64,
         checksSpelling: Bool = true,
         speechVoiceIdentifier: String? = nil,
         theme: WorkspaceThemeSettings = .init(),
@@ -128,6 +130,7 @@ struct WorkspacePreferences: Codable, Equatable {
         self.outputSplit = outputSplit
         self.stickyInput = stickyInput
         self.inputPrefix = inputPrefix
+        self.inputHeight = inputHeight
         self.checksSpelling = checksSpelling
         self.speechVoiceIdentifier = speechVoiceIdentifier
         self.theme = theme
@@ -152,6 +155,7 @@ struct WorkspacePreferences: Codable, Equatable {
         outputSplit = try values.decodeIfPresent(Bool.self, forKey: .outputSplit) ?? false
         stickyInput = try values.decodeIfPresent(Bool.self, forKey: .stickyInput) ?? false
         inputPrefix = try values.decodeIfPresent(String.self, forKey: .inputPrefix) ?? ""
+        inputHeight = try values.decodeIfPresent(Double.self, forKey: .inputHeight) ?? 64
         checksSpelling = try values.decodeIfPresent(Bool.self, forKey: .checksSpelling) ?? true
         speechVoiceIdentifier = try values.decodeIfPresent(String.self, forKey: .speechVoiceIdentifier)
         theme = try values.decodeIfPresent(WorkspaceThemeSettings.self, forKey: .theme) ?? .init()
@@ -181,6 +185,7 @@ enum WorkspacePreferencesStore {
         }
         var result = decoded
         result.outputHistoryLimit = max(100, result.outputHistoryLimit)
+        result.inputHeight = max(64, min(1_000, result.inputHeight))
         result.dockThickness = max(160, min(600, result.dockThickness))
         if ![.left, .right, .top, .bottom].contains(result.lastDockedPlacement) {
             result.lastDockedPlacement = .right

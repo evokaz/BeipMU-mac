@@ -12,6 +12,21 @@ final class WorkspacePreferencesTests: XCTestCase {
         defer { controller.close() }
         let window = try XCTUnwrap(controller.window)
         controller.showWindow(nil)
+        let inputSplit = try XCTUnwrap(
+            recursiveSubviews(of: try XCTUnwrap(window.contentView))
+                .compactMap { $0 as? NSSplitView }
+                .first { $0.accessibilityIdentifier() == "commandInputSplit" }
+        )
+        XCTAssertFalse(inputSplit.isVertical)
+        XCTAssertEqual(inputSplit.subviews.count, 2)
+        XCTAssertTrue(
+            recursiveSubviews(of: inputSplit.subviews[1])
+                .contains { $0.accessibilityLabel() == "Command input" }
+        )
+        XCTAssertEqual(
+            controller.splitView(inputSplit, constrainMinCoordinate: 0, ofSubviewAt: 0),
+            80
+        )
         // AppKit retains only the title bar's own system minimum after showing.
         XCTAssertLessThanOrEqual(window.minSize.height, 32)
         XCTAssertEqual(window.contentMinSize, .zero)
@@ -94,6 +109,7 @@ final class WorkspacePreferencesTests: XCTestCase {
             outputSplit: true,
             stickyInput: true,
             inputPrefix: "say ",
+            inputHeight: 142,
             checksSpelling: false,
             speechVoiceIdentifier: "com.apple.voice.compact.en-US.Samantha",
             theme: .init(mode: .custom, foregroundHex: "#112233", backgroundHex: "#445566", accentHex: "#778899"),
@@ -155,6 +171,7 @@ final class WorkspacePreferencesTests: XCTestCase {
         XCTAssertEqual(decoded.outputHistoryLimit, 3_000)
         XCTAssertTrue(decoded.showsTimestamps)
         XCTAssertEqual(decoded.inputPrefix, "pose ")
+        XCTAssertEqual(decoded.inputHeight, 64)
         XCTAssertEqual(decoded.dockPlacement, .hidden)
         XCTAssertEqual(decoded.lastDockedPlacement, .right)
         XCTAssertFalse(decoded.outputSplit)
@@ -173,6 +190,7 @@ final class WorkspacePreferencesTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suiteName) }
         WorkspacePreferencesStore.save(.init(
             outputHistoryLimit: 1,
+            inputHeight: 5_000,
             lastDockedPlacement: .floating,
             dockThickness: 5_000,
             workspaceLayout: .split(
@@ -184,6 +202,7 @@ final class WorkspacePreferencesTests: XCTestCase {
         ), defaults: defaults)
         let decoded = WorkspacePreferencesStore.load(defaults: defaults)
         XCTAssertEqual(decoded.outputHistoryLimit, 100)
+        XCTAssertEqual(decoded.inputHeight, 1_000)
         XCTAssertEqual(decoded.lastDockedPlacement, .right)
         XCTAssertEqual(decoded.dockThickness, 600)
         guard case let .split(_, fraction, _, _) = decoded.workspaceLayout else {
