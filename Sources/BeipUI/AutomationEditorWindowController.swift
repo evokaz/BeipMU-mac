@@ -258,7 +258,7 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
                         typeIntoInput: regex.state == .on
                     )
                 }
-                status.stringValue = "Applied. Choose Save Config… to write Config.txt."
+                status.stringValue = "Applied and saved."
                 reload(selecting: selectedIndex)
             } catch { present(error) }
             return
@@ -287,7 +287,7 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
                     break
                 }
             }
-            status.stringValue = "Applied. Choose Save Config… to write Config.txt."
+            status.stringValue = "Applied and saved."
             reload(selecting: selectedIndex)
         } catch { present(error) }
     }

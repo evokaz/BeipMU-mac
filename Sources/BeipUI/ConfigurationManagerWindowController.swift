@@ -46,8 +46,6 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
     private var puppetLogFilenameField: NSTextField?
     private var puppetCharacterLogPrefixField: NSTextField?
     private var checks: [String: NSButton] = [:]
-    var onRequestSaveAs: (() -> Void)?
-
     init(library: ProfileLibrary) {
         self.library = library
         let window = NSWindow(
@@ -154,10 +152,9 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
 
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.lineBreakMode = .byTruncatingMiddle
-        let save = NSButton(title: "Save", target: self, action: #selector(save(_:)))
-        save.keyEquivalent = "s"
-        save.keyEquivalentModifierMask = [.command]
-        let footer = NSStackView(views: [statusLabel, NSView(), save])
+        let close = NSButton(title: "Done", target: self, action: #selector(closeManager(_:)))
+        close.keyEquivalent = "\r"
+        let footer = NSStackView(views: [statusLabel, NSView(), close])
         footer.orientation = .horizontal
         footer.spacing = 10
         footer.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
@@ -670,12 +667,8 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
         } catch { present(error) }
     }
 
-    @objc private func save(_ sender: Any?) {
-        guard library.workspace.sourceURL != nil else { onRequestSaveAs?(); return }
-        Task {
-            do { try await library.save() }
-            catch { present(error) }
-        }
+    @objc private func closeManager(_ sender: Any?) {
+        close()
     }
 
     private func checked(_ key: String) -> Bool { checks[key]?.state == .on }

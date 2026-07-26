@@ -45,15 +45,6 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if profileLibrary.workspace.isDirty {
-            let alert = NSAlert()
-            alert.messageText = "Quit with unsaved configuration changes?"
-            alert.informativeText = "Changes in the world and character manager have not been saved."
-            alert.alertStyle = .warning
-            alert.addButton(withTitle: "Quit Without Saving")
-            alert.addButton(withTitle: "Cancel")
-            guard alert.runModal() == .alertFirstButtonReturn else { return .terminateCancel }
-        }
         windows.forEach { $0.prepareForApplicationTermination() }
         return .terminateNow
     }
@@ -117,64 +108,49 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     @objc func connect(_ sender: Any?) { activeController?.showConnectDialog() }
     @objc func manageProfiles(_ sender: Any?) {
         if configurationManager == nil {
-            let controller = ConfigurationManagerWindowController(library: profileLibrary)
-            controller.onRequestSaveAs = { [weak self] in self?.saveConfigurationAs(nil) }
-            configurationManager = controller
+            configurationManager = ConfigurationManagerWindowController(library: profileLibrary)
         }
         configurationManager?.showWindow(sender)
         NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
     @objc func newConfiguration(_ sender: Any?) {
-        guard confirmDiscardIfNeeded() else { return }
+        let alert = NSAlert()
+        alert.messageText = "Replace the current configuration?"
+        alert.informativeText = "This creates a new empty configuration. Export a backup first if you may need the current settings."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Create New")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
         do {
             try profileLibrary.newConfiguration()
             manageProfiles(sender)
         } catch { NSApplication.shared.presentError(error) }
     }
 
-    @objc func openConfiguration(_ sender: Any?) {
-        guard confirmDiscardIfNeeded() else { return }
+    @objc func importConfiguration(_ sender: Any?) {
         let panel = NSOpenPanel()
-        panel.title = "Open Config.txt"
+        panel.title = "Import Configuration Backup"
+        panel.message = "Importing replaces BeipMU's persistent configuration."
         panel.allowedContentTypes = [.plainText]
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        Task {
-            do {
-                try await profileLibrary.open(url)
-                manageProfiles(sender)
-                if let recovery = profileLibrary.workspace.recoveredFrom {
-                    let alert = NSAlert()
-                    alert.messageText = "Recovered configuration from backup"
-                    alert.informativeText = "The primary file could not be read. Loaded \(recovery.lastPathComponent) without overwriting Config.txt."
-                    alert.runModal()
-                }
-            } catch { NSApplication.shared.presentError(error) }
-        }
-    }
-
-    @objc func saveConfiguration(_ sender: Any?) {
-        guard profileLibrary.workspace.sourceURL != nil else { saveConfigurationAs(sender); return }
-        Task {
-            do { try await profileLibrary.save() }
-            catch { NSApplication.shared.presentError(error) }
-        }
-    }
-
-    @objc func saveConfigurationAs(_ sender: Any?) {
-        let panel = NSSavePanel()
-        panel.title = "Save Configuration"
-        panel.nameFieldStringValue = "Config.txt"
-        panel.allowedContentTypes = [.plainText]
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        Task {
-            do { try await profileLibrary.save(as: url) }
-            catch { NSApplication.shared.presentError(error) }
+        do {
+            try profileLibrary.importConfiguration(from: url)
+            manageProfiles(sender)
+        } catch {
+            NSApplication.shared.presentError(error)
         }
     }
 
     @objc func exportConfiguration(_ sender: Any?) {
+        let warning = NSAlert()
+        warning.messageText = "Export configuration as plaintext?"
+        warning.informativeText = "The backup can contain character passwords and other private settings in readable text. Store it securely."
+        warning.alertStyle = .warning
+        warning.addButton(withTitle: "Export")
+        warning.addButton(withTitle: "Cancel")
+        guard warning.runModal() == .alertFirstButtonReturn else { return }
         let panel = NSSavePanel()
         panel.title = "Export Portable Config.txt"
         panel.nameFieldStringValue = "Config-export.txt"
@@ -294,17 +270,6 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         return windows.last
     }
 
-    private func confirmDiscardIfNeeded() -> Bool {
-        guard profileLibrary.workspace.isDirty else { return true }
-        let alert = NSAlert()
-        alert.messageText = "Discard unsaved configuration changes?"
-        alert.informativeText = "This cannot be undone."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Discard Changes")
-        alert.addButton(withTitle: "Cancel")
-        return alert.runModal() == .alertFirstButtonReturn
-    }
-
     private func showShortcutError(_ message: String) {
         let alert = NSAlert()
         alert.alertStyle = .warning
@@ -378,9 +343,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         fileMenu.addItem(withTitle: "New Edit Window", action: #selector(newEditWindow(_:)), keyEquivalent: "")
         fileMenu.addItem(.separator())
         fileMenu.addItem(withTitle: "New Configuration", action: #selector(newConfiguration(_:)), keyEquivalent: "")
-        fileMenu.addItem(withTitle: "Open Config…", action: #selector(openConfiguration(_:)), keyEquivalent: "o")
-        fileMenu.addItem(withTitle: "Save Config", action: #selector(saveConfiguration(_:)), keyEquivalent: "s")
-        fileMenu.addItem(withTitle: "Save Config As…", action: #selector(saveConfigurationAs(_:)), keyEquivalent: "S")
+        fileMenu.addItem(withTitle: "Import Config…", action: #selector(importConfiguration(_:)), keyEquivalent: "o")
         fileMenu.addItem(withTitle: "Export Config…", action: #selector(exportConfiguration(_:)), keyEquivalent: "e")
         fileMenu.addItem(.separator())
         fileMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")

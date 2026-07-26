@@ -33,5 +33,5 @@ large-workspace scale, performance, and release packaging.
 ## Distribution
 
 See `Documentation/DISTRIBUTION.md` for installation, signing, supported
-architectures, and shared `Config.txt` password warnings. Release highlights
-are in `Documentation/RELEASE_NOTES.md`.
+architectures, and plaintext configuration-backup password warnings. Release
+highlights are in `Documentation/RELEASE_NOTES.md`.
