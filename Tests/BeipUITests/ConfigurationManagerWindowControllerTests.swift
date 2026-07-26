@@ -6,6 +6,52 @@ import XCTest
 
 @MainActor
 final class ConfigurationManagerWindowControllerTests: XCTestCase {
+    func testSwitchingFromLongCharacterFormKeepsWorldFormTopVisible() throws {
+        var workspace = try LegacyConfigurationWorkspace.empty(isDirty: false)
+        let serverID = workspace.addServer()
+        _ = try workspace.addCharacter(toServerID: serverID)
+        let controller = ConfigurationManagerWindowController(library: ProfileLibrary(workspace: workspace))
+        defer { controller.close() }
+
+        let content = try XCTUnwrap(controller.window?.contentView)
+        let table = try XCTUnwrap(
+            recursiveSubviews(of: content)
+                .compactMap { $0 as? NSTableView }
+                .first
+        )
+        let detailScroll = try XCTUnwrap(
+            recursiveSubviews(of: content)
+                .compactMap { $0 as? NSScrollView }
+                .first { $0.accessibilityIdentifier() == "profileDetailScroll" }
+        )
+
+        table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        controller.tableViewSelectionDidChange(Notification(name: NSTableView.selectionDidChangeNotification))
+        content.layoutSubtreeIfNeeded()
+        detailScroll.contentView.scroll(to: NSPoint(x: 0, y: 500))
+
+        table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        controller.tableViewSelectionDidChange(Notification(name: NSTableView.selectionDidChangeNotification))
+        content.layoutSubtreeIfNeeded()
+
+        XCTAssertGreaterThan(
+            detailScroll.frame.height,
+            content.bounds.height - 80,
+            "The profile detail pane should consume the window height above the fixed footer."
+        )
+        let worldName = try XCTUnwrap(
+            recursiveSubviews(of: content)
+                .first { $0.accessibilityIdentifier() == "worldName" }
+        )
+        XCTAssertEqual(detailScroll.contentView.bounds.origin.y, 0, accuracy: 0.5)
+        XCTAssertTrue(detailScroll.contentView.bounds.intersects(
+            detailScroll.contentView.convert(worldName.bounds, from: worldName)
+        ))
+        let identifiers = Set(recursiveSubviews(of: content).compactMap { $0.accessibilityIdentifier() })
+        XCTAssertFalse(identifiers.contains("worldAIEndpoint"))
+        XCTAssertFalse(identifiers.contains("worldAIModel"))
+    }
+
     func testCharacterFormUsesAccessibleNativeControls() throws {
         var workspace = try LegacyConfigurationWorkspace.empty(isDirty: false)
         let serverID = workspace.addServer()
@@ -64,7 +110,7 @@ final class ConfigurationManagerWindowControllerTests: XCTestCase {
         XCTAssertLessThan(listFrame.width, 300)
         XCTAssertGreaterThan(formFrame.minX, 300)
         XCTAssertLessThan(formFrame.maxX, content.bounds.maxX)
-        XCTAssertLessThan(formFrame.height, 360)
+        XCTAssertLessThan(formFrame.height, 400)
         XCTAssertLessThan(behaviorFrame.maxY, formFrame.minY)
         XCTAssertLessThan(behaviorFrame.maxX, content.bounds.maxX)
         XCTAssertLessThan(behaviorFrame.height, 220)

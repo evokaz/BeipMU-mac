@@ -64,6 +64,13 @@ final class NetworkTransportTests: XCTestCase {
         await fulfillment(of: [secondAttempt], timeout: 4)
         let events = await recorder.events()
         XCTAssertGreaterThanOrEqual(events.filter { $0 == .state(.resolving) }.count, 2, "\(events)")
+        let notices = await recorder.connectionNotices()
+        XCTAssertTrue(notices.contains(.retryScheduled(seconds: "1")), "\(notices)")
+        XCTAssertTrue(notices.contains(.retrying(attempt: 2, limit: "2")), "\(notices)")
+        XCTAssertEqual(notices.filter { notice in
+            if case .lookingUp = notice { return true }
+            return false
+        }.count, 2, "\(notices)")
         await transport.disconnect()
     }
 
@@ -416,6 +423,11 @@ final class NetworkTransportTests: XCTestCase {
         XCTAssertLessThan(connecting, didConnect)
         XCTAssertLessThan(didConnect, didDisconnect)
 
+        let notices = await recorder.connectionNotices()
+        XCTAssertTrue(notices.contains(.lookingUp(host: "127.0.0.1", port: port)), "\(notices)")
+        XCTAssertTrue(notices.contains(.connecting(host: "127.0.0.1", port: port)), "\(notices)")
+        XCTAssertTrue(notices.contains(.connected), "\(notices)")
+
         let statistics = await session.statistics()
         XCTAssertEqual(statistics.connectionCount, 1)
         XCTAssertGreaterThanOrEqual(statistics.bytesReceived, UInt64(18))
@@ -493,6 +505,13 @@ private actor TransportEventRecorder {
             if case let .received(data) = event { result.append(data) }
         }
     }
+
+    func connectionNotices() -> [ConnectionNotice] {
+        recorded.compactMap {
+            guard case let .notice(notice) = $0 else { return nil }
+            return notice
+        }
+    }
 }
 
 private actor SessionEventRecorder {
@@ -518,6 +537,13 @@ private actor SessionEventRecorder {
         events.compactMap {
             guard case let .state(state) = $0 else { return nil }
             return state
+        }
+    }
+
+    func connectionNotices() -> [ConnectionNotice] {
+        events.compactMap {
+            guard case let .connectionNotice(notice) = $0 else { return nil }
+            return notice
         }
     }
 }

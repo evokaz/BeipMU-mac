@@ -9,10 +9,21 @@ public enum ConnectionState: Sendable, Hashable {
     case failed(String)
 }
 
+public enum ConnectionNotice: Sendable, Hashable {
+    case lookingUp(host: String, port: UInt16)
+    case connecting(host: String, port: UInt16)
+    case connected
+    case retryScheduled(seconds: String)
+    case retrying(attempt: Int, limit: String)
+    case retryLimitReached
+    case disconnected
+}
+
 public enum TransportEvent: Sendable, Hashable {
     case state(ConnectionState)
     case received(Data)
     case sent(Data)
+    case notice(ConnectionNotice)
 }
 
 public protocol SessionTransport: Sendable {
@@ -75,6 +86,7 @@ public enum SessionEvent: Sendable, Hashable {
     case encoding(TextEncoding)
     case activity(important: Bool)
     case log(String)
+    case connectionNotice(ConnectionNotice)
     case error(String)
 }
 
@@ -279,6 +291,8 @@ public actor SessionActor {
             for output in processor.consume(data) {
                 await handle(output)
             }
+        case let .notice(notice):
+            eventContinuation?.yield(.connectionNotice(notice))
         }
     }
 

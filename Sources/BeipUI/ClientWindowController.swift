@@ -1895,7 +1895,6 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             )
         }
         output.clear()
-        appendClient("Connecting to \(server.host):\(server.port)…")
         sessionTask = Task { [weak self] in
             let events = await next.events()
             for await event in events {
@@ -1945,6 +1944,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             case .disconnected:
                 isSessionConnected = false
                 connectionStateText = "Disconnected"; stateLabel.stringValue = connectionStateText; stateLabel.textColor = .secondaryLabelColor
+                appendConnectionNotice(.disconnected)
             case .resolving:
                 isSessionConnected = false
                 connectionStateText = "Resolving…"; stateLabel.stringValue = connectionStateText; stateLabel.textColor = .systemOrange
@@ -1963,7 +1963,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
                 connectionStateText = "Disconnecting…"; stateLabel.stringValue = connectionStateText; stateLabel.textColor = .systemOrange
             case let .failed(message):
                 isSessionConnected = false
-                connectionStateText = "Failed"; stateLabel.stringValue = connectionStateText; stateLabel.textColor = .systemRed; appendError(message)
+                connectionStateText = "Failed"; stateLabel.stringValue = connectionStateText; stateLabel.textColor = .systemRed
+                appendConnectionError(message)
             }
             refreshTitlebarStatistics()
             refreshDiagnostics()
@@ -2013,6 +2014,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         case let .encoding(encoding): appendClient("Charset negotiated: \(encoding.rawValue)")
         case let .error(message): appendError(message)
         case let .log(message): appendClient(message)
+        case let .connectionNotice(notice): appendConnectionNotice(notice)
         case let .activity(important):
             if suppressNextSessionActivity { suppressNextSessionActivity = false; break }
             guard window?.isKeyWindow != true else { break }
@@ -2371,7 +2373,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
                 appendsDate: appendingDate,
                 writer: writer
             )
-            appendClient("\(automatic ? "Automatic logging" : "Logging") to \(url.path) started.")
+            appendInformationalNotice("\(automatic ? "Automatic logging" : "Logging") to \(url.path) started.")
             updateWindowTitle()
             refreshDiagnostics()
         } catch {
@@ -2385,13 +2387,17 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             return
         }
         let writers = logWriters
+        if announcing {
+            for url in writers.keys.sorted(by: { $0.path < $1.path }) {
+                appendInformationalNotice("Logging to \(url.path) stopped.")
+            }
+        }
         logWriters.removeAll()
         var errors: [String] = []
         for (url, log) in writers {
             do { try log.writer.stop() }
             catch { errors.append("\(url.lastPathComponent): \(error.localizedDescription)") }
         }
-        if announcing { appendClient("Stopped \(writers.count) log\(writers.count == 1 ? "" : "s").") }
         errors.forEach { appendError("Could not finish log \($0)") }
         updateWindowTitle()
         refreshDiagnostics()
@@ -3586,7 +3592,71 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         return formatter
     }()
 
+    private static let connectionInfoColor = BeipCore.RGBColor(red: 0, green: 205, blue: 205)
+    private static let connectionSuccessColor = BeipCore.RGBColor(red: 0, green: 205, blue: 0)
+    private static let connectionAddressColor = BeipCore.RGBColor(red: 80, green: 80, blue: 255)
+    private static let connectionErrorColor = BeipCore.RGBColor(red: 255, green: 0, blue: 0)
+
     private func appendClient(_ text: String) { output.append(.init(text: text, source: .client)) }
+
+    private func appendInformationalNotice(_ text: String) {
+        appendClient(text, color: Self.connectionInfoColor)
+    }
+
+    private func appendConnectionNotice(_ notice: ConnectionNotice) {
+        switch notice {
+        case let .lookingUp(host, port):
+            appendClient("Looking up address \(host):\(port)", color: Self.connectionInfoColor)
+        case let .connecting(host, port):
+            let prefix = "Address is "
+            let address = "\(host):\(port)"
+            let suffix = ", Connecting…"
+            let text = prefix + address + suffix
+            let prefixEnd = prefix.utf16.count
+            let addressEnd = prefixEnd + address.utf16.count
+            output.append(.init(
+                text: text,
+                runs: [
+                    .init(range: 0..<prefixEnd, style: .init(foreground: Self.connectionSuccessColor)),
+                    .init(range: prefixEnd..<addressEnd, style: .init(foreground: Self.connectionAddressColor)),
+                    .init(range: addressEnd..<text.utf16.count, style: .init(foreground: Self.connectionSuccessColor)),
+                ],
+                source: .client
+            ))
+        case .connected:
+            appendClient("Connected", color: Self.connectionSuccessColor)
+        case let .retryScheduled(seconds):
+            appendClient("Will try to reconnect in \(seconds) seconds", color: Self.connectionInfoColor)
+        case let .retrying(attempt, limit):
+            appendClient("Retrying, attempt \(attempt) of \(limit)", color: Self.connectionInfoColor)
+        case .retryLimitReached:
+            appendClient("Retry limit reached, giving up", color: Self.connectionErrorColor)
+        case .disconnected:
+            appendClient("Disconnected", color: Self.connectionErrorColor)
+        }
+    }
+
+    private func appendConnectionError(_ message: String) {
+        let prefix = "Error: "
+        let text = prefix + message
+        let boundary = prefix.utf16.count
+        output.append(.init(
+            text: text,
+            runs: [
+                .init(range: 0..<boundary, style: .init(foreground: Self.connectionErrorColor)),
+                .init(range: boundary..<text.utf16.count, style: .init(foreground: Self.connectionInfoColor)),
+            ],
+            source: .client
+        ))
+    }
+
+    private func appendClient(_ text: String, color: BeipCore.RGBColor) {
+        output.append(.init(
+            text: text,
+            runs: [.init(range: 0..<text.utf16.count, style: .init(foreground: color))],
+            source: .client
+        ))
+    }
 
     private var scriptHostSnapshot: ScriptHostSnapshot {
         let projection = profileLibrary.workspace.projection

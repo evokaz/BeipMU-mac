@@ -2,6 +2,10 @@ import AppKit
 import BeipCore
 import BeipPersistence
 
+private final class TopAlignedDocumentView: NSView {
+    override var isFlipped: Bool { true }
+}
+
 @MainActor
 final class ConfigurationManagerWindowController: NSWindowController, NSTableViewDataSource, NSTableViewDelegate {
     private enum Selection: Equatable {
@@ -20,6 +24,7 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
     private let library: ProfileLibrary
     private let table = NSTableView()
     private let detailStack = NSStackView()
+    private let detailScroll = NSScrollView()
     private let statusLabel = NSTextField(labelWithString: "")
     private var rows: [Row] = []
     private var selection: Selection?
@@ -29,8 +34,6 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
     private var portField: NSTextField?
     private var encodingPopup: NSPopUpButton?
     private var webViewPolicyPopup: NSPopUpButton?
-    private var aiEndpointField: NSTextField?
-    private var aiModelField: NSTextField?
     private var connectField: NSTextView?
     private var characterInfoField: NSTextView?
     private var passwordField: NSTextField?
@@ -94,6 +97,8 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
         tableScroll.documentView = table
         tableScroll.hasVerticalScroller = true
         tableScroll.borderType = .bezelBorder
+        tableScroll.setContentHuggingPriority(.defaultLow, for: .vertical)
+        tableScroll.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
         sidebar.addArrangedSubview(tableScroll)
 
         let addWorld = NSButton(title: "+ World", target: self, action: #selector(addWorld(_:)))
@@ -119,13 +124,13 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
         detailStack.spacing = 16
         detailStack.edgeInsets = NSEdgeInsets(top: 24, left: 28, bottom: 28, right: 28)
         detailStack.translatesAutoresizingMaskIntoConstraints = false
-        let detailDocument = NSView()
+        let detailDocument = TopAlignedDocumentView()
         detailDocument.translatesAutoresizingMaskIntoConstraints = false
         detailDocument.addSubview(detailStack)
-        let detailScroll = NSScrollView()
         detailScroll.documentView = detailDocument
         detailScroll.hasVerticalScroller = true
         detailScroll.drawsBackground = false
+        detailScroll.setAccessibilityIdentifier("profileDetailScroll")
         NSLayoutConstraint.activate([
             detailStack.leadingAnchor.constraint(equalTo: detailDocument.leadingAnchor),
             detailStack.trailingAnchor.constraint(equalTo: detailDocument.trailingAnchor),
@@ -144,6 +149,8 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
         split.orientation = .horizontal
         split.alignment = .height
         split.spacing = 0
+        split.setContentHuggingPriority(.defaultLow, for: .vertical)
+        split.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
 
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.lineBreakMode = .byTruncatingMiddle
@@ -158,6 +165,7 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
         let root = NSStackView(views: [split, footer])
         root.orientation = .vertical
         root.alignment = .width
+        root.distribution = .fill
         root.spacing = 0
         root.translatesAutoresizingMaskIntoConstraints = false
         let contentView = NSView()
@@ -268,6 +276,13 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
         case let .puppet(server, character, puppet):
             buildPuppetForm(serverID: server, characterID: character, puppetID: puppet)
         }
+        resetDetailScrollPosition()
+    }
+
+    private func resetDetailScrollPosition() {
+        detailScroll.documentView?.layoutSubtreeIfNeeded()
+        detailScroll.contentView.scroll(to: .zero)
+        detailScroll.reflectScrolledClipView(detailScroll.contentView)
     }
 
     private func buildServerForm(id: UUID) {
@@ -281,10 +296,6 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
         encoding.selectItem(withTitle: server.encoding.rawValue)
         encoding.setAccessibilityIdentifier("worldEncoding")
         nameField = name; hostField = host; portField = port; encodingPopup = encoding
-        let aiEndpoint = textField(server.aiEndpoint?.absoluteString ?? "", identifier: "worldAIEndpoint")
-        let aiModel = textField(server.aiModel, identifier: "worldAIModel")
-        aiEndpointField = aiEndpoint
-        aiModelField = aiModel
         let webViewPolicy = NSPopUpButton()
         webViewPolicy.addItems(withTitles: ServerWebViewPolicy.allCases.map(\.title))
         webViewPolicy.selectItem(withTitle: (server.gmcpWebViewPolicy ?? .ask).title)
@@ -292,7 +303,7 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
         webViewPolicyPopup = webViewPolicy
         detailStack.addArrangedSubview(grid([
             ("Name:", name), ("Host:", host), ("Port:", port), ("Encoding:", encoding),
-            ("Server WebViews:", webViewPolicy), ("AI endpoint:", aiEndpoint), ("AI model:", aiModel),
+            ("Server WebViews:", webViewPolicy),
         ]))
         addCheck("tls", "Use TLS", server.usesTLS)
         addCheck("verify", "Verify TLS certificate", server.verifiesCertificate)
@@ -538,7 +549,6 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
 
     private func clearControls() {
         nameField = nil; hostField = nil; portField = nil; encodingPopup = nil; webViewPolicyPopup = nil
-        aiEndpointField = nil; aiModelField = nil
         connectField = nil; characterInfoField = nil; passwordField = nil; passwordContainer = nil
         idleMinutesField = nil; idleTextField = nil
         characterLogFilenameField = nil
@@ -622,9 +632,6 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
                         } ?? .ask
                         server.profile.sendNAWSOnResize = checked("naws")
                         server.profile.limitTelnetCharset = checked("charset")
-                        let endpointText = aiEndpointField?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                        server.profile.aiEndpoint = endpointText.isEmpty ? nil : URL(string: endpointText)
-                        server.profile.aiModel = aiModelField?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                     }
                 case let .character(server, character):
                     guard let nameField else { return }

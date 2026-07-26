@@ -35,6 +35,11 @@ public actor NetworkTransport: SessionTransport {
 
         attempt += 1
         reachedReady = false
+        if attempt > 1 {
+            let limit = request.policy.retryForever ? "∞" : String(request.policy.retryCount)
+            continuation?.yield(.notice(.retrying(attempt: attempt, limit: limit)))
+        }
+        continuation?.yield(.notice(.lookingUp(host: request.server.host, port: request.server.port)))
         continuation?.yield(.state(.resolving))
         let parameters = makeParameters(for: request)
         let newConnection = NWConnection(
@@ -54,6 +59,7 @@ public actor NetworkTransport: SessionTransport {
             Task { await self?.handle(state, from: newConnection) }
         }
         newConnection.start(queue: queue)
+        continuation?.yield(.notice(.connecting(host: request.server.host, port: request.server.port)))
         continuation?.yield(.state(.connecting))
         receive(on: newConnection)
     }
@@ -131,6 +137,7 @@ public actor NetworkTransport: SessionTransport {
             connectionTimeoutTask?.cancel()
             connectionTimeoutTask = nil
             reachedReady = true
+            continuation?.yield(.notice(.connected))
             continuation?.yield(.state(.connected))
         case let .failed(error):
             fail(source, message: error.localizedDescription)
@@ -156,14 +163,28 @@ public actor NetworkTransport: SessionTransport {
         guard connection === source else { return }
         let shouldRetry = !reachedReady && canRetry
         finish(source, with: .failed(message))
-        if shouldRetry { scheduleRetry() }
+        if shouldRetry {
+            announceRetry()
+            scheduleRetry()
+        } else if !reachedReady {
+            continuation?.yield(.notice(.retryLimitReached))
+            continuation?.yield(.notice(.disconnected))
+        } else {
+            continuation?.yield(.notice(.disconnected))
+        }
     }
 
     private func connectionTimedOut(_ source: NWConnection) {
         guard connection === source, !reachedReady else { return }
         let shouldRetry = canRetry
         finish(source, with: .failed("Connection timed out."))
-        if shouldRetry { scheduleRetry() }
+        if shouldRetry {
+            announceRetry()
+            scheduleRetry()
+        } else {
+            continuation?.yield(.notice(.retryLimitReached))
+            continuation?.yield(.notice(.disconnected))
+        }
     }
 
     private var canRetry: Bool {
@@ -178,6 +199,15 @@ public actor NetworkTransport: SessionTransport {
         queue.asyncAfter(deadline: .now() + .milliseconds(delay)) { [weak self] in
             Task { await self?.retry(request, afterAttempt: expectedAttempt) }
         }
+    }
+
+    private func announceRetry() {
+        guard let request = activeRequest else { return }
+        let seconds = Double(request.policy.connectTimeoutMilliseconds) / 1_000
+        let delay = seconds.rounded() == seconds
+            ? String(Int(seconds))
+            : String(format: "%.1f", seconds)
+        continuation?.yield(.notice(.retryScheduled(seconds: delay)))
     }
 
     private func retry(_ request: ConnectionRequest, afterAttempt expectedAttempt: Int) {
