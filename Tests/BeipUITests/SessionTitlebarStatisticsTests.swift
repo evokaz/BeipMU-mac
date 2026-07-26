@@ -41,4 +41,78 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
         XCTAssertTrue(group.selectedController === first)
         XCTAssertTrue(first.isCommandInputFocusedForTesting)
     }
+
+    @MainActor
+    func testPermanentTabBarControlsLeadTheSessionTabs() throws {
+        let library = ProfileLibrary(workspace: try .empty(isDirty: false))
+        let controller = ClientWindowController(profileLibrary: library)
+        defer { controller.close() }
+
+        XCTAssertEqual(
+            controller.tabBarControlIdentifiersForTesting,
+            ["tabBarApplicationMenu", "tabBarQuickConnect", "tabBarWorldsAndCharacters"]
+        )
+        XCTAssertEqual(
+            Array(controller.tabBarArrangedIdentifiersForTesting.prefix(4)),
+            [
+                "tabBarApplicationMenu",
+                "tabBarQuickConnect",
+                "tabBarWorldsAndCharacters",
+                "sessionTabs",
+            ]
+        )
+    }
+
+    @MainActor
+    func testApplicationButtonMenuMatchesLegacyNavigation() throws {
+        let library = ProfileLibrary(workspace: try .empty(isDirty: false))
+        let controller = ClientWindowController(profileLibrary: library)
+        defer { controller.close() }
+
+        let menu = controller.tabBarApplicationMenuForTesting
+        XCTAssertEqual(
+            menu.items.filter { !$0.isSeparatorItem }.map(\.title),
+            [
+                "Windows",
+                "Tools",
+                "Logging…",
+                "Settings…",
+                "Help",
+                "Close all Windows and Exit",
+            ]
+        )
+        XCTAssertNotNil(menu.item(withTitle: "Windows")?.submenu)
+        XCTAssertNotNil(menu.item(withTitle: "Tools")?.submenu)
+        XCTAssertNotNil(menu.item(withTitle: "Help")?.submenu)
+        XCTAssertEqual(menu.item(withTitle: "Logging…")?.keyEquivalent, "l")
+        XCTAssertEqual(
+            menu.item(withTitle: "Logging…")?.keyEquivalentModifierMask,
+            [.control]
+        )
+    }
+
+    @MainActor
+    func testPlayerQuickConnectListsWorldsAndGroupsMultipleCharacters() throws {
+        var workspace = try LegacyConfigurationWorkspace.empty(isDirty: false)
+        _ = workspace.addServer(named: "Empty World")
+        let single = workspace.addServer(named: "Single World")
+        _ = try workspace.addCharacter(toServerID: single, named: "Hero")
+        let multiple = workspace.addServer(named: "Many World")
+        _ = try workspace.addCharacter(toServerID: multiple, named: "Wizard")
+        _ = try workspace.addCharacter(toServerID: multiple, named: "Tester1")
+        _ = try workspace.addCharacter(toServerID: multiple, named: "Tester2")
+
+        let controller = ClientWindowController(profileLibrary: ProfileLibrary(workspace: workspace))
+        defer { controller.close() }
+        let menu = controller.quickConnectMenuForTesting
+
+        XCTAssertEqual(
+            menu.items.map(\.title),
+            ["Empty World", "Single World — Hero", "Many World"]
+        )
+        XCTAssertEqual(
+            menu.item(withTitle: "Many World")?.submenu?.items.map(\.title),
+            ["Wizard", "Tester1", "Tester2"]
+        )
+    }
 }

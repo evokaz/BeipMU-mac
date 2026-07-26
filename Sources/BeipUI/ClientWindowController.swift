@@ -255,6 +255,9 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private let inputContainer = NSView()
     private let stateLabel = NSTextField(labelWithString: "Disconnected")
     private let activityLabel = NSTextField(labelWithString: "")
+    private let applicationMenuButton = NSButton()
+    private let quickConnectButton = NSButton()
+    private let profilesButton = NSButton()
     private let sessionTabs = NSStackView()
     private let titlebarStatistics = SessionTitlebarStatisticsController()
     private let commandRegistry = CommandRegistry()
@@ -645,6 +648,306 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         }
         if let window { alert.beginSheetModal(for: window, completionHandler: complete) }
         else { complete(alert.runModal()) }
+    }
+
+    private func configureTabBarButton(
+        _ button: NSButton,
+        symbolName: String,
+        accessibilityLabel: String,
+        accessibilityIdentifier: String,
+        tintColor: NSColor,
+        action: Selector
+    ) {
+        let image = NSImage(
+            systemSymbolName: symbolName,
+            accessibilityDescription: accessibilityLabel
+        )?.withSymbolConfiguration(
+            NSImage.SymbolConfiguration(pointSize: 17, weight: .semibold)
+        )
+        button.image = image
+        button.imagePosition = .imageOnly
+        button.imageScaling = .scaleProportionallyDown
+        button.isBordered = false
+        button.focusRingType = .none
+        button.contentTintColor = tintColor
+        button.target = self
+        button.action = action
+        button.toolTip = accessibilityLabel
+        button.setAccessibilityLabel(accessibilityLabel)
+        button.setAccessibilityIdentifier(accessibilityIdentifier)
+        button.setContentHuggingPriority(.required, for: .horizontal)
+        button.setContentCompressionResistancePriority(.required, for: .horizontal)
+        NSLayoutConstraint.activate([
+            button.widthAnchor.constraint(equalToConstant: 30),
+            button.heightAnchor.constraint(equalToConstant: 28),
+        ])
+    }
+
+    @objc private func showApplicationMenu(_ sender: NSButton) {
+        popUp(tabBarApplicationMenu(), from: sender)
+    }
+
+    @objc private func showQuickConnectMenu(_ sender: NSButton) {
+        popUp(quickConnectMenu(), from: sender)
+    }
+
+    @objc private func showProfiles(_ sender: NSButton) {
+        NSApplication.shared.sendAction(
+            #selector(ApplicationDelegate.manageProfiles(_:)),
+            to: NSApplication.shared.delegate,
+            from: sender
+        )
+    }
+
+    private func popUp(_ menu: NSMenu, from button: NSButton) {
+        menu.popUp(
+            positioning: nil,
+            at: NSPoint(x: button.bounds.minX, y: button.bounds.minY - 4),
+            in: button
+        )
+    }
+
+    private func tabBarApplicationMenu() -> NSMenu {
+        let menu = NSMenu(title: "BeipMU")
+        menu.autoenablesItems = false
+
+        let windowsMenu = NSMenu(title: "Windows")
+        windowsMenu.addItem(applicationMenuItem(
+            title: "New Window",
+            action: #selector(ApplicationDelegate.newWindow(_:)),
+            keyEquivalent: "n",
+            modifiers: [.command]
+        ))
+        windowsMenu.addItem(applicationMenuItem(
+            title: "New Tab",
+            action: #selector(ApplicationDelegate.newTab(_:)),
+            keyEquivalent: "t",
+            modifiers: [.command]
+        ))
+        windowsMenu.addItem(applicationMenuItem(
+            title: "New Input Window",
+            action: #selector(ApplicationDelegate.newInputWindow(_:))
+        ))
+        windowsMenu.addItem(applicationMenuItem(
+            title: "New Edit Window",
+            action: #selector(ApplicationDelegate.newEditWindow(_:))
+        ))
+        windowsMenu.addItem(.separator())
+
+        let minimize = NSMenuItem(
+            title: "Minimize",
+            action: #selector(NSWindow.miniaturize(_:)),
+            keyEquivalent: "m"
+        )
+        minimize.keyEquivalentModifierMask = [.command]
+        minimize.target = window
+        minimize.isEnabled = window != nil
+        windowsMenu.addItem(minimize)
+        windowsMenu.addItem(applicationMenuItem(
+            title: "Zoom",
+            action: #selector(ApplicationDelegate.maximizeWindow(_:))
+        ))
+
+        let visibleWindows = NSApplication.shared.windows.filter {
+            $0.isVisible && !($0 is NSPanel)
+        }
+        if !visibleWindows.isEmpty {
+            windowsMenu.addItem(.separator())
+            for visibleWindow in visibleWindows {
+                let item = NSMenuItem(
+                    title: visibleWindow.title.isEmpty ? "Untitled Window" : visibleWindow.title,
+                    action: #selector(NSWindow.makeKeyAndOrderFront(_:)),
+                    keyEquivalent: ""
+                )
+                item.target = visibleWindow
+                item.isEnabled = true
+                item.state = visibleWindow === window ? .on : .off
+                windowsMenu.addItem(item)
+            }
+        }
+        windowsMenu.addItem(.separator())
+        let front = NSMenuItem(
+            title: "Bring All to Front",
+            action: #selector(NSApplication.arrangeInFront(_:)),
+            keyEquivalent: ""
+        )
+        front.target = NSApplication.shared
+        front.isEnabled = true
+        windowsMenu.addItem(front)
+        let windows = NSMenuItem(title: "Windows", action: nil, keyEquivalent: "")
+        windows.submenu = windowsMenu
+        windows.isEnabled = true
+        menu.addItem(windows)
+
+        let toolsMenu = NSMenu(title: "Tools")
+        toolsMenu.addItem(applicationMenuItem(
+            title: "Connect…",
+            action: #selector(ApplicationDelegate.connect(_:))
+        ))
+        toolsMenu.addItem(applicationMenuItem(
+            title: "Disconnect",
+            action: #selector(ApplicationDelegate.disconnect(_:))
+        ))
+        toolsMenu.addItem(applicationMenuItem(
+            title: "Reconnect",
+            action: #selector(ApplicationDelegate.reconnect(_:))
+        ))
+        toolsMenu.addItem(.separator())
+        toolsMenu.addItem(applicationMenuItem(
+            title: "Worlds & Characters…",
+            action: #selector(ApplicationDelegate.manageProfiles(_:))
+        ))
+        toolsMenu.addItem(applicationMenuItem(
+            title: "Network Debugger…",
+            action: #selector(ApplicationDelegate.debugNetwork(_:))
+        ))
+        toolsMenu.addItem(applicationMenuItem(
+            title: "Atlas Map…",
+            action: #selector(ApplicationDelegate.showAtlas(_:))
+        ))
+        let tools = NSMenuItem(title: "Tools", action: nil, keyEquivalent: "")
+        tools.submenu = toolsMenu
+        tools.isEnabled = true
+        menu.addItem(tools)
+
+        menu.addItem(applicationMenuItem(
+            title: "Logging…",
+            action: #selector(ApplicationDelegate.logging(_:)),
+            keyEquivalent: "l",
+            modifiers: [.control]
+        ))
+        menu.addItem(applicationMenuItem(
+            title: "Settings…",
+            action: #selector(ApplicationDelegate.settings(_:))
+        ))
+
+        let helpMenu = NSMenu(title: "Help")
+        helpMenu.addItem(applicationMenuItem(
+            title: "BeipMU Help",
+            action: #selector(ApplicationDelegate.showHelp(_:)),
+            keyEquivalent: "?"
+        ))
+        let help = NSMenuItem(title: "Help", action: nil, keyEquivalent: "")
+        help.submenu = helpMenu
+        help.isEnabled = true
+        menu.addItem(help)
+
+        menu.addItem(.separator())
+        let quit = NSMenuItem(
+            title: "Close all Windows and Exit",
+            action: #selector(NSApplication.terminate(_:)),
+            keyEquivalent: ""
+        )
+        quit.target = NSApplication.shared
+        quit.isEnabled = true
+        menu.addItem(quit)
+        return menu
+    }
+
+    private func applicationMenuItem(
+        title: String,
+        action: Selector,
+        keyEquivalent: String = "",
+        modifiers: NSEvent.ModifierFlags = []
+    ) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: keyEquivalent)
+        item.keyEquivalentModifierMask = modifiers
+        item.target = NSApplication.shared.delegate
+        item.isEnabled = NSApplication.shared.delegate != nil
+        return item
+    }
+
+    private final class QuickConnectTarget: NSObject {
+        let serverID: UUID
+        let characterID: UUID?
+
+        init(serverID: UUID, characterID: UUID?) {
+            self.serverID = serverID
+            self.characterID = characterID
+        }
+    }
+
+    private func quickConnectMenu() -> NSMenu {
+        let menu = NSMenu(title: "Player Quick Connect")
+        menu.autoenablesItems = false
+        let servers = profileLibrary.workspace.servers
+        guard !servers.isEmpty else {
+            let empty = NSMenuItem(title: "No Saved Worlds", action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            menu.addItem(empty)
+            return menu
+        }
+
+        for server in servers {
+            switch server.characters.count {
+            case 0:
+                menu.addItem(quickConnectItem(
+                    title: server.profile.name,
+                    serverID: server.profile.id,
+                    characterID: nil
+                ))
+            case 1:
+                let character = server.characters[0]
+                menu.addItem(quickConnectItem(
+                    title: "\(server.profile.name) — \(character.name)",
+                    serverID: server.profile.id,
+                    characterID: character.id
+                ))
+            default:
+                let characters = NSMenu(title: server.profile.name)
+                characters.autoenablesItems = false
+                for character in server.characters {
+                    characters.addItem(quickConnectItem(
+                        title: character.name,
+                        serverID: server.profile.id,
+                        characterID: character.id
+                    ))
+                }
+                let world = NSMenuItem(title: server.profile.name, action: nil, keyEquivalent: "")
+                world.submenu = characters
+                world.isEnabled = true
+                menu.addItem(world)
+            }
+        }
+        return menu
+    }
+
+    private func quickConnectItem(
+        title: String,
+        serverID: UUID,
+        characterID: UUID?
+    ) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: #selector(quickConnect(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = QuickConnectTarget(serverID: serverID, characterID: characterID)
+        item.isEnabled = true
+        return item
+    }
+
+    @objc private func quickConnect(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? QuickConnectTarget,
+              let server = profileLibrary.workspace.servers.first(where: {
+                  $0.profile.id == target.serverID
+              }) else { return }
+        let character = target.characterID.flatMap { characterID in
+            server.characters.first { $0.id == characterID }
+        }
+        startSession(
+            server.profile,
+            character: character,
+            policy: profileLibrary.workspace.projection.connectionPolicy
+        )
+    }
+
+    var tabBarApplicationMenuForTesting: NSMenu { tabBarApplicationMenu() }
+    var quickConnectMenuForTesting: NSMenu { quickConnectMenu() }
+    var tabBarControlIdentifiersForTesting: [String] {
+        [applicationMenuButton, quickConnectButton, profilesButton].compactMap {
+            $0.accessibilityIdentifier()
+        }
+    }
+    var tabBarArrangedIdentifiersForTesting: [String] {
+        taskbarView?.arrangedSubviews.compactMap { $0.accessibilityIdentifier() } ?? []
     }
 
     func disconnect() {
@@ -1645,10 +1948,38 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         let taskbar = NSStackView()
         taskbarView = taskbar
         taskbar.orientation = .horizontal
+        taskbar.alignment = .centerY
         taskbar.edgeInsets = NSEdgeInsets(top: 6, left: 8, bottom: 6, right: 8)
         taskbar.spacing = 8
         taskbar.wantsLayer = true
         taskbar.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        configureTabBarButton(
+            applicationMenuButton,
+            symbolName: "line.3.horizontal",
+            accessibilityLabel: "Application menu",
+            accessibilityIdentifier: "tabBarApplicationMenu",
+            tintColor: .labelColor,
+            action: #selector(showApplicationMenu(_:))
+        )
+        configureTabBarButton(
+            quickConnectButton,
+            symbolName: "person.fill",
+            accessibilityLabel: "Player Quick Connect",
+            accessibilityIdentifier: "tabBarQuickConnect",
+            tintColor: .systemPurple,
+            action: #selector(showQuickConnectMenu(_:))
+        )
+        configureTabBarButton(
+            profilesButton,
+            symbolName: "globe",
+            accessibilityLabel: "Worlds & Characters",
+            accessibilityIdentifier: "tabBarWorldsAndCharacters",
+            tintColor: .systemBlue,
+            action: #selector(showProfiles(_:))
+        )
+        taskbar.addArrangedSubview(applicationMenuButton)
+        taskbar.addArrangedSubview(quickConnectButton)
+        taskbar.addArrangedSubview(profilesButton)
         stateLabel.font = .systemFont(ofSize: 12, weight: .medium)
         stateLabel.setAccessibilityIdentifier("connectionState")
         stateLabel.setContentHuggingPriority(.required, for: .horizontal)

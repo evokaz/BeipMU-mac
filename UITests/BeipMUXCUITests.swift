@@ -3,6 +3,40 @@ import XCTest
 
 @MainActor
 final class BeipMUXCUITests: XCTestCase {
+    func testPermanentTabBarNavigationControls() {
+        let app = launchApplication()
+        defer { app.terminate() }
+        let window = app.windows["mainWindow"]
+        let applicationMenu = window.buttons["tabBarApplicationMenu"]
+        let quickConnect = window.buttons["tabBarQuickConnect"]
+        let worldsAndCharacters = window.buttons["tabBarWorldsAndCharacters"]
+
+        XCTAssertTrue(applicationMenu.waitForExistence(timeout: 3))
+        XCTAssertTrue(quickConnect.exists)
+        XCTAssertTrue(worldsAndCharacters.exists)
+        XCTAssertLessThan(applicationMenu.frame.minX, quickConnect.frame.minX)
+        XCTAssertLessThan(quickConnect.frame.minX, worldsAndCharacters.frame.minX)
+        XCTAssertLessThan(worldsAndCharacters.frame.minX, window.buttons["activeSessionTab"].frame.minX)
+
+        applicationMenu.click()
+        for title in [
+            "Windows", "Tools", "Logging…", "Settings…", "Help",
+            "Close all Windows and Exit",
+        ] {
+            XCTAssertTrue(app.menuItems[title].exists, "Missing application-menu item: \(title)")
+        }
+        app.typeKey(.escape, modifierFlags: [])
+
+        XCTAssertTrue(waitUntil { quickConnect.isHittable })
+        quickConnect.click()
+        XCTAssertTrue(app.menus.firstMatch.waitForExistence(timeout: 2))
+        app.typeKey(.escape, modifierFlags: [])
+
+        XCTAssertTrue(waitUntil { worldsAndCharacters.isHittable })
+        worldsAndCharacters.click()
+        XCTAssertTrue(app.windows["configurationManager"].waitForExistence(timeout: 3))
+    }
+
     func testMainWindowResizesMaximizesAndEntersFullScreen() {
         let app = launchApplication()
         defer { app.terminate() }
