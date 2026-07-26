@@ -116,6 +116,44 @@ final class ConfigurationManagerWindowControllerTests: XCTestCase {
         XCTAssertLessThan(behaviorFrame.height, 220)
     }
 
+    func testDoneAppliesPendingChanges() throws {
+        var workspace = try LegacyConfigurationWorkspace.empty(isDirty: false)
+        let serverID = workspace.addServer()
+        let characterID = try workspace.addCharacter(toServerID: serverID)
+        let library = ProfileLibrary(workspace: workspace)
+        let controller = ConfigurationManagerWindowController(library: library)
+        defer { controller.close() }
+
+        let content = try XCTUnwrap(controller.window?.contentView)
+        let table = try XCTUnwrap(
+            recursiveSubviews(of: content)
+                .compactMap { $0 as? NSTableView }
+                .first
+        )
+        table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        controller.tableViewSelectionDidChange(Notification(name: NSTableView.selectionDidChangeNotification))
+
+        let characterName = try XCTUnwrap(
+            recursiveSubviews(of: content)
+                .compactMap { $0 as? NSTextField }
+                .first { $0.accessibilityIdentifier() == "characterName" }
+        )
+        characterName.stringValue = "Updated Character"
+
+        let done = try XCTUnwrap(
+            recursiveSubviews(of: content)
+                .compactMap { $0 as? NSButton }
+                .first { $0.title == "Done" }
+        )
+        done.performClick(nil)
+
+        let character = try XCTUnwrap(
+            library.workspace.servers.first(where: { $0.profile.id == serverID })?
+                .characters.first(where: { $0.id == characterID })
+        )
+        XCTAssertEqual(character.name, "Updated Character")
+    }
+
     private func recursiveSubviews(of root: NSView?) -> [NSView] {
         guard let root else { return [] }
         return [root] + root.subviews.flatMap { recursiveSubviews(of: $0) }

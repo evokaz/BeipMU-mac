@@ -605,70 +605,77 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
     }
 
     @objc private func applyChanges(_ sender: Any?) {
-        guard let selection else { return }
         do {
-            try library.mutate { workspace in
-                switch selection {
-                case let .server(id):
-                    guard let nameField, let hostField, let port = UInt16(portField?.stringValue ?? ""),
-                          !hostField.stringValue.isEmpty else { throw ValidationError.invalidWorld }
-                    try workspace.updateServer(id: id) { server in
-                        server.profile.name = nameField.stringValue
-                        server.profile.host = hostField.stringValue
-                        server.profile.port = port
-                        server.profile.encoding = TextEncoding(rawValue: encodingPopup?.titleOfSelectedItem ?? "") ?? .cp1252
-                        server.profile.usesTLS = checked("tls")
-                        server.profile.verifiesCertificate = checked("verify")
-                        server.profile.forceIPv4 = checked("ipv4")
-                        server.profile.pueblo = checked("pueblo")
-                        server.profile.prompts = checked("prompts")
-                        server.profile.mcp = checked("mcp")
-                        server.profile.mcmp = checked("mcmp")
-                        server.profile.gmcpWebViewPolicy = ServerWebViewPolicy.allCases.first {
-                            $0.title == self.webViewPolicyPopup?.titleOfSelectedItem
-                        } ?? .ask
-                        server.profile.sendNAWSOnResize = checked("naws")
-                        server.profile.limitTelnetCharset = checked("charset")
-                    }
-                case let .character(server, character):
-                    guard let nameField else { return }
-                    try workspace.updateCharacter(id: character, inServerID: server) { value in
-                        value.name = nameField.stringValue
-                        value.connectText = connectField?.string ?? ""
-                        value.password = passwordField?.stringValue ?? ""
-                        value.info = characterInfoField?.string ?? ""
-                        value.autoConnect = checked("autoConnect")
-                        value.idleTimeout = checked("idleEnabled")
-                            ? TimeInterval(max(0, idleMinutesField?.doubleValue ?? 0) * 60)
-                            : nil
-                        value.idleText = checked("idleEnabled") ? (idleTextField?.stringValue ?? "") : ""
-                        value.logFilename = characterLogFilenameField?.stringValue ?? ""
-                        value.logAppendsDate = checked("characterLogDate")
-                    }
-                case let .puppet(server, character, puppet):
-                    guard let nameField else { return }
-                    try workspace.updatePuppet(id: puppet, inCharacterID: character, serverID: server) { value in
-                        value.name = nameField.stringValue
-                        value.receivePrefix = receivePrefixField?.stringValue ?? ""
-                        value.sendPrefix = sendPrefixField?.stringValue ?? ""
-                        value.receivePrefixIsRegex = checked("regex")
-                        value.hideReceivePrefix = checked("hide")
-                        value.autoConnect = checked("autoConnect")
-                        value.connectWithPlayer = checked("withPlayer")
-                        value.removeAccidentalPrefix = checked("removePrefix")
-                        value.logFilename = puppetLogFilenameField?.stringValue ?? ""
-                        value.logAppendsDate = checked("puppetLogDate")
-                        value.characterLog = checked("puppetCharacterLog")
-                        value.characterLogPrefix = puppetCharacterLogPrefixField?.stringValue ?? ""
-                    }
-                }
-            }
+            try applyCurrentSelection()
             reload(select: selection)
         } catch { present(error) }
     }
 
     @objc private func closeManager(_ sender: Any?) {
-        close()
+        do {
+            try applyCurrentSelection()
+            close()
+        } catch { present(error) }
+    }
+
+    private func applyCurrentSelection() throws {
+        guard let selection else { return }
+        try library.mutate { workspace in
+            switch selection {
+            case let .server(id):
+                guard let nameField, let hostField, let port = UInt16(portField?.stringValue ?? ""),
+                      !hostField.stringValue.isEmpty else { throw ValidationError.invalidWorld }
+                try workspace.updateServer(id: id) { server in
+                    server.profile.name = nameField.stringValue
+                    server.profile.host = hostField.stringValue
+                    server.profile.port = port
+                    server.profile.encoding = TextEncoding(rawValue: encodingPopup?.titleOfSelectedItem ?? "") ?? .cp1252
+                    server.profile.usesTLS = checked("tls")
+                    server.profile.verifiesCertificate = checked("verify")
+                    server.profile.forceIPv4 = checked("ipv4")
+                    server.profile.pueblo = checked("pueblo")
+                    server.profile.prompts = checked("prompts")
+                    server.profile.mcp = checked("mcp")
+                    server.profile.mcmp = checked("mcmp")
+                    server.profile.gmcpWebViewPolicy = ServerWebViewPolicy.allCases.first {
+                        $0.title == self.webViewPolicyPopup?.titleOfSelectedItem
+                    } ?? .ask
+                    server.profile.sendNAWSOnResize = checked("naws")
+                    server.profile.limitTelnetCharset = checked("charset")
+                }
+            case let .character(server, character):
+                guard let nameField else { return }
+                try workspace.updateCharacter(id: character, inServerID: server) { value in
+                    value.name = nameField.stringValue
+                    value.connectText = connectField?.string ?? ""
+                    value.password = passwordField?.stringValue ?? ""
+                    value.info = characterInfoField?.string ?? ""
+                    value.autoConnect = checked("autoConnect")
+                    value.idleTimeout = checked("idleEnabled")
+                        ? TimeInterval(max(0, idleMinutesField?.doubleValue ?? 0) * 60)
+                        : nil
+                    value.idleText = checked("idleEnabled") ? (idleTextField?.stringValue ?? "") : ""
+                    value.logFilename = characterLogFilenameField?.stringValue ?? ""
+                    value.logAppendsDate = checked("characterLogDate")
+                }
+            case let .puppet(server, character, puppet):
+                guard let nameField else { return }
+                try workspace.updatePuppet(id: puppet, inCharacterID: character, serverID: server) { value in
+                    value.name = nameField.stringValue
+                    value.receivePrefix = receivePrefixField?.stringValue ?? ""
+                    value.sendPrefix = sendPrefixField?.stringValue ?? ""
+                    value.receivePrefixIsRegex = checked("regex")
+                    value.hideReceivePrefix = checked("hide")
+                    value.autoConnect = checked("autoConnect")
+                    value.connectWithPlayer = checked("withPlayer")
+                    value.removeAccidentalPrefix = checked("removePrefix")
+                    value.logFilename = puppetLogFilenameField?.stringValue ?? ""
+                    value.logAppendsDate = checked("puppetLogDate")
+                    value.characterLog = checked("puppetCharacterLog")
+                    value.characterLogPrefix = puppetCharacterLogPrefixField?.stringValue ?? ""
+                }
+            }
+        }
     }
 
     private func checked(_ key: String) -> Bool { checks[key]?.state == .on }
