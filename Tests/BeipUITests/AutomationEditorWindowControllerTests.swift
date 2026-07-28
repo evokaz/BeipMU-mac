@@ -126,6 +126,43 @@ final class AutomationEditorWindowControllerTests: XCTestCase {
         XCTAssertTrue((previewView.accessibilityValue() as? String)?.contains("right aligned") == true)
     }
 
+    func testTriggerDetailAppearancePreviewReflectsAppearanceSettings() throws {
+        let detail = TriggerDetailView()
+
+        detail.testingConfigureAppearancePreview(
+            fontName: "Menlo",
+            fontSize: 16,
+            foreground: .systemYellow,
+            background: .systemBlue,
+            bold: true,
+            italic: true,
+            underline: true,
+            strikeout: true,
+            flashing: true,
+            fastFlash: true,
+            wholeLine: true
+        )
+
+        XCTAssertEqual(detail.testingAppearancePreviewFont.fontName, "Menlo-Regular")
+        XCTAssertEqual(detail.testingAppearancePreviewFont.pointSize, 16)
+        XCTAssertTrue(detail.testingAppearancePreviewForeground.isEqual(NSColor.systemYellow))
+        XCTAssertTrue(detail.testingAppearancePreviewBackground.isEqual(NSColor.systemBlue))
+        XCTAssertTrue(detail.testingAppearancePreviewIsBold)
+        XCTAssertTrue(detail.testingAppearancePreviewIsItalic)
+        XCTAssertTrue(detail.testingAppearancePreviewIsUnderlined)
+        XCTAssertTrue(detail.testingAppearancePreviewIsStruckOut)
+        XCTAssertTrue(detail.testingAppearancePreviewIsFlashing)
+        XCTAssertTrue(detail.testingAppearancePreviewUsesFastFlash)
+        XCTAssertTrue(detail.testingAppearancePreviewUsesWholeLine)
+
+        let preview = try XCTUnwrap(
+            recursiveSubviews(of: detail)
+                .first { $0.accessibilityIdentifier() == "triggerAppearancePreview" }
+        )
+        XCTAssertEqual(preview.accessibilityLabel(), "Appearance preview")
+        XCTAssertTrue((preview.accessibilityValue() as? String)?.contains("fast flashing") == true)
+    }
+
     private static func backgroundColor(in value: NSAttributedString, at location: Int) -> NSColor? {
         value.attribute(.backgroundColor, at: location, effectiveRange: nil) as? NSColor
     }

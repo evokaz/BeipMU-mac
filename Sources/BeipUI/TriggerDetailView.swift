@@ -2,6 +2,122 @@ import AppKit
 import BeipAutomation
 import BeipCore
 
+private final class TriggerAppearancePreviewView: NSView {
+    struct Configuration {
+        var font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        var foreground = NSColor.white
+        var background = NSColor.black
+        var bold = false
+        var italic = false
+        var underline = false
+        var strikeout = false
+        var flashing = false
+        var fastFlash = false
+        var wholeLine = false
+    }
+
+    var configuration = Configuration() {
+        didSet {
+            updateFlashTimer()
+            needsDisplay = true
+            updateAccessibilityValue()
+        }
+    }
+
+    private var flashTimer: Timer?
+    private var showsText = true
+
+    override var isFlipped: Bool { true }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.cornerRadius = 4
+        setAccessibilityElement(true)
+        setAccessibilityRole(.group)
+        setAccessibilityLabel("Appearance preview")
+        updateAccessibilityValue()
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        NSColor.black.setFill()
+        NSBezierPath(roundedRect: bounds, xRadius: 4, yRadius: 4).fill()
+
+        let sample = "AaBbCcXxYyZz"
+        let font = styledFont()
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: configuration.foreground,
+            .underlineStyle: configuration.underline ? NSUnderlineStyle.single.rawValue : 0,
+            .strikethroughStyle: configuration.strikeout ? NSUnderlineStyle.single.rawValue : 0,
+        ]
+        let attributedSample = NSAttributedString(string: sample, attributes: attributes)
+        let textSize = attributedSample.size()
+        let textRect = NSRect(
+            x: floor((bounds.width - textSize.width) / 2),
+            y: floor((bounds.height - textSize.height) / 2),
+            width: ceil(textSize.width),
+            height: ceil(textSize.height)
+        )
+        let backgroundRect = configuration.wholeLine
+            ? NSRect(x: 8, y: textRect.minY - 3, width: max(0, bounds.width - 16), height: textRect.height + 6)
+            : textRect.insetBy(dx: -2, dy: -1)
+        configuration.background.setFill()
+        NSBezierPath(rect: backgroundRect).fill()
+        if showsText {
+            attributedSample.draw(in: textRect)
+        }
+    }
+
+    private func styledFont() -> NSFont {
+        var font = configuration.font
+        var traits: NSFontTraitMask = []
+        if configuration.bold { traits.insert(.boldFontMask) }
+        if configuration.italic { traits.insert(.italicFontMask) }
+        if !traits.isEmpty {
+            font = NSFontManager.shared.convert(font, toHaveTrait: traits)
+        }
+        return font
+    }
+
+    private func updateFlashTimer() {
+        flashTimer?.invalidate()
+        flashTimer = nil
+        showsText = true
+        guard configuration.flashing, !AccessibilityDisplayOptions.current.reduceMotion else { return }
+        flashTimer = Timer.scheduledTimer(withTimeInterval: configuration.fastFlash ? 0.25 : 0.6, repeats: true) {
+            [weak self] timer in
+            guard self != nil else {
+                timer.invalidate()
+                return
+            }
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.showsText.toggle()
+                self.needsDisplay = true
+            }
+        }
+    }
+
+    private func updateAccessibilityValue() {
+        var traits: [String] = []
+        if configuration.bold { traits.append("bold") }
+        if configuration.italic { traits.append("italic") }
+        if configuration.underline { traits.append("underlined") }
+        if configuration.strikeout { traits.append("struck out") }
+        if configuration.flashing { traits.append(configuration.fastFlash ? "fast flashing" : "flashing") }
+        if configuration.wholeLine { traits.append("whole line") }
+        let style = traits.isEmpty ? "plain" : traits.joined(separator: ", ")
+        setAccessibilityValue(
+            "\(configuration.font.displayName ?? configuration.font.fontName), "
+                + "\(Int(configuration.font.pointSize.rounded())) point, \(style)"
+        )
+    }
+}
+
 private final class TriggerParagraphPreviewView: NSView {
     struct Configuration {
         var paragraph = ParagraphStyle()
@@ -211,6 +327,7 @@ final class TriggerDetailView: NSView {
     private let strikeout = NSButton(checkboxWithTitle: "Strikeout", target: nil, action: nil)
     private let flashing = NSButton(checkboxWithTitle: "Flashing", target: nil, action: nil)
     private let fastFlash = NSButton(checkboxWithTitle: "Use Fast Flash", target: nil, action: nil)
+    private let appearancePreview = TriggerAppearancePreviewView()
 
     private let paragraphBackground = NSButton(checkboxWithTitle: "Background", target: nil, action: nil)
     private let paragraphBackgroundColor = NSColorWell()
@@ -304,6 +421,7 @@ final class TriggerDetailView: NSView {
         super.init(frame: frameRect)
         build(speechScroll: speechScroll, sendScroll: sendScroll, filterScroll: filterScroll)
         configureMatchTester()
+        configureAppearancePreview()
         configureParagraphPreview()
         reset()
     }
@@ -429,6 +547,7 @@ final class TriggerDetailView: NSView {
                 scriptFunction.stringValue = function
             }
         }
+        updateAppearancePreview()
         updateParagraphPreview()
         refreshAccessibilityStateDescriptions()
     }
@@ -471,6 +590,7 @@ final class TriggerDetailView: NSView {
         sendTextView.string = ""
         filterTextView.string = ""
         updateMatchTester()
+        updateAppearancePreview()
         updateParagraphPreview()
         refreshAccessibilityStateDescriptions()
     }
@@ -506,11 +626,52 @@ final class TriggerDetailView: NSView {
         testStringView.attributedString()
     }
     var testingParagraphPreviewStyle: ParagraphStyle { paragraphPreview.configuration.paragraph }
+    var testingAppearancePreviewFont: NSFont { appearancePreview.configuration.font }
+    var testingAppearancePreviewForeground: NSColor { appearancePreview.configuration.foreground }
+    var testingAppearancePreviewBackground: NSColor { appearancePreview.configuration.background }
+    var testingAppearancePreviewIsBold: Bool { appearancePreview.configuration.bold }
+    var testingAppearancePreviewIsItalic: Bool { appearancePreview.configuration.italic }
+    var testingAppearancePreviewIsUnderlined: Bool { appearancePreview.configuration.underline }
+    var testingAppearancePreviewIsStruckOut: Bool { appearancePreview.configuration.strikeout }
+    var testingAppearancePreviewIsFlashing: Bool { appearancePreview.configuration.flashing }
+    var testingAppearancePreviewUsesFastFlash: Bool { appearancePreview.configuration.fastFlash }
+    var testingAppearancePreviewUsesWholeLine: Bool { appearancePreview.configuration.wholeLine }
 
     func testingConfigureParagraphPreview(_ patch: ParagraphPatch) {
         reset()
         loadParagraph(patch)
         updateParagraphPreview()
+    }
+
+    func testingConfigureAppearancePreview(
+        fontName: String,
+        fontSize: Double,
+        foreground: NSColor,
+        background: NSColor,
+        bold: Bool,
+        italic: Bool,
+        underline: Bool,
+        strikeout: Bool,
+        flashing: Bool,
+        fastFlash: Bool,
+        wholeLine: Bool
+    ) {
+        reset()
+        fontEnabled.state = .on
+        fontFace.stringValue = fontName
+        self.fontSize.doubleValue = fontSize
+        foregroundEnabled.state = .on
+        foregroundColor.color = foreground
+        backgroundEnabled.state = .on
+        backgroundColor.color = background
+        self.bold.state = bold ? .on : .off
+        self.italic.state = italic ? .on : .off
+        self.underline.state = underline ? .on : .off
+        self.strikeout.state = strikeout ? .on : .off
+        self.flashing.state = flashing ? .on : .off
+        self.fastFlash.state = fastFlash ? .on : .off
+        wholeLineAppearance.state = wholeLine ? .on : .off
+        updateAppearancePreview()
     }
 
     func updatedTrigger(preserving trigger: Trigger) -> Trigger {
@@ -721,6 +882,7 @@ final class TriggerDetailView: NSView {
             (strikeout, "triggerStrikeout"),
             (flashing, "triggerFlashing"),
             (fastFlash, "triggerFastFlash"),
+            (appearancePreview, "triggerAppearancePreview"),
             (paragraphBackground, "triggerParagraphBackground"),
             (paragraphBackgroundColor, "triggerParagraphBackgroundColor"),
             (paragraphBackgroundHash, "triggerParagraphBackgroundHash"),
@@ -875,6 +1037,80 @@ final class TriggerDetailView: NSView {
         }
     }
 
+    private func configureAppearancePreview() {
+        let controls: [NSControl] = [
+            fontEnabled,
+            fontDefault,
+            wholeLineAppearance,
+            foregroundEnabled,
+            foregroundColor,
+            foregroundDefault,
+            foregroundHash,
+            backgroundEnabled,
+            backgroundColor,
+            backgroundDefault,
+            backgroundHash,
+            bold,
+            italic,
+            underline,
+            strikeout,
+            flashing,
+            fastFlash,
+        ]
+        for control in controls {
+            control.target = self
+            control.action = #selector(appearancePreviewChanged(_:))
+        }
+        for field in [fontFace, fontSize] {
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(appearancePreviewChanged(_:)),
+                name: NSControl.textDidChangeNotification,
+                object: field
+            )
+        }
+    }
+
+    @objc private func appearancePreviewChanged(_ sender: Any?) {
+        updateAppearancePreview()
+        refreshAccessibilityStateDescriptions()
+    }
+
+    private func updateAppearancePreview() {
+        let pointSize = CGFloat(max(1, double(fontSize, fallback: 13)))
+        let defaultFont = NSFont.monospacedSystemFont(ofSize: pointSize, weight: .regular)
+        let selectedFont = fontEnabled.state == .on && fontDefault.state != .on
+            ? NSFont(name: fontFace.stringValue, size: pointSize) ?? defaultFont
+            : defaultFont
+
+        var foreground = NSColor.white
+        if foregroundEnabled.state == .on { foreground = foregroundColor.color }
+        if foregroundDefault.state == .on { foreground = .white }
+        if foregroundHash.state == .on {
+            foreground = NSColor(calibratedRed: 0.31, green: 0.72, blue: 0.96, alpha: 1)
+        }
+
+        var background = NSColor.black
+        if backgroundEnabled.state == .on { background = backgroundColor.color }
+        if backgroundDefault.state == .on { background = .black }
+        if backgroundHash.state == .on {
+            background = NSColor(calibratedRed: 0.08, green: 0.35, blue: 0.56, alpha: 1)
+        }
+
+        appearancePreview.configuration = .init(
+            font: selectedFont,
+            foreground: foreground,
+            background: background,
+            bold: bold.state == .on,
+            italic: italic.state == .on,
+            underline: underline.state == .on,
+            strikeout: strikeout.state == .on,
+            flashing: flashing.state == .on,
+            fastFlash: fastFlash.state == .on,
+            wholeLine: wholeLineAppearance.state == .on
+        )
+    }
+
     @objc private func paragraphPreviewChanged(_ sender: Any?) {
         updateParagraphPreview()
         refreshAccessibilityStateDescriptions()
@@ -1007,6 +1243,9 @@ final class TriggerDetailView: NSView {
     private func appearancePane() -> NSView {
         fixed(fontFace, width: 170)
         fixed(fontSize, width: 60)
+        appearancePreview.translatesAutoresizingMaskIntoConstraints = false
+        appearancePreview.heightAnchor.constraint(equalToConstant: 100).isActive = true
+        appearancePreview.widthAnchor.constraint(greaterThanOrEqualToConstant: 520).isActive = true
         let left = stack([
             row([fontEnabled, label("Face"), fontFace, label("Size"), fontSize, fontDefault]),
             row([foregroundEnabled, foregroundColor, foregroundDefault, foregroundHash]),
@@ -1014,7 +1253,13 @@ final class TriggerDetailView: NSView {
             wholeLineAppearance,
         ])
         let right = stack([bold, italic, underline, strikeout, flashing, fastFlash])
-        return padded(row([left, right]))
+        let content = stack([
+            row([left, right]),
+            label("Sample"),
+            appearancePreview,
+        ])
+        content.spacing = 4
+        return padded(content)
     }
 
     private func paragraphPane() -> NSView {
