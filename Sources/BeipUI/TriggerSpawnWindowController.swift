@@ -2,33 +2,49 @@ import AppKit
 import BeipCore
 
 @MainActor
+private final class TriggerSpawnFloatingWindow: NSWindow {
+    var onLeftMouseUp: (() -> Void)?
+
+    override func sendEvent(_ event: NSEvent) {
+        super.sendEvent(event)
+        if event.type == .leftMouseUp { onLeftMouseUp?() }
+    }
+}
+
+@MainActor
 final class TriggerSpawnWindowController: NSWindowController, NSWindowDelegate {
     private let output = OutputTextView()
     private let dockingAccessory = DockSurfaceAccessoryViewController()
     private(set) var isDocked = false
     var onClose: (() -> Void)?
+    var onWindowDragEnded: ((NSPoint) -> Bool)?
     var onDockRequest: ((WebViewDockSide) -> Void)? {
         didSet { dockingAccessory.onDockRequest = onDockRequest }
     }
     var onAction: ((LinkAction) -> Void)? {
         didSet { output.onAction = onAction }
     }
+    private var dragFeedbackGeneration = 0
+    private var floatingDragTask: Task<Void, Never>?
+    private var latestDragReleasePoint: NSPoint?
 
     init(title: String) {
-        let panel = NSPanel(
+        let panel = TriggerSpawnFloatingWindow(
             contentRect: NSRect(x: 0, y: 0, width: 500, height: 320),
-            styleMask: [.titled, .closable, .utilityWindow, .resizable],
+            styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false
         )
         panel.title = title
         panel.setAccessibilityIdentifier("triggerSpawnWindow")
+        panel.tabbingMode = .disallowed
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = false
         panel.contentView = output.containerView
         super.init(window: panel)
         panel.delegate = self
         panel.addTitlebarAccessoryViewController(dockingAccessory)
+        panel.onLeftMouseUp = { [weak self] in self?.finishFloatingDrag() }
     }
 
     required init?(coder: NSCoder) { nil }
@@ -37,6 +53,7 @@ final class TriggerSpawnWindowController: NSWindowController, NSWindowDelegate {
     func append(_ line: RenderedLine) { output.append(line) }
     var retainedLines: [RenderedLine] { output.retainedLines }
     func contentViewForDocking() -> NSView {
+        cancelFloatingDrag()
         window?.orderOut(nil)
         if window?.contentView === output.containerView { window?.contentView = nil }
         output.containerView.removeFromSuperview()
@@ -44,15 +61,23 @@ final class TriggerSpawnWindowController: NSWindowController, NSWindowDelegate {
         return output.containerView
     }
     func showFloating(_ sender: Any?) {
+        showFloating(sender, near: nil)
+    }
+
+    func showFloating(_ sender: Any?, near point: NSPoint?) {
         if isDocked {
             output.containerView.removeFromSuperview()
             window?.contentView = output.containerView
             isDocked = false
         }
+        if let point, let window {
+            Self.position(window, near: point)
+        }
         showWindow(sender)
         window?.makeKeyAndOrderFront(sender)
     }
     func closeSurface() {
+        cancelFloatingDrag()
         if isDocked {
             output.containerView.removeFromSuperview()
             window?.contentView = output.containerView
@@ -60,7 +85,74 @@ final class TriggerSpawnWindowController: NSWindowController, NSWindowDelegate {
         }
         close()
     }
-    func windowWillClose(_ notification: Notification) { onClose?() }
+    func windowDidMove(_ notification: Notification) {
+        guard !isDocked, let frame = window?.frame else { return }
+        observeFloatingDrag(frame: frame)
+        pulseDragFeedback()
+    }
+    func windowWillClose(_ notification: Notification) {
+        cancelFloatingDrag()
+        onClose?()
+    }
+
+    private func pulseDragFeedback() {
+        guard let view = window?.contentView else { return }
+        view.wantsLayer = true
+        view.layer?.borderWidth = 3
+        view.layer?.borderColor = NSColor.controlAccentColor.cgColor
+        dragFeedbackGeneration += 1
+        let generation = dragFeedbackGeneration
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(180))
+            guard let self, dragFeedbackGeneration == generation else { return }
+            view.layer?.borderWidth = 0
+            view.layer?.borderColor = nil
+        }
+    }
+
+    private func observeFloatingDrag(frame: NSRect) {
+        latestDragReleasePoint = NSEvent.mouseLocation
+        guard floatingDragTask == nil, Self.leftMouseButtonIsPressed else { return }
+        floatingDragTask = Task { @MainActor [weak self] in
+            while Self.leftMouseButtonIsPressed {
+                try? await Task.sleep(for: .milliseconds(25))
+            }
+            self?.finishFloatingDrag()
+        }
+    }
+
+    private func finishFloatingDrag() {
+        latestDragReleasePoint = NSEvent.mouseLocation
+        guard let point = latestDragReleasePoint else {
+            cancelFloatingDrag()
+            return
+        }
+        cancelFloatingDrag()
+        guard !isDocked else { return }
+        if onWindowDragEnded?(point) == true { pulseDragFeedback() }
+    }
+
+    private func cancelFloatingDrag() {
+        latestDragReleasePoint = nil
+        floatingDragTask?.cancel()
+        floatingDragTask = nil
+    }
+
+    fileprivate static var leftMouseButtonIsPressed: Bool {
+        NSEvent.pressedMouseButtons & 1 == 1
+    }
+
+    fileprivate static func position(_ window: NSWindow, near point: NSPoint) {
+        var frame = window.frame
+        let screen = NSScreen.screens.first { $0.frame.contains(point) } ?? window.screen
+        let visible = screen?.visibleFrame
+        frame.origin = NSPoint(x: point.x - frame.width / 2, y: point.y - min(frame.height / 2, 120))
+        if let visible {
+            frame.origin.x = min(max(frame.origin.x, visible.minX), visible.maxX - frame.width)
+            frame.origin.y = min(max(frame.origin.y, visible.minY), visible.maxY - frame.height)
+        }
+        window.setFrame(frame, display: true)
+    }
 }
 
 /// A native equivalent of the Windows SpawnTabsWindow. Each tab retains an
@@ -78,47 +170,58 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
 
     private let tabStrip = SpawnTabStripView()
     private let contentHost = NSView()
-    private let root = NSStackView()
+    private let root = NSView()
     private let dockingAccessory = DockSurfaceAccessoryViewController()
     private var tabs: [Tab] = []
     private var selectedID: UUID?
     private(set) var isDocked = false
     var onClose: (() -> Void)?
+    var onWindowDragEnded: ((NSPoint) -> Bool)?
     var onDockRequest: ((WebViewDockSide) -> Void)? {
         didSet { dockingAccessory.onDockRequest = onDockRequest }
     }
     var onAction: ((LinkAction) -> Void)?
     var onStructureChange: (() -> Void)?
     var onTabActivate: ((String) -> Void)?
+    var onDockedSurfaceDrag: ((NSPoint) -> Bool)?
+    private var dragFeedbackGeneration = 0
+    private var floatingDragTask: Task<Void, Never>?
+    private var latestDragReleasePoint: NSPoint?
 
     init(title: String) {
-        let panel = NSPanel(
+        let panel = TriggerSpawnFloatingWindow(
             contentRect: NSRect(x: 0, y: 0, width: 560, height: 360),
-            styleMask: [.titled, .closable, .utilityWindow, .resizable],
+            styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false
         )
         panel.title = title
         panel.setAccessibilityIdentifier("triggerSpawnTabGroupWindow")
+        panel.tabbingMode = .disallowed
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = false
 
         tabStrip.translatesAutoresizingMaskIntoConstraints = false
         contentHost.translatesAutoresizingMaskIntoConstraints = false
-        root.setViews([tabStrip, contentHost], in: .leading)
-        root.orientation = .vertical
-        root.alignment = .leading
-        root.spacing = 0
+        root.addSubview(tabStrip)
+        root.addSubview(contentHost)
+        root.wantsLayer = true
         panel.contentView = root
         NSLayoutConstraint.activate([
+            tabStrip.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            tabStrip.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            tabStrip.topAnchor.constraint(equalTo: root.topAnchor),
             tabStrip.heightAnchor.constraint(equalToConstant: 32),
-            tabStrip.widthAnchor.constraint(equalTo: root.widthAnchor),
-            contentHost.widthAnchor.constraint(equalTo: root.widthAnchor),
+            contentHost.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            contentHost.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            contentHost.topAnchor.constraint(equalTo: tabStrip.bottomAnchor),
+            contentHost.bottomAnchor.constraint(equalTo: root.bottomAnchor),
         ])
 
         super.init(window: panel)
         panel.delegate = self
         panel.addTitlebarAccessoryViewController(dockingAccessory)
+        panel.onLeftMouseUp = { [weak self] in self?.finishFloatingDrag() }
         tabStrip.owner = self
     }
 
@@ -129,6 +232,7 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
     var highlightedTitles: [String] { tabs.filter(\.highlighted).map(\.title) }
 
     func contentViewForDocking() -> NSView {
+        cancelFloatingDrag()
         window?.orderOut(nil)
         if window?.contentView === root { window?.contentView = nil }
         root.removeFromSuperview()
@@ -137,16 +241,24 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
     }
 
     func showFloating(_ sender: Any?) {
+        showFloating(sender, near: nil)
+    }
+
+    func showFloating(_ sender: Any?, near point: NSPoint?) {
         if isDocked {
             root.removeFromSuperview()
             window?.contentView = root
             isDocked = false
+        }
+        if let point, let window {
+            TriggerSpawnWindowController.position(window, near: point)
         }
         showWindow(sender)
         window?.makeKeyAndOrderFront(sender)
     }
 
     func closeSurface() {
+        cancelFloatingDrag()
         if isDocked {
             root.removeFromSuperview()
             window?.contentView = root
@@ -231,7 +343,16 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
         index(ofTitle: title).map { tabs[$0].output.retainedLines } ?? []
     }
 
-    func windowWillClose(_ notification: Notification) { onClose?() }
+    func windowDidMove(_ notification: Notification) {
+        guard !isDocked, let frame = window?.frame else { return }
+        observeFloatingDrag(frame: frame)
+        pulseDragFeedback()
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        cancelFloatingDrag()
+        onClose?()
+    }
 
     fileprivate func selectDraggedTab(_ id: UUID) { select(id: id) }
 
@@ -240,6 +361,15 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
     fileprivate func moveDraggedTab(_ id: UUID, to insertionIndex: Int) {
         guard let source = tabs.firstIndex(where: { $0.id == id }) else { return }
         moveTab(from: source, to: insertionIndex)
+    }
+
+    fileprivate func setDraggedTab(_ id: UUID, active: Bool) {
+        tabStrip.setDragging(id: id, active: active)
+    }
+
+    fileprivate func dragDockedSurface(to point: NSPoint) -> Bool {
+        guard isDocked else { return false }
+        return onDockedSurfaceDrag?(point) ?? false
     }
 
     private func index(ofTitle title: String) -> Int? {
@@ -268,11 +398,14 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
 
     private func closeTab(id: UUID) {
         guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
+        let id = tabs[index].id
         let wasSelected = selectedID == id
-        tabs.remove(at: index)
+        let removed = tabs.remove(at: index)
+        removed.output.containerView.removeFromSuperview()
         if tabs.isEmpty {
             selectedID = nil
             contentHost.subviews.forEach { $0.removeFromSuperview() }
+            rebuildTabStrip()
             onStructureChange?()
             closeSurface()
             return
@@ -294,6 +427,47 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
     private func updateTabStripState() {
         tabStrip.update(selectedID: selectedID, highlightedIDs: Set(tabs.filter(\.highlighted).map(\.id)))
     }
+
+    private func pulseDragFeedback() {
+        root.layer?.borderWidth = 3
+        root.layer?.borderColor = NSColor.controlAccentColor.cgColor
+        dragFeedbackGeneration += 1
+        let generation = dragFeedbackGeneration
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(180))
+            guard let self, dragFeedbackGeneration == generation else { return }
+            root.layer?.borderWidth = 0
+            root.layer?.borderColor = nil
+        }
+    }
+
+    private func observeFloatingDrag(frame: NSRect) {
+        latestDragReleasePoint = NSEvent.mouseLocation
+        guard floatingDragTask == nil, TriggerSpawnWindowController.leftMouseButtonIsPressed else { return }
+        floatingDragTask = Task { @MainActor [weak self] in
+            while TriggerSpawnWindowController.leftMouseButtonIsPressed {
+                try? await Task.sleep(for: .milliseconds(25))
+            }
+            self?.finishFloatingDrag()
+        }
+    }
+
+    private func finishFloatingDrag() {
+        latestDragReleasePoint = NSEvent.mouseLocation
+        guard let point = latestDragReleasePoint else {
+            cancelFloatingDrag()
+            return
+        }
+        cancelFloatingDrag()
+        guard !isDocked else { return }
+        if onWindowDragEnded?(point) == true { pulseDragFeedback() }
+    }
+
+    private func cancelFloatingDrag() {
+        latestDragReleasePoint = nil
+        floatingDragTask?.cancel()
+        floatingDragTask = nil
+    }
 }
 
 @MainActor
@@ -303,6 +477,7 @@ private final class SpawnTabStripView: NSStackView {
     weak var owner: TriggerSpawnTabGroupWindowController?
     private var items: [Item] = []
     private var cells: [UUID: SpawnTabCellView] = [:]
+    private var draggedID: UUID?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -334,19 +509,31 @@ private final class SpawnTabStripView: NSStackView {
 
     func update(selectedID: UUID?, highlightedIDs: Set<UUID>) {
         for (id, cell) in cells {
-            cell.update(selected: id == selectedID, highlighted: highlightedIDs.contains(id))
+            cell.update(
+                selected: id == selectedID,
+                highlighted: highlightedIDs.contains(id),
+                dragging: id == draggedID
+            )
+        }
+    }
+
+    func setDragging(id: UUID, active: Bool) {
+        draggedID = active ? id : nil
+        for (cellID, cell) in cells {
+            cell.setDragging(cellID == draggedID)
         }
     }
 
     override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
-        sender.draggingPasteboard.availableType(from: [Self.pasteboardType]) == nil ? [] : .move
+        localDraggedID(from: sender) == nil ? [] : .move
     }
 
-    override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation { .move }
+    override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        localDraggedID(from: sender) == nil ? [] : .move
+    }
 
     override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
-        guard let raw = sender.draggingPasteboard.string(forType: Self.pasteboardType),
-              let id = UUID(uuidString: raw) else { return false }
+        guard let id = localDraggedID(from: sender) else { return false }
         let x = convert(sender.draggingLocation, from: nil).x
         let insertion = items.firstIndex { item in
             guard let cell = cells[item.id] else { return false }
@@ -355,90 +542,196 @@ private final class SpawnTabStripView: NSStackView {
         owner?.moveDraggedTab(id, to: insertion)
         return true
     }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let window else {
+            super.mouseDragged(with: event)
+            return
+        }
+        let point = window.convertPoint(toScreen: event.locationInWindow)
+        if owner?.dragDockedSurface(to: point) != true { super.mouseDragged(with: event) }
+    }
+
+    private func localDraggedID(from sender: any NSDraggingInfo) -> UUID? {
+        guard let raw = sender.draggingPasteboard.string(forType: Self.pasteboardType),
+              let id = UUID(uuidString: raw),
+              items.contains(where: { $0.id == id }) else { return nil }
+        return id
+    }
 }
 
 @MainActor
-private final class SpawnTabCellView: NSStackView {
+private final class SpawnTabCellView: NSView, NSDraggingSource {
+    private final class ClickThroughLabel: NSTextField {
+        override var alignmentRectInsets: NSEdgeInsets {
+            NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
+        }
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    }
+
     private let id: UUID
-    private let titleButton: SpawnTabButton
+    private weak var owner: TriggerSpawnTabGroupWindowController?
+    private let baseTitle: String
+    private let titleLabel = ClickThroughLabel(labelWithString: "")
     private let closeButton: NSButton
+    private var tracking: NSTrackingArea?
+    private var selected = false
+    private var highlighted = false
+    private var dragging = false
+    private var hovered = false
 
     init(item: SpawnTabStripView.Item, owner: TriggerSpawnTabGroupWindowController?) {
         id = item.id
-        titleButton = SpawnTabButton(title: item.title, id: item.id, owner: owner)
-        closeButton = NSButton(title: "×", target: nil, action: nil)
+        self.owner = owner
+        baseTitle = item.title
+        closeButton = NSButton()
         super.init(frame: .zero)
-        orientation = .horizontal
-        alignment = .centerY
-        spacing = 1
-        titleButton.bezelStyle = .recessed
-        titleButton.setButtonType(.toggle)
-        titleButton.target = owner
-        titleButton.action = #selector(TriggerSpawnTabGroupWindowController.selectTabButton(_:))
-        titleButton.identifier = NSUserInterfaceItemIdentifier(item.id.uuidString)
+
+        wantsLayer = true
+        layer?.cornerRadius = 7
+
+        titleLabel.stringValue = item.title
+        titleLabel.font = .systemFont(ofSize: 13)
+        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.maximumNumberOfLines = 1
+        titleLabel.allowsExpansionToolTips = true
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        addSubview(titleLabel)
+
+        closeButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close tab")
+        closeButton.imageScaling = .scaleProportionallyDown
         closeButton.isBordered = false
+        closeButton.focusRingType = .none
+        closeButton.contentTintColor = .secondaryLabelColor
         closeButton.toolTip = "Close \(item.title)"
         closeButton.setAccessibilityLabel("Close \(item.title)")
-        closeButton.target = owner
-        closeButton.action = #selector(TriggerSpawnTabGroupWindowController.closeTabButton(_:))
-        closeButton.identifier = NSUserInterfaceItemIdentifier(item.id.uuidString)
-        addArrangedSubview(titleButton)
-        addArrangedSubview(closeButton)
-    }
+        closeButton.target = self
+        closeButton.action = #selector(closeTab(_:))
+        closeButton.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(closeButton)
 
-    required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    func update(selected: Bool, highlighted: Bool) {
-        titleButton.state = selected ? .on : .off
-        titleButton.contentTintColor = highlighted ? .systemOrange : .controlTextColor
-        titleButton.title = (highlighted ? "● " : "") + titleButton.baseTitle
-        titleButton.setAccessibilitySelected(selected)
-        titleButton.setAccessibilityHelp(highlighted ? "Unread spawn activity" : nil)
-    }
-}
-
-@MainActor
-private final class SpawnTabButton: NSButton, NSDraggingSource {
-    let baseTitle: String
-    private let tabID: UUID
-    private weak var owner: TriggerSpawnTabGroupWindowController?
-
-    init(title: String, id: UUID, owner: TriggerSpawnTabGroupWindowController?) {
-        baseTitle = title
-        tabID = id
-        self.owner = owner
-        super.init(frame: .zero)
-        self.title = title
+        setAccessibilityElement(true)
         setAccessibilityRole(.radioButton)
+        setAccessibilityLabel("\(item.title) spawn tab")
+        setAccessibilityIdentifier("spawnTab")
+
+        let minimumWidth = widthAnchor.constraint(greaterThanOrEqualToConstant: 96)
+        minimumWidth.priority = .defaultLow
+        NSLayoutConstraint.activate([
+            heightAnchor.constraint(equalToConstant: 28),
+            minimumWidth,
+            widthAnchor.constraint(lessThanOrEqualToConstant: 220),
+            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            titleLabel.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -7),
+            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            closeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            closeButton.widthAnchor.constraint(equalToConstant: 16),
+            closeButton.heightAnchor.constraint(equalToConstant: 16),
+        ])
+        updateAppearance()
     }
 
     required init?(coder: NSCoder) { nil }
 
+    override var intrinsicContentSize: NSSize {
+        let titleWidth = ceil((baseTitle as NSString).size(withAttributes: [
+            .font: NSFont.systemFont(ofSize: 13, weight: selected ? .semibold : .regular),
+        ]).width)
+        return NSSize(width: min(max(titleWidth + 50, 96), 220), height: 28)
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let next = NSTrackingArea(
+            rect: bounds,
+            options: [.activeInKeyWindow, .inVisibleRect, .mouseEnteredAndExited],
+            owner: self
+        )
+        addTrackingArea(next)
+        tracking = next
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        hovered = true
+        updateAppearance()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        hovered = false
+        updateAppearance()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateAppearance()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        owner?.selectDraggedTab(id)
+    }
+
     override func mouseDragged(with event: NSEvent) {
+        owner?.setDraggedTab(id, active: true)
         let pasteboardItem = NSPasteboardItem()
-        pasteboardItem.setString(tabID.uuidString, forType: SpawnTabStripView.pasteboardType)
+        pasteboardItem.setString(id.uuidString, forType: SpawnTabStripView.pasteboardType)
         let item = NSDraggingItem(pasteboardWriter: pasteboardItem)
-        let image = NSImage(size: bounds.size)
-        image.lockFocus()
-        draw(bounds)
-        image.unlockFocus()
-        item.setDraggingFrame(bounds, contents: image)
+        item.setDraggingFrame(bounds, contents: dragImage())
         beginDraggingSession(with: [item], event: event, source: self)
+    }
+
+    func update(selected: Bool, highlighted: Bool, dragging: Bool) {
+        self.selected = selected
+        self.highlighted = highlighted
+        invalidateIntrinsicContentSize()
+        setDragging(dragging)
+        setAccessibilitySelected(selected)
+        setAccessibilityHelp(highlighted ? "Unread spawn activity" : nil)
+    }
+
+    func setDragging(_ dragging: Bool) {
+        self.dragging = dragging
+        updateAppearance()
     }
 
     func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
         .move
     }
-}
 
-private extension TriggerSpawnTabGroupWindowController {
-    @objc func selectTabButton(_ sender: NSButton) {
-        guard let raw = sender.identifier?.rawValue, let id = UUID(uuidString: raw) else { return }
-        selectDraggedTab(id)
+    func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+        owner?.setDraggedTab(id, active: false)
     }
 
-    @objc func closeTabButton(_ sender: NSButton) {
-        guard let raw = sender.identifier?.rawValue, let id = UUID(uuidString: raw) else { return }
-        closeDraggedTab(id)
+    private func updateAppearance() {
+        alphaValue = dragging ? 0.62 : 1
+        titleLabel.font = .systemFont(ofSize: 13, weight: selected ? .semibold : .regular)
+        titleLabel.stringValue = (highlighted ? "● " : "") + baseTitle
+        titleLabel.textColor = highlighted ? .systemOrange : .labelColor
+        closeButton.isHidden = !(selected || hovered)
+        layer?.backgroundColor = if selected {
+            NSColor.controlColor.cgColor
+        } else if hovered || dragging {
+            NSColor.quaternaryLabelColor.cgColor
+        } else {
+            NSColor.clear.cgColor
+        }
+        layer?.borderWidth = dragging ? 2 : 0
+        layer?.borderColor = dragging ? NSColor.controlAccentColor.cgColor : nil
+    }
+
+    private func dragImage() -> NSImage {
+        guard let representation = bitmapImageRepForCachingDisplay(in: bounds) else {
+            return NSImage(size: bounds.size)
+        }
+        cacheDisplay(in: bounds, to: representation)
+        let image = NSImage(size: bounds.size)
+        image.addRepresentation(representation)
+        return image
+    }
+
+    @objc private func closeTab(_ sender: Any?) {
+        owner?.closeDraggedTab(id)
     }
 }

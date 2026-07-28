@@ -606,6 +606,34 @@ final class WorkspacePreferencesTests: XCTestCase {
     }
 
     @MainActor
+    func testDockControllerCanHostDynamicPaneWithoutTitleChrome() {
+        let owner = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let controller = WorkspaceDockController(mainView: NSView(), ownerWindow: owner)
+        owner.contentView = controller.hostView
+        let pane = WorkspacePaneKind.spawnTabs("Channels")
+        let content = NSTextField(labelWithString: "Embedded tabs")
+
+        controller.dockPane(
+            pane,
+            view: content,
+            title: "Channels",
+            side: .right,
+            showsTitle: false,
+            onUndock: {}
+        )
+
+        let descendants = recursiveSubviews(of: controller.hostView)
+        XCTAssertFalse(descendants.compactMap { $0 as? NSTextField }.contains { $0.stringValue == "Channels" })
+        XCTAssertTrue(descendants.compactMap { $0 as? NSButton }.contains { $0.title == "Pop Out" })
+        XCTAssertNotNil(content.window)
+    }
+
+    @MainActor
     func testSpawnSurfaceMovesBetweenWindowAndRecursiveDock() {
         let owner = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
@@ -632,6 +660,186 @@ final class WorkspacePreferencesTests: XCTestCase {
     }
 
     @MainActor
+    func testStandaloneTriggerSpawnDockingBuildsVerticalStack() {
+        let owner = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let dock = WorkspaceDockController(mainView: NSView(), ownerWindow: owner)
+        owner.contentView = dock.hostView
+
+        let whoPane = WorkspacePaneKind.spawn("WHO")
+        let pagesPane = WorkspacePaneKind.spawn("Pages")
+        dock.dockPaneInVerticalStack(
+            whoPane,
+            view: NSTextField(labelWithString: "WHO"),
+            title: "WHO",
+            side: .right,
+            matching: isStandaloneSpawnPane
+        )
+        dock.dockPaneInVerticalStack(
+            pagesPane,
+            view: NSTextField(labelWithString: "Pages"),
+            title: "Pages",
+            side: .right,
+            matching: isStandaloneSpawnPane
+        )
+
+        guard case let .split(.columns, _, .pane(.main), stack) = dock.currentLayout,
+              case let .split(.rows, _, .pane(first), .pane(second)) = stack else {
+            return XCTFail("Expected standalone spawns to dock as a vertical stack beside the main session")
+        }
+        XCTAssertEqual(first, whoPane)
+        XCTAssertEqual(second, pagesPane)
+    }
+
+    func testStandaloneTriggerSpawnStackOrderCanBeRewritten() {
+        let whoPane = WorkspacePaneKind.spawn("WHO")
+        let pagesPane = WorkspacePaneKind.spawn("Pages")
+        let layout = WorkspaceLayoutNode.mainOnly
+            .insertingVerticalStack(whoPane, side: .right, matching: isStandaloneSpawnPane)
+            .insertingVerticalStack(pagesPane, side: .right, matching: isStandaloneSpawnPane)
+
+        let reordered = layout.insertingVerticalStack(
+            pagesPane,
+            side: .right,
+            matching: isStandaloneSpawnPane,
+            relativeTo: whoPane,
+            before: true
+        )
+
+        XCTAssertEqual(reordered.panes, [.main, pagesPane, whoPane])
+    }
+
+    func testStandaloneTriggerSpawnStacksAreIndependentPerSide() {
+        let pagesPane = WorkspacePaneKind.spawn("Pages")
+        let whoPane = WorkspacePaneKind.spawn("WHO")
+        let mapPane = WorkspacePaneKind.spawn("Map")
+        let layout = WorkspaceLayoutNode.mainOnly
+            .insertingVerticalStack(pagesPane, side: .right, matching: isStandaloneSpawnPane)
+            .insertingVerticalStack(whoPane, side: .left, matching: isStandaloneSpawnPane)
+            .insertingVerticalStack(mapPane, side: .right, matching: isStandaloneSpawnPane)
+
+        XCTAssertEqual(layout.dockSide(of: pagesPane), .right)
+        XCTAssertEqual(layout.dockSide(of: mapPane), .right)
+        XCTAssertEqual(layout.dockSide(of: whoPane), .left)
+        XCTAssertEqual(layout.panes, [whoPane, .main, pagesPane, mapPane])
+
+        let moved = layout.insertingVerticalStack(
+            pagesPane,
+            side: .left,
+            matching: isStandaloneSpawnPane,
+            relativeTo: whoPane,
+            before: false
+        )
+
+        XCTAssertEqual(moved.dockSide(of: pagesPane), .left)
+        XCTAssertEqual(moved.dockSide(of: whoPane), .left)
+        XCTAssertEqual(moved.dockSide(of: mapPane), .right)
+        XCTAssertEqual(moved.panes, [whoPane, pagesPane, .main, mapPane])
+    }
+
+    @MainActor
+    func testDockSideResolverSnapsFloatingSpawnNearHostEdges() {
+        let host = NSRect(x: 100, y: 100, width: 900, height: 600)
+
+        XCTAssertEqual(
+            WorkspaceDockController.dockSide(
+                forFloatingFrame: NSRect(x: 108, y: 260, width: 260, height: 180),
+                near: host
+            ),
+            .left
+        )
+        XCTAssertEqual(
+            WorkspaceDockController.dockSide(
+                forFloatingFrame: NSRect(x: -160, y: 260, width: 260, height: 180),
+                near: host
+            ),
+            .left
+        )
+        XCTAssertEqual(
+            WorkspaceDockController.dockSide(
+                forFloatingFrame: NSRect(x: -240, y: 260, width: 260, height: 180),
+                near: host,
+                threshold: 120,
+                allowedSides: [.left, .right]
+            ),
+            .left
+        )
+        XCTAssertEqual(
+            WorkspaceDockController.dockSide(
+                forFloatingFrame: NSRect(x: 732, y: 260, width: 260, height: 180),
+                near: host
+            ),
+            .right
+        )
+        XCTAssertEqual(
+            WorkspaceDockController.dockSide(
+                forFloatingFrame: NSRect(x: 1_000, y: 260, width: 260, height: 180),
+                near: host
+            ),
+            .right
+        )
+        XCTAssertEqual(
+            WorkspaceDockController.dockSide(
+                forFloatingFrame: NSRect(x: 1_080, y: 260, width: 260, height: 180),
+                near: host,
+                threshold: 120,
+                allowedSides: [.left, .right]
+            ),
+            .right
+        )
+        XCTAssertEqual(
+            WorkspaceDockController.dockSide(
+                forFloatingFrame: NSRect(x: 430, y: 522, width: 260, height: 180),
+                near: host
+            ),
+            .top
+        )
+        XCTAssertNil(
+            WorkspaceDockController.dockSide(
+                forFloatingFrame: NSRect(x: 430, y: 522, width: 260, height: 180),
+                near: host,
+                allowedSides: [.left, .right]
+            )
+        )
+        XCTAssertEqual(
+            WorkspaceDockController.dockSide(
+                forScreenPoint: NSPoint(x: 35, y: 320),
+                in: host,
+                threshold: 96,
+                allowedSides: [.left, .right]
+            ),
+            .left
+        )
+        XCTAssertEqual(
+            WorkspaceDockController.dockSide(
+                forScreenPoint: NSPoint(x: 1_065, y: 320),
+                in: host,
+                threshold: 96,
+                allowedSides: [.left, .right]
+            ),
+            .right
+        )
+        XCTAssertNil(
+            WorkspaceDockController.dockSide(
+                forScreenPoint: NSPoint(x: 430, y: 755),
+                in: host,
+                threshold: 96,
+                allowedSides: [.left, .right]
+            )
+        )
+        XCTAssertNil(
+            WorkspaceDockController.dockSide(
+                forFloatingFrame: NSRect(x: 420, y: 280, width: 260, height: 180),
+                near: host
+            )
+        )
+    }
+
+    @MainActor
     func testRestoredOpenTabRecreatesFloatingAndDockedTriggerSpawns() throws {
         let server = ServerProfile(name: "Spawn World", host: "example.invalid", port: 8888)
         let key = "Spawn World".folding(
@@ -639,7 +847,10 @@ final class WorkspacePreferencesTests: XCTestCase {
             locale: .current
         )
         let dockedSpawn = WorkspacePaneKind.spawn("Docked")
-        let layout = WorkspaceLayoutNode.mainOnly.inserting(dockedSpawn, side: .right)
+        let dockedTabGroup = WorkspacePaneKind.spawnTabs("Channels")
+        let layout = WorkspaceLayoutNode.mainOnly
+            .inserting(dockedSpawn, side: .right)
+            .inserting(dockedTabGroup, side: .bottom)
         let preferences = WorkspacePreferences(
             workspaceLayouts: [key: layout],
             spawnSurfaces: [
@@ -662,7 +873,10 @@ final class WorkspacePreferencesTests: XCTestCase {
         let state = controller.testingSpawnSurfaceState()
         XCTAssertEqual(state.standalone["Docked"], true)
         XCTAssertEqual(state.standalone["Floating"], false)
-        XCTAssertEqual(state.tabGroups["Channels"], false)
+        XCTAssertEqual(state.tabGroups["Channels"], true)
+        let views = recursiveSubviews(of: try XCTUnwrap(controller.window?.contentView))
+        XCTAssertTrue(views.compactMap { $0 as? NSTextField }.contains { $0.stringValue == "Channels" })
+        XCTAssertTrue(views.contains { $0.accessibilityLabel() == "Spawn tabs" })
     }
 
     func testWorkspaceLayoutUpdatesNestedDividerWithoutChangingOtherBranches() {
@@ -718,6 +932,11 @@ final class WorkspacePreferencesTests: XCTestCase {
     @MainActor
     private func recursiveSubviews(of view: NSView) -> [NSView] {
         view.subviews + view.subviews.flatMap(recursiveSubviews(of:))
+    }
+
+    private func isStandaloneSpawnPane(_ pane: WorkspacePaneKind) -> Bool {
+        if case .spawn = pane { return true }
+        return false
     }
 
     func testKeyboardShortcutParsingDisplayAndPersistence() throws {
@@ -958,6 +1177,8 @@ final class WorkspacePreferencesTests: XCTestCase {
         let views = recursiveSubviews(of: content)
         XCTAssertTrue(views.contains { $0.accessibilityLabel() == "Spawn tabs" })
         XCTAssertTrue(views.contains { $0.accessibilityLabel() == "Close Public" })
+        let scrollView = try XCTUnwrap(views.compactMap { $0 as? NSScrollView }.first)
+        XCTAssertEqual(scrollView.frame.height, content.bounds.height - 32, accuracy: 1)
     }
 
     @MainActor

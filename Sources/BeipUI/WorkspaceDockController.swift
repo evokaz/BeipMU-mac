@@ -110,10 +110,18 @@ final class WorkspaceDockController: NSObject, NSWindowDelegate, NSSplitViewDele
         title: String,
         side: WebViewDockSide,
         fraction: Double = 0.72,
-        onUndock: (() -> Void)? = nil
+        showsTitle: Bool = true,
+        onUndock: (() -> Void)? = nil,
+        onDrag: ((NSPoint) -> Bool)? = nil
     ) {
         precondition(!WorkspacePaneKind.allCases.contains(pane), "Built-in workspace panes cannot be dynamically replaced.")
-        paneViews[pane] = Self.wrapped(view, title: title, onUndock: onUndock)
+        paneViews[pane] = Self.wrapped(
+            view,
+            title: title,
+            showsTitle: showsTitle,
+            onUndock: onUndock,
+            onDrag: onDrag
+        )
         placement = .right
         rebuild(currentLayout.inserting(pane, side: side, fraction: fraction))
         onLayoutChange?(currentLayout)
@@ -125,11 +133,81 @@ final class WorkspaceDockController: NSObject, NSWindowDelegate, NSSplitViewDele
         _ pane: WorkspacePaneKind,
         view: NSView,
         title: String,
-        onUndock: (() -> Void)? = nil
+        showsTitle: Bool = true,
+        onUndock: (() -> Void)? = nil,
+        onDrag: ((NSPoint) -> Bool)? = nil
     ) -> Bool {
         guard currentLayout.panes.contains(pane) else { return false }
-        paneViews[pane] = Self.wrapped(view, title: title, onUndock: onUndock)
+        paneViews[pane] = Self.wrapped(
+            view,
+            title: title,
+            showsTitle: showsTitle,
+            onUndock: onUndock,
+            onDrag: onDrag
+        )
         rebuild(currentLayout)
+        return true
+    }
+
+    func movePane(_ pane: WorkspacePaneKind, side: WebViewDockSide, fraction: Double = 0.72) {
+        guard paneViews[pane] != nil, currentLayout.panes.contains(pane) else { return }
+        placement = .right
+        rebuild(currentLayout.inserting(pane, side: side, fraction: fraction))
+        onLayoutChange?(currentLayout)
+        onPlacementChange?(placement, thickness)
+    }
+
+    func dockPaneInVerticalStack(
+        _ pane: WorkspacePaneKind,
+        view: NSView,
+        title: String,
+        side: WebViewDockSide,
+        fraction: Double = 0.72,
+        matching isStackPane: (WorkspacePaneKind) -> Bool,
+        onUndock: (() -> Void)? = nil,
+        onDrag: ((NSPoint) -> Bool)? = nil
+    ) {
+        precondition(!WorkspacePaneKind.allCases.contains(pane), "Built-in workspace panes cannot be dynamically replaced.")
+        paneViews[pane] = Self.wrapped(view, title: title, onUndock: onUndock, onDrag: onDrag)
+        placement = .right
+        rebuild(currentLayout.insertingVerticalStack(pane, side: side, fraction: fraction, matching: isStackPane))
+        onLayoutChange?(currentLayout)
+        onPlacementChange?(placement, thickness)
+    }
+
+    func movePaneInVerticalStack(
+        _ pane: WorkspacePaneKind,
+        side: WebViewDockSide,
+        fraction: Double = 0.72,
+        matching isStackPane: (WorkspacePaneKind) -> Bool
+    ) {
+        guard paneViews[pane] != nil, currentLayout.panes.contains(pane) else { return }
+        placement = .right
+        rebuild(currentLayout.insertingVerticalStack(pane, side: side, fraction: fraction, matching: isStackPane))
+        onLayoutChange?(currentLayout)
+        onPlacementChange?(placement, thickness)
+    }
+
+    @discardableResult
+    func reorderPaneInVerticalStack(
+        _ pane: WorkspacePaneKind,
+        atScreenPoint point: NSPoint,
+        matching isStackPane: (WorkspacePaneKind) -> Bool
+    ) -> Bool {
+        guard currentLayout.panes.contains(pane),
+              let target = self.pane(atScreenPoint: point, matching: { $0 != pane && isStackPane($0) }),
+              let side = dockSide(of: target),
+              let targetFrame = frame(of: target) else { return false }
+        let before = point.y > targetFrame.midY
+        rebuild(currentLayout.insertingVerticalStack(
+            pane,
+            side: side,
+            matching: isStackPane,
+            relativeTo: target,
+            before: before
+        ))
+        onLayoutChange?(currentLayout)
+        onPlacementChange?(placement, thickness)
         return true
     }
 
@@ -151,6 +229,94 @@ final class WorkspaceDockController: NSObject, NSWindowDelegate, NSSplitViewDele
     }
 
     func containsPane(_ pane: WorkspacePaneKind) -> Bool { currentLayout.panes.contains(pane) }
+
+    func dockSide(
+        forFloatingFrame frame: NSRect,
+        threshold: CGFloat = 44,
+        allowedSides: Set<WebViewDockSide> = Set(WebViewDockSide.allCases)
+    ) -> WebViewDockSide? {
+        guard let hostFrame = ownerWindow?.frame else { return nil }
+        return Self.dockSide(forFloatingFrame: frame, near: hostFrame, threshold: threshold, allowedSides: allowedSides)
+    }
+
+    func dockSide(
+        forScreenPoint point: NSPoint,
+        threshold: CGFloat = 36,
+        allowedSides: Set<WebViewDockSide> = Set(WebViewDockSide.allCases)
+    ) -> WebViewDockSide? {
+        guard let hostFrame = ownerWindow?.frame else { return nil }
+        return Self.dockSide(forScreenPoint: point, in: hostFrame, threshold: threshold, allowedSides: allowedSides)
+    }
+
+    func isOutsideHostWindow(_ point: NSPoint, tolerance: CGFloat = 48) -> Bool {
+        guard let hostFrame = ownerWindow?.frame else { return false }
+        return !hostFrame.insetBy(dx: -tolerance, dy: -tolerance).contains(point)
+    }
+
+    func dockSide(of pane: WorkspacePaneKind) -> WebViewDockSide? {
+        guard let frame = frame(of: pane),
+              let window = ownerWindow ?? paneViews[pane]?.window else { return nil }
+        let hostInWindow = hostView.convert(hostView.bounds, to: nil)
+        let hostFrame = window.convertToScreen(hostInWindow)
+        return Self.nearestEdge(for: NSPoint(x: frame.midX, y: frame.midY), in: hostFrame)
+    }
+
+    func pane(atScreenPoint point: NSPoint, matching predicate: (WorkspacePaneKind) -> Bool) -> WorkspacePaneKind? {
+        for pane in currentLayout.panes.reversed() where predicate(pane) {
+            guard let view = paneViews[pane], let window = view.window else { continue }
+            let local = view.convert(window.convertPoint(fromScreen: point), from: nil)
+            if view.bounds.contains(local) { return pane }
+        }
+        return nil
+    }
+
+    static func dockSide(
+        forFloatingFrame floatingFrame: NSRect,
+        near hostFrame: NSRect,
+        threshold: CGFloat = 44,
+        allowedSides: Set<WebViewDockSide> = Set(WebViewDockSide.allCases)
+    ) -> WebViewDockSide? {
+        guard hostFrame.insetBy(dx: -threshold, dy: -threshold).intersects(floatingFrame) else { return nil }
+        let overlapX = max(0, min(floatingFrame.maxX, hostFrame.maxX) - max(floatingFrame.minX, hostFrame.minX))
+        let overlapY = max(0, min(floatingFrame.maxY, hostFrame.maxY) - max(floatingFrame.minY, hostFrame.minY))
+        let distanceToLeft = min(abs(floatingFrame.minX - hostFrame.minX), abs(floatingFrame.maxX - hostFrame.minX))
+        let distanceToRight = min(abs(floatingFrame.maxX - hostFrame.maxX), abs(floatingFrame.minX - hostFrame.maxX))
+        let candidates: [(WebViewDockSide, CGFloat, Bool)] = [
+            (.left, distanceToLeft, overlapY > 24),
+            (.right, distanceToRight, overlapY > 24),
+            (.top, abs(floatingFrame.maxY - hostFrame.maxY), overlapX > 24),
+            (.bottom, abs(floatingFrame.minY - hostFrame.minY), overlapX > 24),
+        ]
+        return candidates
+            .filter { allowedSides.contains($0.0) && $0.2 && $0.1 <= threshold }
+            .min { $0.1 < $1.1 }?
+            .0
+    }
+
+    static func dockSide(
+        forScreenPoint point: NSPoint,
+        in hostFrame: NSRect,
+        threshold: CGFloat = 36,
+        allowedSides: Set<WebViewDockSide> = Set(WebViewDockSide.allCases)
+    ) -> WebViewDockSide? {
+        guard hostFrame.insetBy(dx: -threshold, dy: -threshold).contains(point) else { return nil }
+        let distances: [(WebViewDockSide, CGFloat)] = [
+            (.left, abs(point.x - hostFrame.minX)),
+            (.right, abs(point.x - hostFrame.maxX)),
+            (.top, abs(point.y - hostFrame.maxY)),
+            (.bottom, abs(point.y - hostFrame.minY)),
+        ]
+        return distances
+            .filter { allowedSides.contains($0.0) && $0.1 <= threshold }
+            .min { $0.1 < $1.1 }?
+            .0
+    }
+
+    func frame(of pane: WorkspacePaneKind) -> NSRect? {
+        guard let view = paneViews[pane], let window = view.window else { return nil }
+        let frameInWindow = view.convert(view.bounds, to: nil)
+        return window.convertToScreen(frameInWindow)
+    }
 
     func applyTheme(_ palette: WorkspaceThemePalette) {
         notesTextView.textColor = palette.foreground
@@ -336,15 +502,43 @@ final class WorkspaceDockController: NSObject, NSWindowDelegate, NSSplitViewDele
         floatingPanel = panel
     }
 
-    private static func wrapped(_ content: NSView, title: String, onUndock: (() -> Void)? = nil) -> NSView {
+    private static func wrapped(
+        _ content: NSView,
+        title: String,
+        showsTitle: Bool = true,
+        onUndock: (() -> Void)? = nil,
+        onDrag: ((NSPoint) -> Bool)? = nil
+    ) -> NSView {
         let root = NSView()
-        let label = NSTextField(labelWithString: title)
+        content.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(content)
+
+        guard showsTitle else {
+            var constraints = [
+                content.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+                content.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+                content.topAnchor.constraint(equalTo: root.topAnchor),
+                content.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            ]
+            if let onUndock {
+                let button = DockPanePopOutButton(action: onUndock)
+                button.translatesAutoresizingMaskIntoConstraints = false
+                root.addSubview(button)
+                constraints += [
+                    button.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -8),
+                    button.topAnchor.constraint(equalTo: root.topAnchor, constant: 5),
+                ]
+            }
+            NSLayoutConstraint.activate(constraints)
+            return root
+        }
+
+        let label = DockPaneTitleLabel(labelWithString: title)
+        label.onDrag = onDrag
         label.font = .systemFont(ofSize: 12, weight: .semibold)
         label.textColor = .secondaryLabelColor
         label.translatesAutoresizingMaskIntoConstraints = false
-        content.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(label)
-        root.addSubview(content)
         var constraints = [
             label.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 8),
             label.topAnchor.constraint(equalTo: root.topAnchor, constant: 7),
@@ -378,6 +572,36 @@ final class WorkspaceDockController: NSObject, NSWindowDelegate, NSSplitViewDele
             view.topAnchor.constraint(equalTo: container.topAnchor),
             view.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
+    }
+
+    private static func nearestEdge(for point: NSPoint, in container: NSRect) -> WebViewDockSide {
+        let distances: [(WebViewDockSide, CGFloat)] = [
+            (.left, abs(point.x - container.minX)),
+            (.right, abs(point.x - container.maxX)),
+            (.top, abs(point.y - container.maxY)),
+            (.bottom, abs(point.y - container.minY)),
+        ]
+        return distances.min { $0.1 < $1.1 }?.0 ?? .right
+    }
+}
+
+@MainActor
+private final class DockPaneTitleLabel: NSTextField {
+    var onDrag: ((NSPoint) -> Bool)?
+
+    convenience init(labelWithString string: String) {
+        self.init(frame: .zero)
+        self.stringValue = string
+        isEditable = false
+        isSelectable = false
+        isBordered = false
+        drawsBackground = false
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let window else { return }
+        let point = window.convertPoint(toScreen: event.locationInWindow)
+        if onDrag?(point) != true { super.mouseDragged(with: event) }
     }
 }
 

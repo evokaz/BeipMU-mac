@@ -4720,6 +4720,10 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         if let existing = triggerSpawnWindows[title] { return existing }
         let controller = TriggerSpawnWindowController(title: title)
         controller.onAction = { [weak self] action in self?.perform(action) }
+        controller.onWindowDragEnded = { [weak self, weak controller] point in
+            guard let self, let controller else { return false }
+            return self.handleDraggedSpawnWindow(controller, title: title, point: point)
+        }
         controller.onClose = { [weak self] in
             guard let self else { return }
             self.dockController.undockPane(.spawn(title))
@@ -4741,6 +4745,13 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         let controller = TriggerSpawnTabGroupWindowController(title: title)
         controller.onAction = { [weak self] action in self?.perform(action) }
         controller.onStructureChange = { [weak self] in self?.saveSpawnSurfacePreferences() }
+        controller.onWindowDragEnded = { [weak self, weak controller] point in
+            guard let self, let controller else { return false }
+            return self.handleDraggedSpawnTabGroup(controller, title: title, point: point)
+        }
+        controller.onDockedSurfaceDrag = { [weak self] point in
+            self?.handleDraggedDockedSpawnTabGroup(title: title, point: point) ?? false
+        }
         controller.onTabActivate = { [weak self, scriptService] tab in
             guard let self else { return }
             Task {
@@ -4794,6 +4805,9 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
                 guard let self, let controller else { return }
                 self.dockController.undockPane(pane)
                 controller.showFloating(self)
+            },
+            onDrag: { [weak self] point in
+                self?.handleDraggedDockedSpawn(title: title, point: point) ?? false
             }
         ) {
             controller.showFloating(self)
@@ -4812,6 +4826,9 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
                 guard let self, let controller else { return }
                 self.dockController.undockPane(pane)
                 controller.showFloating(self)
+            },
+            onDrag: { [weak self] point in
+                self?.handleDraggedDockedSpawnTabGroup(title: title, point: point) ?? false
             }
         ) {
             controller.showFloating(self)
@@ -4820,15 +4837,19 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
 
     private func dockSpawnWindow(_ controller: TriggerSpawnWindowController, title: String, side: WebViewDockSide) {
         let pane = WorkspacePaneKind.spawn(title)
-        dockController.dockPane(
+        dockController.dockPaneInVerticalStack(
             pane,
             view: controller.contentViewForDocking(),
             title: title,
             side: side,
+            matching: Self.isStandaloneSpawnPane,
             onUndock: { [weak self, weak controller] in
                 guard let self, let controller else { return }
                 self.dockController.undockPane(pane)
                 controller.showFloating(self)
+            },
+            onDrag: { [weak self] point in
+                self?.handleDraggedDockedSpawn(title: title, point: point) ?? false
             }
         )
     }
@@ -4844,8 +4865,83 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
                 guard let self, let controller else { return }
                 self.dockController.undockPane(pane)
                 controller.showFloating(self)
+            },
+            onDrag: { [weak self] point in
+                self?.handleDraggedDockedSpawnTabGroup(title: title, point: point) ?? false
             }
         )
+    }
+
+    private static func isStandaloneSpawnPane(_ pane: WorkspacePaneKind) -> Bool {
+        if case .spawn = pane { return true }
+        return false
+    }
+
+    private func handleDraggedSpawnWindow(
+        _ controller: TriggerSpawnWindowController,
+        title: String,
+        point: NSPoint
+    ) -> Bool {
+        guard let side = dockController.dockSide(
+            forScreenPoint: point,
+            threshold: 96,
+            allowedSides: [.left, .right]
+        ) else {
+            return false
+        }
+        dockSpawnWindow(controller, title: title, side: side)
+        saveSpawnSurfacePreferences()
+        return true
+    }
+
+    private func handleDraggedSpawnTabGroup(
+        _ controller: TriggerSpawnTabGroupWindowController,
+        title: String,
+        point: NSPoint
+    ) -> Bool {
+        guard let side = dockController.dockSide(
+            forScreenPoint: point,
+            threshold: 96,
+            allowedSides: [.left, .right]
+        ) else {
+            return false
+        }
+        dockSpawnTabGroup(controller, title: title, side: side)
+        saveSpawnSurfacePreferences()
+        return true
+    }
+
+    private func handleDraggedDockedSpawn(title: String, point: NSPoint) -> Bool {
+        let pane = WorkspacePaneKind.spawn(title)
+        if dockController.reorderPaneInVerticalStack(pane, atScreenPoint: point, matching: Self.isStandaloneSpawnPane) {
+            return true
+        }
+        guard let side = dockController.dockSide(forScreenPoint: point) else {
+            guard dockController.isOutsideHostWindow(point),
+                  let controller = triggerSpawnWindows[title] else { return false }
+            dockController.undockPane(pane)
+            controller.showFloating(self, near: point)
+            saveSpawnSurfacePreferences()
+            return true
+        }
+        dockController.movePaneInVerticalStack(pane, side: side, matching: Self.isStandaloneSpawnPane)
+        saveSpawnSurfacePreferences()
+        return true
+    }
+
+    private func handleDraggedDockedSpawnTabGroup(title: String, point: NSPoint) -> Bool {
+        let pane = WorkspacePaneKind.spawnTabs(title)
+        guard let side = dockController.dockSide(forScreenPoint: point) else {
+            guard dockController.isOutsideHostWindow(point),
+                  let controller = triggerSpawnTabGroups[title] else { return false }
+            dockController.undockPane(pane)
+            controller.showFloating(self, near: point)
+            saveSpawnSurfacePreferences()
+            return true
+        }
+        dockController.movePane(pane, side: side)
+        saveSpawnSurfacePreferences()
+        return true
     }
 
     private func restoreSpawnSurfacePreferences() {

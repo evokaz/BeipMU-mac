@@ -242,6 +242,50 @@ indirect enum WorkspaceLayoutNode: Codable, Equatable, Sendable {
         return base.insertingBesideMain(pane, side: side, fraction: fraction).normalized
     }
 
+    func insertingVerticalStack(
+        _ pane: WorkspacePaneKind,
+        side: WebViewDockSide,
+        fraction: Double = 0.72,
+        matching isStackPane: (WorkspacePaneKind) -> Bool,
+        relativeTo target: WorkspacePaneKind? = nil,
+        before: Bool = false
+    ) -> Self {
+        var stacked = panes.filter { candidate in
+            isStackPane(candidate) && candidate != pane && dockSide(of: candidate) == side
+        }
+        if let target, let index = stacked.firstIndex(of: target) {
+            stacked.insert(pane, at: before ? index : index + 1)
+        } else {
+            stacked.append(pane)
+        }
+        let base = stacked.reduce(removing(pane) ?? .mainOnly) { layout, stackedPane in
+            layout.removing(stackedPane) ?? .mainOnly
+        }
+        guard let stack = Self.verticalStack(stacked) else { return base.normalized }
+        return base.insertingNodeBesideMain(stack, side: side, fraction: fraction).normalized
+    }
+
+    func dockSide(of pane: WorkspacePaneKind) -> WebViewDockSide? {
+        switch self {
+        case .pane:
+            return nil
+        case let .tabs(panes, _):
+            return panes.contains(pane) ? .right : nil
+        case let .split(axis, _, first, second):
+            let firstHasMain = first.panes.contains(.main)
+            let secondHasMain = second.panes.contains(.main)
+            if firstHasMain {
+                if second.panes.contains(pane) { return axis == .columns ? .right : .bottom }
+                return first.dockSide(of: pane)
+            }
+            if secondHasMain {
+                if first.panes.contains(pane) { return axis == .columns ? .left : .top }
+                return second.dockSide(of: pane)
+            }
+            return nil
+        }
+    }
+
     func removing(_ pane: WorkspacePaneKind) -> Self? {
         switch self {
         case let .pane(existing):
@@ -264,24 +308,50 @@ indirect enum WorkspaceLayoutNode: Codable, Equatable, Sendable {
     }
 
     private func insertingBesideMain(_ pane: WorkspacePaneKind, side: WebViewDockSide, fraction: Double) -> Self {
+        insertingNodeBesideMain(.pane(pane), side: side, fraction: fraction)
+    }
+
+    private func insertingNodeBesideMain(_ node: WorkspaceLayoutNode, side: WebViewDockSide, fraction: Double) -> Self {
         if self == .pane(.main) {
-            let auxiliary: Self = .pane(pane)
             let retained = min(0.85, max(0.15, fraction))
             switch side {
-            case .left: return .split(axis: .columns, fraction: 1 - retained, first: auxiliary, second: self)
-            case .right: return .split(axis: .columns, fraction: retained, first: self, second: auxiliary)
-            case .top: return .split(axis: .rows, fraction: 1 - retained, first: auxiliary, second: self)
-            case .bottom: return .split(axis: .rows, fraction: retained, first: self, second: auxiliary)
+            case .left: return .split(axis: .columns, fraction: 1 - retained, first: node, second: self)
+            case .right: return .split(axis: .columns, fraction: retained, first: self, second: node)
+            case .top: return .split(axis: .rows, fraction: 1 - retained, first: node, second: self)
+            case .bottom: return .split(axis: .rows, fraction: retained, first: self, second: node)
             }
         }
         switch self {
         case .pane, .tabs: return self
         case let .split(axis, fraction, first, second):
             if first.panes.contains(.main) {
-                return .split(axis: axis, fraction: fraction, first: first.insertingBesideMain(pane, side: side, fraction: fraction), second: second)
+                return .split(
+                    axis: axis,
+                    fraction: fraction,
+                    first: first.insertingNodeBesideMain(node, side: side, fraction: fraction),
+                    second: second
+                )
             }
-            return .split(axis: axis, fraction: fraction, first: first, second: second.insertingBesideMain(pane, side: side, fraction: fraction))
+            return .split(
+                axis: axis,
+                fraction: fraction,
+                first: first,
+                second: second.insertingNodeBesideMain(node, side: side, fraction: fraction)
+            )
         }
+    }
+
+    private static func verticalStack(_ panes: [WorkspacePaneKind]) -> Self? {
+        guard let first = panes.first else { return nil }
+        guard panes.count > 1 else { return .pane(first) }
+        let remainder = Array(panes.dropFirst())
+        guard let rest = verticalStack(remainder) else { return .pane(first) }
+        return .split(
+            axis: .rows,
+            fraction: 1 / Double(panes.count),
+            first: .pane(first),
+            second: rest
+        )
     }
 
     private var nodesAreValid: Bool {
