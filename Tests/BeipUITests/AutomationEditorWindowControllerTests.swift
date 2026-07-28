@@ -22,6 +22,25 @@ final class AutomationEditorWindowControllerTests: XCTestCase {
         XCTAssertNoThrow(try detail.validateForApply())
     }
 
+    func testTriggerDetailMatchTesterHighlightsFullMatchAndCaptureRanges() throws {
+        let detail = TriggerDetailView()
+
+        detail.testingConfigureMatch(
+            text: "(.+) pages: (.+)",
+            testString: "Frank pages: Hello back!",
+            isRegularExpression: true
+        )
+
+        let highlighted = detail.testingTestStringAttributedString
+        let firstCapture = try XCTUnwrap(Self.backgroundColor(in: highlighted, at: 0))
+        let literalMatch = try XCTUnwrap(Self.backgroundColor(in: highlighted, at: 6))
+        let secondCapture = try XCTUnwrap(Self.backgroundColor(in: highlighted, at: 13))
+
+        XCTAssertFalse(firstCapture.isEqual(literalMatch))
+        XCTAssertFalse(secondCapture.isEqual(literalMatch))
+        XCTAssertFalse(firstCapture.isEqual(secondCapture))
+    }
+
     func testTriggerDetailMatchTesterReportsInvalidRegexAndBlocksApply() {
         let detail = TriggerDetailView()
 
@@ -39,6 +58,7 @@ final class AutomationEditorWindowControllerTests: XCTestCase {
 
         detail.testingConfigureMatch(text: "dog", testString: "cat scatter cat")
         XCTAssertEqual(detail.testingMatchResult, "Matches: 0")
+        XCTAssertNil(Self.backgroundColor(in: detail.testingTestStringAttributedString, at: 0))
     }
 
     func testTriggerDetailMatchTesterExposesAccessibilityValues() throws {
@@ -59,6 +79,10 @@ final class AutomationEditorWindowControllerTests: XCTestCase {
         XCTAssertEqual(result.accessibilityLabel(), "Trigger test result")
         XCTAssertTrue(result.accessibilityValue()?.contains("Matches: 1") == true)
         XCTAssertEqual(error.accessibilityLabel(), "Trigger test error")
+    }
+
+    private static func backgroundColor(in value: NSAttributedString, at location: Int) -> NSColor? {
+        value.attribute(.backgroundColor, at: location, effectiveRange: nil) as? NSColor
     }
 
     func testTriggerOutlineNewTargetsSelectedCharacterScope() throws {

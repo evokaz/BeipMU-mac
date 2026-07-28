@@ -20,7 +20,8 @@ final class TriggerDetailView: NSView {
     private let processChildren = NSButton(checkboxWithTitle: "Process child triggers", target: nil, action: nil)
     private let descriptionField = NSTextField()
     private let matchField = NSTextField()
-    private let testStringField = NSTextField()
+    private let testStringScroll: NSScrollView
+    private let testStringView: NSTextView
     private let regex = NSButton(checkboxWithTitle: "Regular Expression", target: nil, action: nil)
     private let matchCase = NSButton(checkboxWithTitle: "Match Case", target: nil, action: nil)
     private let wholeWord = NSButton(checkboxWithTitle: "Whole Word", target: nil, action: nil)
@@ -136,8 +137,12 @@ final class TriggerDetailView: NSView {
 
     private let scriptEnabled = NSButton(checkboxWithTitle: "Enabled", target: nil, action: nil)
     private let scriptFunction = NSTextField()
+    private var isUpdatingTestStringHighlight = false
 
     override init(frame frameRect: NSRect) {
+        let testStringScroll = Self.singleLineTextView()
+        self.testStringScroll = testStringScroll
+        testStringView = testStringScroll.documentView as! NSTextView
         let speechScroll = Self.textView()
         speechText = speechScroll.documentView as! NSTextView
         let sendScroll = Self.textView()
@@ -307,6 +312,7 @@ final class TriggerDetailView: NSView {
         multilineSeconds.stringValue = "0"
         sendCaptureIndex.stringValue = "1"
         statFontSize.stringValue = "13"
+        testStringView.string = ""
         speechText.string = ""
         sendTextView.string = ""
         filterTextView.string = ""
@@ -330,7 +336,7 @@ final class TriggerDetailView: NSView {
         wholeWord: Bool = false
     ) {
         matchField.stringValue = text
-        testStringField.stringValue = testString
+        testStringView.string = testString
         regex.state = isRegularExpression ? .on : .off
         self.matchCase.state = matchCase ? .on : .off
         self.startsWith.state = startsWith ? .on : .off
@@ -341,6 +347,9 @@ final class TriggerDetailView: NSView {
 
     var testingMatchResult: String { testResult.stringValue }
     var testingMatchError: String { testError.stringValue }
+    var testingTestStringAttributedString: NSAttributedString {
+        testStringView.attributedString()
+    }
 
     func updatedTrigger(preserving trigger: Trigger) -> Trigger {
         var actions: [TriggerAction] = []
@@ -453,7 +462,8 @@ final class TriggerDetailView: NSView {
         translatesAutoresizingMaskIntoConstraints = false
         descriptionField.setAccessibilityIdentifier("triggerDescription")
         matchField.setAccessibilityIdentifier("triggerMatch")
-        testStringField.setAccessibilityIdentifier("triggerTestString")
+        testStringView.setAccessibilityIdentifier("triggerTestString")
+        testStringView.setAccessibilityLabel("Trigger test string")
         testResult.setAccessibilityIdentifier("triggerTestResult")
         testResult.setAccessibilityLabel("Trigger test result")
         testResult.maximumNumberOfLines = 3
@@ -466,7 +476,7 @@ final class TriggerDetailView: NSView {
             row([enabled, folder, processChildren]),
             formRow("Description:", descriptionField),
             formRow("Matcharoo:", matchField),
-            formRow("Test String:", testStringField),
+            formRowView("Test String:", fixed(testStringScroll, width: 420)),
             row([regex, matchCase, wholeWord, startsWith, endsWith]),
             testResult,
             testError,
@@ -647,14 +657,18 @@ final class TriggerDetailView: NSView {
     }
 
     private func configureMatchTester() {
-        for field in [matchField, testStringField] {
-            NotificationCenter.default.addObserver(
-                self,
-                selector: #selector(matchTesterChanged(_:)),
-                name: NSControl.textDidChangeNotification,
-                object: field
-            )
-        }
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(matchTesterChanged(_:)),
+            name: NSControl.textDidChangeNotification,
+            object: matchField
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(matchTesterChanged(_:)),
+            name: NSText.didChangeNotification,
+            object: testStringView
+        )
         for button in [regex, matchCase, wholeWord, startsWith, endsWith] {
             button.target = self
             button.action = #selector(matchTesterChanged(_:))
@@ -662,6 +676,7 @@ final class TriggerDetailView: NSView {
     }
 
     @objc private func matchTesterChanged(_ sender: Any?) {
+        guard !isUpdatingTestStringHighlight else { return }
         updateMatchTester()
     }
 
@@ -679,7 +694,7 @@ final class TriggerDetailView: NSView {
     private func currentMatchErrorDescription() -> String? {
         guard regex.state == .on else { return nil }
         do {
-            _ = try currentMatchDefinition().matches(in: testStringField.stringValue)
+            _ = try currentMatchDefinition().matches(in: testStringView.string)
             return nil
         } catch {
             return error.localizedDescription
@@ -700,19 +715,67 @@ final class TriggerDetailView: NSView {
             endsWith.isEnabled = true
         }
         do {
-            let matches = try currentMatchDefinition().matches(in: testStringField.stringValue)
+            let matches = try currentMatchDefinition().matches(in: testStringView.string)
             testError.stringValue = ""
             testError.setAccessibilityValue("")
             let summary = Self.matchSummary(matches)
             testResult.stringValue = summary
             testResult.setAccessibilityValue(summary)
+            applyMatchHighlights(matches)
         } catch {
             testResult.stringValue = "Matches: 0"
             testResult.setAccessibilityValue(testResult.stringValue)
             let message = "Invalid regular expression: \(error.localizedDescription)"
             testError.stringValue = message
             testError.setAccessibilityValue(message)
+            applyMatchHighlights([])
         }
+    }
+
+    private func applyMatchHighlights(_ matches: [MatchCapture]) {
+        guard let storage = testStringView.textStorage else { return }
+        let fullRange = NSRange(location: 0, length: storage.length)
+        isUpdatingTestStringHighlight = true
+        defer { isUpdatingTestStringHighlight = false }
+
+        let selectedRanges = testStringView.selectedRanges
+        storage.beginEditing()
+        storage.setAttributes(Self.testStringBaseAttributes, range: fullRange)
+        for match in matches {
+            for (index, range) in match.ranges.enumerated() {
+                guard Self.isValidTextRange(range, in: storage.length), range.length > 0 else { continue }
+                storage.addAttribute(.backgroundColor, value: Self.highlightColor(forCaptureIndex: index), range: range)
+            }
+        }
+        storage.endEditing()
+        testStringView.selectedRanges = selectedRanges
+    }
+
+    private static var testStringBaseAttributes: [NSAttributedString.Key: Any] {
+        [
+            .font: NSFont.systemFont(ofSize: NSFont.systemFontSize),
+            .foregroundColor: NSColor.labelColor,
+        ]
+    }
+
+    private static func highlightColor(forCaptureIndex index: Int) -> NSColor {
+        let colors: [NSColor] = [
+            NSColor.systemBlue.withAlphaComponent(0.24),
+            NSColor.systemGreen.withAlphaComponent(0.34),
+            NSColor.systemRed.withAlphaComponent(0.30),
+            NSColor.systemYellow.withAlphaComponent(0.42),
+            NSColor.systemPurple.withAlphaComponent(0.28),
+            NSColor.systemOrange.withAlphaComponent(0.34),
+        ]
+        return colors[index % colors.count]
+    }
+
+    private static func isValidTextRange(_ range: NSRange, in length: Int) -> Bool {
+        range.location != NSNotFound
+            && range.location >= 0
+            && range.length >= 0
+            && range.location <= length
+            && range.location + range.length <= length
     }
 
     private static func matchSummary(_ matches: [MatchCapture]) -> String {
@@ -993,6 +1056,40 @@ final class TriggerDetailView: NSView {
         return collect(self)
     }
 
+    private static func singleLineTextView() -> NSScrollView {
+        let scroll = NSScrollView()
+        scroll.borderType = .bezelBorder
+        scroll.drawsBackground = true
+        scroll.backgroundColor = .textBackgroundColor
+        scroll.hasHorizontalScroller = false
+        scroll.hasVerticalScroller = false
+        scroll.autohidesScrollers = true
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.heightAnchor.constraint(equalToConstant: 22).isActive = true
+
+        let text = NSTextView(frame: NSRect(x: 0, y: 0, width: 420, height: 18))
+        text.autoresizingMask = [.width]
+        text.drawsBackground = true
+        text.backgroundColor = .textBackgroundColor
+        text.font = .systemFont(ofSize: NSFont.systemFontSize)
+        text.isRichText = false
+        text.isHorizontallyResizable = true
+        text.isVerticallyResizable = false
+        text.textContainer?.widthTracksTextView = false
+        text.textContainer?.heightTracksTextView = true
+        text.textContainer?.lineFragmentPadding = 2
+        text.textContainerInset = NSSize(width: 0, height: 2)
+        text.minSize = NSSize(width: 0, height: 18)
+        text.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: 18)
+        text.allowsUndo = true
+        text.isAutomaticQuoteSubstitutionEnabled = false
+        text.isAutomaticDashSubstitutionEnabled = false
+        text.importsGraphics = false
+
+        scroll.documentView = text
+        return scroll
+    }
+
     private static func textView() -> NSScrollView {
         let scroll = NSTextView.scrollableTextView()
         scroll.hasVerticalScroller = true
@@ -1029,7 +1126,11 @@ final class TriggerDetailView: NSView {
 
     private func formRow(_ title: String, _ field: NSTextField) -> NSView {
         fixed(field, width: 420)
-        return row([label(title), field])
+        return formRowView(title, field)
+    }
+
+    private func formRowView(_ title: String, _ view: NSView) -> NSView {
+        row([label(title), view])
     }
 
     @discardableResult
