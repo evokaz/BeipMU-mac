@@ -117,9 +117,26 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         server: ServerProfile,
         character: CharacterProfile?
     ) -> ClientWindowController? {
-        guard !windows.contains(where: {
+        if let existing = windows.first(where: {
             $0.representsSavedProfile(server, character: character)
-        }) else { return nil }
+        }) {
+            existing.activateForQuickConnect(sender: nil)
+            existing.connectSavedProfileIfDisconnected(
+                policy: profileLibrary.workspace.projection.connectionPolicy
+            )
+            saveOpenTabs()
+            return existing
+        }
+        if parent.isUntitledDisconnectedTabForQuickConnect {
+            parent.startSavedProfileSession(
+                server,
+                character: character,
+                policy: profileLibrary.workspace.projection.connectionPolicy
+            )
+            parent.activateForQuickConnect(sender: nil)
+            saveOpenTabs()
+            return parent
+        }
         let controller = makeTab(relativeTo: parent, sender: nil)
         controller.startSavedProfileSession(
             server,

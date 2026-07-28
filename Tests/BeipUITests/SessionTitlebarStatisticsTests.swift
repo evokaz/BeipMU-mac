@@ -115,7 +115,8 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
         XCTAssertFalse(closeButton.isHidden)
         XCTAssertGreaterThanOrEqual(titleLabel.frame.minX, closeButton.frame.maxX + 4.5)
         XCTAssertLessThanOrEqual(titleLabel.frame.maxX, activeTab.bounds.maxX - 9.5)
-        XCTAssertEqual(titleLabel.lineBreakMode, .byTruncatingTail)
+        XCTAssertEqual(titleLabel.lineBreakMode, .byClipping)
+        XCTAssertEqual(titleLabel.stringValue, "Wizard @ MyRhost With A Long World Name")
     }
 
     @MainActor
@@ -323,7 +324,7 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
     }
 
     @MainActor
-    func testPlayerQuickConnectDoesNothingWhenCharacterTabAlreadyExists() throws {
+    func testPlayerQuickConnectSelectsDisconnectedCharacterTabWhenItAlreadyExists() throws {
         var workspace = try LegacyConfigurationWorkspace.empty(isDirty: false)
         let world = workspace.addServer(named: "Single World")
         _ = try workspace.addCharacter(toServerID: world, named: "Hero")
@@ -340,6 +341,7 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
         existing.restoreOpenTab(server: saved.profile, character: character)
         let group = ClientTabGroup(controller)
         group.add(existing)
+        group.select(controller, sender: nil)
 
         var quickConnectRequested = false
         controller.onQuickConnectProfile = { _, _, _ in
@@ -352,6 +354,7 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
         XCTAssertTrue(NSApplication.shared.sendAction(action, to: item.target, from: item))
         XCTAssertFalse(quickConnectRequested)
         XCTAssertEqual(group.controllers.count, 2)
+        XCTAssertTrue(group.selectedController === existing)
     }
 
     @MainActor

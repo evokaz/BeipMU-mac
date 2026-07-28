@@ -42,12 +42,13 @@ private final class SessionWindowTabItemView: NSView {
 
         titleLabel.stringValue = title
         titleLabel.font = .systemFont(ofSize: 13, weight: selected ? .semibold : .regular)
-        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.lineBreakMode = .byClipping
         titleLabel.maximumNumberOfLines = 1
         titleLabel.allowsExpansionToolTips = true
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         titleLabel.setAccessibilityIdentifier("sessionTabTitle")
-        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        titleLabel.setContentHuggingPriority(.required, for: .horizontal)
+        titleLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
         addSubview(titleLabel)
 
         trailingIndicatorLabel.stringValue = trailingIndicators
@@ -88,7 +89,6 @@ private final class SessionWindowTabItemView: NSView {
         NSLayoutConstraint.activate([
             heightAnchor.constraint(equalToConstant: 28),
             minimumWidth,
-            widthAnchor.constraint(lessThanOrEqualToConstant: 220),
             closeButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 7),
             closeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
             closeButton.widthAnchor.constraint(equalToConstant: 16),
@@ -635,6 +635,42 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         }
     }
 
+    func savedProfileControllerInTabGroup(
+        _ server: ServerProfile,
+        character: CharacterProfile?
+    ) -> ClientWindowController? {
+        (sessionTabGroup?.controllers ?? [self]).first {
+            $0.representsSavedProfile(server, character: character)
+        }
+    }
+
+    var isUntitledDisconnectedTabForQuickConnect: Bool {
+        currentServer == nil
+            && currentCharacter == nil
+            && currentPuppet == nil
+            && !isSessionConnected
+            && connectionStateText == "Disconnected"
+    }
+
+    var isDisconnectedSavedProfileForQuickConnect: Bool {
+        currentServer != nil && !isSessionConnected
+    }
+
+    func activateForQuickConnect(sender: Any?) {
+        if let group = sessionTabGroup {
+            group.select(self, sender: sender)
+        } else {
+            showWindow(sender)
+            window?.makeKeyAndOrderFront(sender)
+            focusCommandInput()
+        }
+    }
+
+    func connectSavedProfileIfDisconnected(policy: ConnectionPolicy) {
+        guard isDisconnectedSavedProfileForQuickConnect, let currentServer else { return }
+        startSavedProfileSession(currentServer, character: currentCharacter, policy: policy)
+    }
+
     func restoreOpenTab(server: ServerProfile, character: CharacterProfile?) {
         currentServer = server
         currentCharacter = character
@@ -1103,7 +1139,13 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         let character = target.characterID.flatMap { characterID in
             server.characters.first { $0.id == characterID }
         }
-        guard !tabGroupContainsSavedProfile(server.profile, character: character) else { return }
+        if let existing = savedProfileControllerInTabGroup(server.profile, character: character) {
+            existing.activateForQuickConnect(sender: sender)
+            existing.connectSavedProfileIfDisconnected(
+                policy: profileLibrary.workspace.projection.connectionPolicy
+            )
+            return
+        }
         if let onQuickConnectProfile {
             onQuickConnectProfile(self, server.profile, character)
             return
@@ -2332,7 +2374,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         activityLabel.textColor = .secondaryLabelColor
         sessionTabs.orientation = .horizontal
         sessionTabs.alignment = .centerY
-        sessionTabs.distribution = .fillEqually
+        sessionTabs.distribution = .fill
         sessionTabs.spacing = 4
         sessionTabs.setContentHuggingPriority(.defaultLow, for: .horizontal)
         sessionTabs.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
