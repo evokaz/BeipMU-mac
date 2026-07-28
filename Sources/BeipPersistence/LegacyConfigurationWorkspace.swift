@@ -108,6 +108,19 @@ public struct LegacyConfigurationWorkspace: Sendable {
         }
     }
 
+    public func triggerGroup(in scope: AutomationScope) -> TriggerGroup {
+        switch scope {
+        case .global: projection.automation.triggers
+        case let .server(id): server(id)?.automation.triggers ?? .init(active: false)
+        case let .character(serverID, characterID): character(serverID: serverID, characterID: characterID)?.triggers ?? .init(active: false)
+        case let .puppet(serverID, characterID, puppetID): puppet(serverID: serverID, characterID: characterID, puppetID: puppetID)?.triggers ?? .init(active: false)
+        }
+    }
+
+    public func trigger(at path: [Int], in scope: AutomationScope) -> Trigger? {
+        Self.trigger(at: path, in: triggers(in: scope))
+    }
+
     public func macros(in scope: AutomationScope) -> [KeyboardMacro] {
         switch scope {
         case .global: projection.automation.macros.macros
@@ -174,9 +187,49 @@ public struct LegacyConfigurationWorkspace: Sendable {
 
     @discardableResult
     public mutating func addTrigger(in scope: AutomationScope, trigger: Trigger) throws -> Int {
-        let index = try addTrigger(in: scope, description: trigger.description, match: trigger.match)
-        try updateTrigger(at: index, in: scope, trigger: trigger)
+        let path = try automationCollectionPath(scope, kind: .triggers)
+        try document.upsertValue("true", at: path + ["Active"], quoted: false)
+        let index = try document.appendUnnamedBlock(at: path)
+        try writeTrigger(trigger, at: index, collectionPath: path)
         return index
+    }
+
+    @discardableResult
+    public mutating func addTrigger(
+        in scope: AutomationScope,
+        parentPath: [Int],
+        description: String = "New Trigger",
+        match: MatchDefinition = .init(text: ""),
+        action: EditableTriggerAction = .gag(display: true, log: false)
+    ) throws -> [Int] {
+        let trigger = Trigger(description: description, match: match, actions: Self.actions(for: action))
+        return try addTrigger(in: scope, parentPath: parentPath, trigger: trigger)
+    }
+
+    @discardableResult
+    public mutating func addTrigger(
+        in scope: AutomationScope,
+        parentPath: [Int],
+        trigger: Trigger
+    ) throws -> [Int] {
+        guard parentPath.isEmpty || self.trigger(at: parentPath, in: scope) != nil else {
+            throw WorkspaceError.automationEntryNotFound
+        }
+        let collectionPath = try automationCollectionPath(scope, kind: .triggers)
+        try document.upsertValue("true", at: collectionPath + ["Active"], quoted: false)
+        let index: Int
+        if parentPath.isEmpty {
+            index = try document.appendUnnamedBlock(at: collectionPath)
+        } else {
+            index = try document.appendUnnamedBlock(
+                at: collectionPath,
+                nestedIn: parentPath,
+                nestedCollectionPath: ["Triggers"]
+            )
+        }
+        let path = parentPath + [index]
+        try writeTrigger(trigger, at: path, collectionPath: collectionPath)
+        return path
     }
 
     @discardableResult
@@ -198,6 +251,13 @@ public struct LegacyConfigurationWorkspace: Sendable {
         try writeTrigger(trigger, at: index, collectionPath: path)
     }
 
+    public mutating func updateTrigger(at path: [Int], in scope: AutomationScope, trigger: Trigger) throws {
+        guard !path.isEmpty, self.trigger(at: path, in: scope) != nil else {
+            throw WorkspaceError.automationEntryNotFound
+        }
+        try writeTrigger(trigger, at: path, collectionPath: try automationCollectionPath(scope, kind: .triggers))
+    }
+
     public mutating func updateMacro(at index: Int, in scope: AutomationScope, description: String, key: String, macro: String, typeIntoInput: Bool) throws {
         try updateAutomationEntry(at: index, in: scope, kind: .macros, description: description, key: key, macro: macro, typeIntoInput: typeIntoInput)
     }
@@ -211,6 +271,52 @@ public struct LegacyConfigurationWorkspace: Sendable {
         }
         guard (0..<count).contains(index) else { throw WorkspaceError.automationEntryNotFound }
         _ = try document.removeUnnamedBlock(at: index, collectionPath: path)
+        try reloadProjectionAfterAutomationEdit()
+    }
+
+    public mutating func removeTrigger(at path: [Int], in scope: AutomationScope) throws {
+        guard !path.isEmpty, trigger(at: path, in: scope) != nil else {
+            throw WorkspaceError.automationEntryNotFound
+        }
+        _ = try document.removeUnnamedBlock(
+            at: path,
+            collectionPath: try automationCollectionPath(scope, kind: .triggers)
+        )
+        try reloadProjectionAfterAutomationEdit()
+    }
+
+    @discardableResult
+    public mutating func moveTrigger(
+        at sourcePath: [Int],
+        in scope: AutomationScope,
+        toParentPath destinationParentPath: [Int],
+        index destinationIndex: Int
+    ) throws -> [Int] {
+        guard !sourcePath.isEmpty,
+              trigger(at: sourcePath, in: scope) != nil,
+              destinationParentPath.isEmpty || trigger(at: destinationParentPath, in: scope) != nil,
+              !Self.path(destinationParentPath, hasPrefix: sourcePath) else {
+            throw WorkspaceError.automationEntryNotFound
+        }
+        let moved = try document.moveUnnamedBlock(
+            at: sourcePath,
+            collectionPath: try automationCollectionPath(scope, kind: .triggers),
+            to: destinationIndex,
+            nestedIn: destinationParentPath,
+            nestedCollectionPath: ["Triggers"]
+        )
+        try reloadProjectionAfterAutomationEdit()
+        return moved
+    }
+
+    public mutating func updateTriggerGroupSettings(
+        in scope: AutomationScope,
+        active: Bool,
+        afterCount: Int
+    ) throws {
+        let path = try automationCollectionPath(scope, kind: .triggers)
+        try document.upsertValue(active ? "true" : "false", at: path + ["Active"], quoted: false)
+        try document.upsertValue(String(max(0, afterCount)), at: path + ["AfterCount"], quoted: false)
         try reloadProjectionAfterAutomationEdit()
     }
 
@@ -229,6 +335,25 @@ public struct LegacyConfigurationWorkspace: Sendable {
         guard let server = server(serverID), let character = server.characters.first(where: { $0.id == characterID }),
               let puppet = character.puppets.first(where: { $0.id == puppetID }) else { return nil }
         return server.automation.puppetScope(for: character, puppet: puppet)
+    }
+
+    private static func trigger(at path: [Int], in triggers: [Trigger]) -> Trigger? {
+        guard let first = path.first, triggers.indices.contains(first) else { return nil }
+        if path.count == 1 { return triggers[first] }
+        return trigger(at: Array(path.dropFirst()), in: triggers[first].children)
+    }
+
+    private static func path(_ path: [Int], hasPrefix prefix: [Int]) -> Bool {
+        prefix.count <= path.count && Array(path.prefix(prefix.count)) == prefix
+    }
+
+    private static func actions(for action: EditableTriggerAction) -> [TriggerAction] {
+        switch action {
+        case let .gag(display, log):
+            return [.gag(display: display, log: log)]
+        case let .send(text):
+            return [.send(text, captureIndex: 1, expandVariables: false)]
+        }
     }
 
     private func automationCollectionPath(_ scope: AutomationScope, kind: AutomationKind) throws -> [String] {
@@ -296,11 +421,8 @@ public struct LegacyConfigurationWorkspace: Sendable {
         replacement: String
     ) throws -> Int {
         let path = try automationCollectionPath(scope, kind: kind)
-        let index = aliases(in: scope).count
-        if kind == .aliases {
-            try document.upsertValue("true", at: path + ["Active"], quoted: false)
-        }
-        _ = try document.appendUnnamedBlock(at: path)
+        try document.upsertValue("true", at: path + ["Active"], quoted: false)
+        let index = try document.appendUnnamedBlock(at: path)
         try writeAlias(at: index, collectionPath: path, description: description, match: match, replacement: replacement)
         return index
     }
@@ -313,11 +435,8 @@ public struct LegacyConfigurationWorkspace: Sendable {
         action: EditableTriggerAction
     ) throws -> Int {
         let path = try automationCollectionPath(scope, kind: kind)
-        let index = triggers(in: scope).count
-        if kind == .aliases {
-            try document.upsertValue("true", at: path + ["Active"], quoted: false)
-        }
-        _ = try document.appendUnnamedBlock(at: path)
+        try document.upsertValue("true", at: path + ["Active"], quoted: false)
+        let index = try document.appendUnnamedBlock(at: path)
         try writeTrigger(at: index, collectionPath: path, description: description, match: match, action: action)
         return index
     }
@@ -331,11 +450,8 @@ public struct LegacyConfigurationWorkspace: Sendable {
         typeIntoInput: Bool
     ) throws -> Int {
         let path = try automationCollectionPath(scope, kind: kind)
-        let index = macros(in: scope).count
-        if kind == .aliases {
-            try document.upsertValue("true", at: path + ["Active"], quoted: false)
-        }
-        _ = try document.appendUnnamedBlock(at: path)
+        try document.upsertValue("true", at: path + ["Active"], quoted: false)
+        let index = try document.appendUnnamedBlock(at: path)
         try writeMacro(at: index, collectionPath: path, description: description, key: key, macro: macro, typeIntoInput: typeIntoInput)
         return index
     }
@@ -527,8 +643,9 @@ public struct LegacyConfigurationWorkspace: Sendable {
 
     @discardableResult
     public mutating func addGlobalTrigger(_ trigger: Trigger) throws -> Int {
-        let index = try addGlobalTrigger(description: trigger.description, match: trigger.match)
-        try updateGlobalTrigger(at: index, trigger: trigger)
+        try document.upsertValue("true", at: ["Connections", "Triggers", "Active"], quoted: false)
+        let index = try document.appendUnnamedBlock(at: ["Connections", "Triggers"])
+        try writeTrigger(trigger, at: index, collectionPath: ["Connections", "Triggers"])
         return index
     }
 
@@ -790,38 +907,44 @@ public struct LegacyConfigurationWorkspace: Sendable {
     }
 
     private mutating func writeTrigger(_ trigger: Trigger, at index: Int, collectionPath: [String]) throws {
-        try document.upsertValue(trigger.description, inUnnamedBlockAt: index, collectionPath: collectionPath, relativePath: ["Description"])
-        try writeMatch(trigger.match, at: index, collectionPath: collectionPath)
-        try writeFlag(trigger.disabled, at: index, collectionPath: collectionPath, path: ["Disabled"])
-        try writeFlag(trigger.stopProcessing, at: index, collectionPath: collectionPath, path: ["StopProcessing"])
-        try writeFlag(trigger.oncePerLine, at: index, collectionPath: collectionPath, path: ["OncePerLine"])
-        try writeFlag(trigger.awayPresent, at: index, collectionPath: collectionPath, path: ["AwayPresent"])
-        try writeFlag(trigger.awayPresentOnce, at: index, collectionPath: collectionPath, path: ["AwayPresentOnce"])
-        try writeFlag(trigger.away, at: index, collectionPath: collectionPath, path: ["Away"])
-        try writeFlag(trigger.cooldown != nil, at: index, collectionPath: collectionPath, path: ["Cooldown"])
-        try writeValueIfNeeded(Self.time(trigger.cooldown ?? 0), at: index, collectionPath: collectionPath, path: ["CooldownTime"], when: trigger.cooldown != nil)
-        try writeFlag(trigger.multiline?.isEnabled == true, at: index, collectionPath: collectionPath, path: ["Multiline"])
-        try writeValueIfNeeded(String(trigger.multiline?.lineLimit ?? 0), at: index, collectionPath: collectionPath, path: ["Multiline_Limit"], quoted: false, when: trigger.multiline?.isEnabled == true)
-        try writeValueIfNeeded(Self.time(trigger.multiline?.timeLimit ?? 0), at: index, collectionPath: collectionPath, path: ["Multiline_Time"], when: trigger.multiline?.isEnabled == true)
-        try writeFlag(trigger.childrenActive, at: index, collectionPath: collectionPath, path: ["Triggers", "Active"])
+        try writeTrigger(trigger, at: [index], collectionPath: collectionPath)
+    }
 
+    private mutating func writeTrigger(_ trigger: Trigger, at indexPath: [Int], collectionPath: [String]) throws {
+        try document.upsertValue(trigger.description, inUnnamedBlockAt: indexPath, collectionPath: collectionPath, relativePath: ["Description"])
+        try writeMatch(trigger.match, at: indexPath, collectionPath: collectionPath)
+        try writeFlag(trigger.folder, at: indexPath, collectionPath: collectionPath, path: ["Folder"])
+        try writeFlag(trigger.disabled, at: indexPath, collectionPath: collectionPath, path: ["Disabled"])
+        try writeFlag(trigger.stopProcessing, at: indexPath, collectionPath: collectionPath, path: ["StopProcessing"])
+        try writeFlag(trigger.oncePerLine, at: indexPath, collectionPath: collectionPath, path: ["OncePerLine"])
+        try writeFlag(trigger.awayPresent, at: indexPath, collectionPath: collectionPath, path: ["AwayPresent"])
+        try writeFlag(trigger.awayPresentOnce, at: indexPath, collectionPath: collectionPath, path: ["AwayPresentOnce"])
+        try writeFlag(trigger.away, at: indexPath, collectionPath: collectionPath, path: ["Away"])
+        try writeFlag(trigger.cooldown != nil, at: indexPath, collectionPath: collectionPath, path: ["Cooldown"])
+        try writeValueIfNeeded(Self.time(trigger.cooldown ?? 0), at: indexPath, collectionPath: collectionPath, path: ["CooldownTime"], when: trigger.cooldown != nil)
+        try writeFlag(trigger.multiline?.isEnabled == true, at: indexPath, collectionPath: collectionPath, path: ["Multiline"])
+        try writeValueIfNeeded(String(trigger.multiline?.lineLimit ?? 0), at: indexPath, collectionPath: collectionPath, path: ["Multiline_Limit"], quoted: false, when: trigger.multiline?.isEnabled == true)
+        try writeValueIfNeeded(Self.time(trigger.multiline?.timeLimit ?? 0), at: indexPath, collectionPath: collectionPath, path: ["Multiline_Time"], when: trigger.multiline?.isEnabled == true)
+        try writeFlag(trigger.childrenActive, at: indexPath, collectionPath: collectionPath, path: ["Triggers", "Active"])
+
+        let index = indexPath
         let color = trigger.actions.firstColor
         let colorDefault = trigger.actions.firstColorDefault
         let colorHash = trigger.actions.firstColorHash
         let font = trigger.actions.firstFont
         let colorWholeLine = color?.wholeLine ?? colorDefault?.wholeLine ?? colorHash?.wholeLine ?? font?.wholeLine ?? false
         try writeFlag(color?.foreground != nil, at: index, collectionPath: collectionPath, path: ["Color", "UseForeColor"])
-        try writeValueIfNeeded(color?.foreground.map(Self.colorString) ?? "#FFFFFF", at: index, collectionPath: collectionPath, path: ["Color", "Fore"], when: color?.foreground != nil)
+        try writeValueWhenActive(color?.foreground.map(Self.colorString) ?? "#FFFFFF", at: index, collectionPath: collectionPath, path: ["Color", "Fore"], when: color?.foreground != nil)
         try writeFlag(color?.background != nil, at: index, collectionPath: collectionPath, path: ["Color", "UseBackColor"])
-        try writeValueIfNeeded(color?.background.map(Self.colorString) ?? "#000000", at: index, collectionPath: collectionPath, path: ["Color", "Back"], when: color?.background != nil)
+        try writeValueWhenActive(color?.background.map(Self.colorString) ?? "#000000", at: index, collectionPath: collectionPath, path: ["Color", "Back"], when: color?.background != nil)
         try writeFlag(colorDefault?.foreground == true, at: index, collectionPath: collectionPath, path: ["Color", "ForeDefault"])
         try writeFlag(colorDefault?.background == true, at: index, collectionPath: collectionPath, path: ["Color", "BackDefault"])
         try writeFlag(colorHash?.foreground == true, at: index, collectionPath: collectionPath, path: ["Color", "ForeHash"])
         try writeFlag(colorHash?.background == true, at: index, collectionPath: collectionPath, path: ["Color", "BackHash"])
         try writeFlag(font != nil, at: index, collectionPath: collectionPath, path: ["Color", "UseFont"])
         try writeFlag(font?.useDefault == true, at: index, collectionPath: collectionPath, path: ["Color", "FontDefault"])
-        try writeValueIfNeeded(font?.face ?? "", at: index, collectionPath: collectionPath, path: ["Color", "FontFace"], when: font != nil)
-        try writeValueIfNeeded(Self.time(font?.size ?? 0), at: index, collectionPath: collectionPath, path: ["Color", "FontSize"], when: font != nil)
+        try writeValueWhenActive(font?.face ?? "", at: index, collectionPath: collectionPath, path: ["Color", "FontFace"], when: font != nil)
+        try writeValueWhenActive(Self.time(font?.size ?? 0), at: index, collectionPath: collectionPath, path: ["Color", "FontSize"], when: font != nil)
         try writeFlag(colorWholeLine, at: index, collectionPath: collectionPath, path: ["Color", "WholeLine"])
 
         let appearance = trigger.actions.firstAppearance
@@ -831,8 +954,8 @@ public struct LegacyConfigurationWorkspace: Sendable {
         try writeOptionalStyle(patch.underline, setPath: ["Style", "SetUnderline"], valuePath: ["Style", "Underline"], at: index, collectionPath: collectionPath)
         try writeOptionalStyle(patch.strikeout, setPath: ["Style", "SetStrikeout"], valuePath: ["Style", "Strikeout"], at: index, collectionPath: collectionPath)
         try writeFlag(patch.blink != nil, at: index, collectionPath: collectionPath, path: ["Style", "Flash"])
-        try writeFlag(patch.blink == .fast, at: index, collectionPath: collectionPath, path: ["Style", "FlashFast"])
-        try writeFlag(appearance?.wholeLine == true, at: index, collectionPath: collectionPath, path: ["Style", "WholeLine"])
+        try writeFlagWhenActive(patch.blink == .fast, at: index, collectionPath: collectionPath, path: ["Style", "FlashFast"], when: patch.blink != nil)
+        try writeFlagWhenActive(appearance?.wholeLine == true, at: index, collectionPath: collectionPath, path: ["Style", "WholeLine"], when: appearance != nil)
 
         let paragraph = trigger.actions.firstParagraph
         try writeParagraph(paragraph, at: index, collectionPath: collectionPath)
@@ -846,20 +969,20 @@ public struct LegacyConfigurationWorkspace: Sendable {
         let activity = trigger.actions.contains(.activity(important: false))
         let suppressActivity = trigger.actions.contains(.suppressActivity)
         try writeFlag(activate || important || activity || suppressActivity, at: index, collectionPath: collectionPath, path: ["Activate", "Active"])
-        try writeFlag(important, at: index, collectionPath: collectionPath, path: ["Activate", "ImportantActivity"])
-        try writeFlag(activity, at: index, collectionPath: collectionPath, path: ["Activate", "Activity"])
-        try writeFlag(suppressActivity, at: index, collectionPath: collectionPath, path: ["Activate", "NoActivity"])
+        try writeFlagWhenActive(important, at: index, collectionPath: collectionPath, path: ["Activate", "ImportantActivity"], when: activate || important || activity || suppressActivity)
+        try writeFlagWhenActive(activity, at: index, collectionPath: collectionPath, path: ["Activate", "Activity"], when: activate || important || activity || suppressActivity)
+        try writeFlagWhenActive(suppressActivity, at: index, collectionPath: collectionPath, path: ["Activate", "NoActivity"], when: activate || important || activity || suppressActivity)
 
         let spawn = trigger.actions.firstSpawn
         try writeFlag(spawn != nil, at: index, collectionPath: collectionPath, path: ["Spawn", "Active"])
-        try writeValueIfNeeded(spawn?.title ?? "", at: index, collectionPath: collectionPath, path: ["Spawn", "Title"], when: spawn != nil)
-        try writeValueIfNeeded(spawn?.tabGroup ?? "", at: index, collectionPath: collectionPath, path: ["Spawn", "TabGroup"], when: spawn != nil)
-        try writeValueIfNeeded(spawn?.captureUntil ?? "", at: index, collectionPath: collectionPath, path: ["Spawn", "CaptureUntil"], when: spawn != nil)
-        try writeFlag(spawn?.onlyChildrenDuringCapture == true, at: index, collectionPath: collectionPath, path: ["Spawn", "OnlyChildrenDuringCapture"])
-        try writeFlag(spawn?.clear == true, at: index, collectionPath: collectionPath, path: ["Spawn", "Clear"])
-        try writeFlag(spawn?.showTab == true, at: index, collectionPath: collectionPath, path: ["Spawn", "ShowTab"])
-        try writeFlag(spawn?.gagLog == true, at: index, collectionPath: collectionPath, path: ["Spawn", "GagLog"])
-        try writeFlag(spawn?.copy == true, at: index, collectionPath: collectionPath, path: ["Spawn", "Copy"])
+        try writeValueWhenActive(spawn?.title ?? "", at: index, collectionPath: collectionPath, path: ["Spawn", "Title"], when: spawn != nil)
+        try writeValueWhenActive(spawn?.tabGroup ?? "", at: index, collectionPath: collectionPath, path: ["Spawn", "TabGroup"], when: spawn != nil)
+        try writeValueWhenActive(spawn?.captureUntil ?? "", at: index, collectionPath: collectionPath, path: ["Spawn", "CaptureUntil"], when: spawn != nil)
+        try writeFlagWhenActive(spawn?.onlyChildrenDuringCapture == true, at: index, collectionPath: collectionPath, path: ["Spawn", "OnlyChildrenDuringCapture"], when: spawn != nil)
+        try writeFlagWhenActive(spawn?.clear == true, at: index, collectionPath: collectionPath, path: ["Spawn", "Clear"], when: spawn != nil)
+        try writeFlagWhenActive(spawn?.showTab == true, at: index, collectionPath: collectionPath, path: ["Spawn", "ShowTab"], when: spawn != nil)
+        try writeFlagWhenActive(spawn?.gagLog == true, at: index, collectionPath: collectionPath, path: ["Spawn", "GagLog"], when: spawn != nil)
+        try writeFlagWhenActive(spawn?.copy == true, at: index, collectionPath: collectionPath, path: ["Spawn", "Copy"], when: spawn != nil)
 
         let stat = trigger.actions.firstStat
         try writeValueIfNeeded(stat?.prefix ?? "", at: index, collectionPath: collectionPath, path: ["Stat", "Prefix"], when: stat != nil)
@@ -884,40 +1007,63 @@ public struct LegacyConfigurationWorkspace: Sendable {
 
         let sound = trigger.actions.firstSound
         try writeFlag(sound != nil, at: index, collectionPath: collectionPath, path: ["Sound", "Active"])
-        try writeValueIfNeeded(sound ?? "", at: index, collectionPath: collectionPath, path: ["Sound", "Sound"], when: sound != nil)
+        try writeValueWhenActive(sound ?? "", at: index, collectionPath: collectionPath, path: ["Sound", "Sound"], when: sound != nil)
 
         let speech = trigger.actions.firstSpeech
         try writeFlag(speech != nil, at: index, collectionPath: collectionPath, path: ["Speech", "Active"])
-        try writeValueIfNeeded(speech?.text ?? "", at: index, collectionPath: collectionPath, path: ["Speech", "Say"], when: speech != nil)
-        try writeFlag(speech?.wholeLine == true, at: index, collectionPath: collectionPath, path: ["Speech", "WholeLine"])
+        try writeValueWhenActive(speech?.text ?? "", at: index, collectionPath: collectionPath, path: ["Speech", "Say"], when: speech != nil)
+        try writeFlagWhenActive(speech?.wholeLine == true, at: index, collectionPath: collectionPath, path: ["Speech", "WholeLine"], when: speech != nil)
 
         let send = trigger.actions.firstSend
         try writeFlag(send != nil, at: index, collectionPath: collectionPath, path: ["Send", "Active"])
-        try writeValueIfNeeded(send?.text ?? "", at: index, collectionPath: collectionPath, path: ["Send", "Send"], when: send != nil)
-        try writeValueIfNeeded(String(send?.captureIndex ?? 1), at: index, collectionPath: collectionPath, path: ["Send", "CaptureIndex"], quoted: false, when: send != nil)
-        try writeFlag(send?.expandVariables == true, at: index, collectionPath: collectionPath, path: ["Send", "ExpandVariables"])
-        try writeFlag(send?.sendOnClick == true, at: index, collectionPath: collectionPath, path: ["Send", "SendOnClick"])
+        try writeValueWhenActive(send?.text ?? "", at: index, collectionPath: collectionPath, path: ["Send", "Send"], when: send != nil)
+        try writeValueWhenActive(String(send?.captureIndex ?? 1), at: index, collectionPath: collectionPath, path: ["Send", "CaptureIndex"], quoted: false, when: send != nil)
+        try writeFlagWhenActive(send?.expandVariables == true, at: index, collectionPath: collectionPath, path: ["Send", "ExpandVariables"], when: send != nil)
+        try writeFlagWhenActive(send?.sendOnClick == true, at: index, collectionPath: collectionPath, path: ["Send", "SendOnClick"], when: send != nil)
 
         try writeFlag(trigger.actions.contains(.notification), at: index, collectionPath: collectionPath, path: ["Toast", "Active"])
 
         let filter = trigger.actions.firstFilter
         try writeFlag(filter != nil, at: index, collectionPath: collectionPath, path: ["Filter", "Active"])
-        try writeFlag(filter?.html == true, at: index, collectionPath: collectionPath, path: ["Filter", "HTML"])
-        try writeFlag(filter?.expandVariables == true, at: index, collectionPath: collectionPath, path: ["Filter", "ExpandVariables"])
-        try writeValueIfNeeded(filter?.text ?? "", at: index, collectionPath: collectionPath, path: ["Filter", "Replace"], when: filter != nil)
+        try writeFlagWhenActive(filter?.html == true, at: index, collectionPath: collectionPath, path: ["Filter", "HTML"], when: filter != nil)
+        try writeFlagWhenActive(filter?.expandVariables == true, at: index, collectionPath: collectionPath, path: ["Filter", "ExpandVariables"], when: filter != nil)
+        try writeValueWhenActive(filter?.text ?? "", at: index, collectionPath: collectionPath, path: ["Filter", "Replace"], when: filter != nil)
 
         let avatar = trigger.actions.firstAvatar
         try writeValueIfNeeded(avatar ?? "", at: index, collectionPath: collectionPath, path: ["Avatar", "URL"], when: avatar != nil || triggerValueExists(at: index, collectionPath: collectionPath, path: ["Avatar", "URL"]))
 
         let script = trigger.actions.firstScript
         try writeFlag(script != nil, at: index, collectionPath: collectionPath, path: ["Script", "Active"])
-        try writeValueIfNeeded(script ?? "", at: index, collectionPath: collectionPath, path: ["Script", "Function"], when: script != nil)
+        try writeValueWhenActive(script ?? "", at: index, collectionPath: collectionPath, path: ["Script", "Function"], when: script != nil)
+        let existingChildCount = document.unnamedBlockCount(
+            at: collectionPath,
+            nestedIn: indexPath,
+            nestedCollectionPath: ["Triggers"]
+        )
+        for (childIndex, child) in trigger.children.enumerated() {
+            if childIndex >= existingChildCount {
+                _ = try document.appendUnnamedBlock(
+                    at: collectionPath,
+                    nestedIn: indexPath,
+                    nestedCollectionPath: ["Triggers"]
+                )
+            }
+            try writeTrigger(child, at: indexPath + [childIndex], collectionPath: collectionPath)
+        }
         try reloadProjectionAfterAutomationEdit()
     }
 
     private mutating func writeMatch(
         _ match: MatchDefinition,
         at index: Int,
+        collectionPath: [String]
+    ) throws {
+        try writeMatch(match, at: [index], collectionPath: collectionPath)
+    }
+
+    private mutating func writeMatch(
+        _ match: MatchDefinition,
+        at index: [Int],
         collectionPath: [String]
     ) throws {
         let options: [(String, Bool)] = [
@@ -951,7 +1097,7 @@ public struct LegacyConfigurationWorkspace: Sendable {
 
     private mutating func writeFlag(
         _ value: Bool,
-        at index: Int,
+        at index: [Int],
         collectionPath: [String],
         path: [String]
     ) throws {
@@ -961,7 +1107,7 @@ public struct LegacyConfigurationWorkspace: Sendable {
 
     private mutating func writeValueIfNeeded(
         _ value: String,
-        at index: Int,
+        at index: [Int],
         collectionPath: [String],
         path: [String],
         quoted: Bool = true,
@@ -971,48 +1117,71 @@ public struct LegacyConfigurationWorkspace: Sendable {
         try document.upsertValue(value, inUnnamedBlockAt: index, collectionPath: collectionPath, relativePath: path, quoted: quoted)
     }
 
+    private mutating func writeValueWhenActive(
+        _ value: String,
+        at index: [Int],
+        collectionPath: [String],
+        path: [String],
+        quoted: Bool = true,
+        when shouldWrite: Bool
+    ) throws {
+        guard shouldWrite else { return }
+        try document.upsertValue(value, inUnnamedBlockAt: index, collectionPath: collectionPath, relativePath: path, quoted: quoted)
+    }
+
+    private mutating func writeFlagWhenActive(
+        _ value: Bool,
+        at index: [Int],
+        collectionPath: [String],
+        path: [String],
+        when shouldWrite: Bool
+    ) throws {
+        guard shouldWrite else { return }
+        try document.upsertValue(Self.flag(value), inUnnamedBlockAt: index, collectionPath: collectionPath, relativePath: path, quoted: false)
+    }
+
     private mutating func writeOptionalStyle(
         _ value: Bool?,
         setPath: [String],
         valuePath: [String],
-        at index: Int,
+        at index: [Int],
         collectionPath: [String]
     ) throws {
         try writeFlag(value != nil, at: index, collectionPath: collectionPath, path: setPath)
-        try writeFlag(value == true, at: index, collectionPath: collectionPath, path: valuePath)
+        try writeFlagWhenActive(value == true, at: index, collectionPath: collectionPath, path: valuePath, when: value != nil)
     }
 
     private mutating func writeParagraph(
         _ paragraph: ParagraphPatch?,
-        at index: Int,
+        at index: [Int],
         collectionPath: [String]
     ) throws {
         try writeFlag(paragraph?.alignment != nil, at: index, collectionPath: collectionPath, path: ["Paragraph", "UseAlignment"])
-        try writeValueIfNeeded(Self.alignmentValue(paragraph?.alignment ?? .left), at: index, collectionPath: collectionPath, path: ["Paragraph", "Alignment"], quoted: false, when: paragraph?.alignment != nil)
+        try writeValueWhenActive(Self.alignmentValue(paragraph?.alignment ?? .left), at: index, collectionPath: collectionPath, path: ["Paragraph", "Alignment"], quoted: false, when: paragraph?.alignment != nil)
         try writeFlag(paragraph?.leftIndent != nil, at: index, collectionPath: collectionPath, path: ["Paragraph", "UseIndent_Left"])
-        try writeValueIfNeeded(Self.time(paragraph?.leftIndent ?? 0), at: index, collectionPath: collectionPath, path: ["Paragraph", "Indent_Left"], when: paragraph?.leftIndent != nil)
+        try writeValueWhenActive(Self.time(paragraph?.leftIndent ?? 0), at: index, collectionPath: collectionPath, path: ["Paragraph", "Indent_Left"], when: paragraph?.leftIndent != nil)
         try writeFlag(paragraph?.rightIndent != nil, at: index, collectionPath: collectionPath, path: ["Paragraph", "UseIndent_Right"])
-        try writeValueIfNeeded(Self.time(paragraph?.rightIndent ?? 0), at: index, collectionPath: collectionPath, path: ["Paragraph", "Indent_Right"], when: paragraph?.rightIndent != nil)
+        try writeValueWhenActive(Self.time(paragraph?.rightIndent ?? 0), at: index, collectionPath: collectionPath, path: ["Paragraph", "Indent_Right"], when: paragraph?.rightIndent != nil)
         try writeFlag(paragraph?.topPadding != nil, at: index, collectionPath: collectionPath, path: ["Paragraph", "UsePadding_Top"])
-        try writeValueIfNeeded(Self.time(paragraph?.topPadding ?? 0), at: index, collectionPath: collectionPath, path: ["Paragraph", "Padding_Top"], when: paragraph?.topPadding != nil)
+        try writeValueWhenActive(Self.time(paragraph?.topPadding ?? 0), at: index, collectionPath: collectionPath, path: ["Paragraph", "Padding_Top"], when: paragraph?.topPadding != nil)
         try writeFlag(paragraph?.bottomPadding != nil, at: index, collectionPath: collectionPath, path: ["Paragraph", "UsePadding_Bottom"])
-        try writeValueIfNeeded(Self.time(paragraph?.bottomPadding ?? 0), at: index, collectionPath: collectionPath, path: ["Paragraph", "Padding_Bottom"], when: paragraph?.bottomPadding != nil)
+        try writeValueWhenActive(Self.time(paragraph?.bottomPadding ?? 0), at: index, collectionPath: collectionPath, path: ["Paragraph", "Padding_Bottom"], when: paragraph?.bottomPadding != nil)
         try writeFlag(paragraph?.background != nil || paragraph?.backgroundHash == true, at: index, collectionPath: collectionPath, path: ["Paragraph", "UseBackgroundColor"])
-        try writeValueIfNeeded(paragraph?.background.map(Self.colorString) ?? "#000000", at: index, collectionPath: collectionPath, path: ["Paragraph", "Background"], when: paragraph?.background != nil)
+        try writeValueWhenActive(paragraph?.background.map(Self.colorString) ?? "#000000", at: index, collectionPath: collectionPath, path: ["Paragraph", "Background"], when: paragraph?.background != nil)
         try writeFlag(paragraph?.backgroundHash == true, at: index, collectionPath: collectionPath, path: ["Paragraph", "BackgroundHash"])
         try writeFlag(paragraph?.borderWidth != nil, at: index, collectionPath: collectionPath, path: ["Paragraph", "UseBorder"])
-        try writeValueIfNeeded(Self.time(paragraph?.borderWidth ?? 0), at: index, collectionPath: collectionPath, path: ["Paragraph", "Border"], when: paragraph?.borderWidth != nil)
+        try writeValueWhenActive(Self.time(paragraph?.borderWidth ?? 0), at: index, collectionPath: collectionPath, path: ["Paragraph", "Border"], when: paragraph?.borderWidth != nil)
         try writeFlag(paragraph?.borderStyle != nil, at: index, collectionPath: collectionPath, path: ["Paragraph", "UseBorderStyle"])
-        try writeValueIfNeeded(paragraph?.borderStyle == .round ? "1" : "0", at: index, collectionPath: collectionPath, path: ["Paragraph", "BorderStyle"], quoted: false, when: paragraph?.borderStyle != nil)
+        try writeValueWhenActive(paragraph?.borderStyle == .round ? "1" : "0", at: index, collectionPath: collectionPath, path: ["Paragraph", "BorderStyle"], quoted: false, when: paragraph?.borderStyle != nil)
         try writeFlag(paragraph?.strokeWidth != nil || paragraph?.strokeColor != nil || paragraph?.strokeHash == true || paragraph?.strokeStyle != nil, at: index, collectionPath: collectionPath, path: ["Paragraph", "UseStroke"])
-        try writeValueIfNeeded(Self.time(paragraph?.strokeWidth ?? 0), at: index, collectionPath: collectionPath, path: ["Paragraph", "StrokeWidth"], when: paragraph?.strokeWidth != nil)
-        try writeValueIfNeeded(paragraph?.strokeColor.map(Self.colorString) ?? "#FFFFFF", at: index, collectionPath: collectionPath, path: ["Paragraph", "Stroke"], when: paragraph?.strokeColor != nil)
+        try writeValueWhenActive(Self.time(paragraph?.strokeWidth ?? 0), at: index, collectionPath: collectionPath, path: ["Paragraph", "StrokeWidth"], when: paragraph?.strokeWidth != nil)
+        try writeValueWhenActive(paragraph?.strokeColor.map(Self.colorString) ?? "#FFFFFF", at: index, collectionPath: collectionPath, path: ["Paragraph", "Stroke"], when: paragraph?.strokeColor != nil)
         try writeFlag(paragraph?.strokeHash == true, at: index, collectionPath: collectionPath, path: ["Paragraph", "StrokeHash"])
-        try writeValueIfNeeded(Self.strokeStyleValue(paragraph?.strokeStyle ?? .outline), at: index, collectionPath: collectionPath, path: ["Paragraph", "StrokeStyle"], quoted: false, when: paragraph?.strokeStyle != nil)
+        try writeValueWhenActive(Self.strokeStyleValue(paragraph?.strokeStyle ?? .outline), at: index, collectionPath: collectionPath, path: ["Paragraph", "StrokeStyle"], quoted: false, when: paragraph?.strokeStyle != nil)
         try writeFlag(paragraph?.horizontalRule == true, at: index, collectionPath: collectionPath, path: ["Paragraph", "UseHorizontalRule"])
     }
 
-    private func triggerValueExists(at index: Int, collectionPath: [String], path: [String]) -> Bool {
+    private func triggerValueExists(at index: [Int], collectionPath: [String], path: [String]) -> Bool {
         document.value(inUnnamedBlockAt: index, collectionPath: collectionPath, relativePath: path) != nil
     }
 

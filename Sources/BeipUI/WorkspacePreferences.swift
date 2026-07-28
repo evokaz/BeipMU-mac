@@ -390,6 +390,34 @@ enum WorkspacePreferencesStore {
         defaults.set(data, forKey: key)
     }
 
+    /// Saves one session's snapshot without allowing another open session's
+    /// stale copy of keyed UI state to erase it.
+    @discardableResult
+    static func saveMergingSessionState(
+        _ preferences: WorkspacePreferences,
+        sessionKey: String,
+        defaults suppliedDefaults: UserDefaults? = nil
+    ) -> WorkspacePreferences {
+        let defaults = suppliedDefaults ?? activeDefaults
+        let latest = load(defaults: defaults)
+        var merged = preferences
+
+        func merge<Value>(_ local: [String: Value], into saved: [String: Value]) -> [String: Value] {
+            var result = saved
+            result[sessionKey] = local[sessionKey]
+            return result
+        }
+
+        merged.workspaceLayouts = merge(preferences.workspaceLayouts, into: latest.workspaceLayouts)
+        merged.characterNotes = merge(preferences.characterNotes, into: latest.characterNotes)
+        merged.spawnSurfaces = merge(preferences.spawnSurfaces, into: latest.spawnSurfaces)
+        merged.atlasSurfaces = merge(preferences.atlasSurfaces, into: latest.atlasSurfaces)
+        merged.webViewPanes = merge(preferences.webViewPanes, into: latest.webViewPanes)
+        merged.tileMapEdits = merge(preferences.tileMapEdits, into: latest.tileMapEdits)
+        save(merged, defaults: defaults)
+        return merged
+    }
+
     static func resetUITestDefaults() {
         guard ProcessInfo.processInfo.environment["BEIPMU_UI_TESTING"] == "1" else { return }
         activeDefaults.removePersistentDomain(forName: uiTestSuiteName)

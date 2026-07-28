@@ -117,7 +117,7 @@ final class OutputTextView: NSObject {
         scrollView.drawsBackground = true
         scrollView.backgroundColor = NSColor(calibratedWhite: 0.05, alpha: 1)
         scrollView.translatesAutoresizingMaskIntoConstraints = false
-        outputView.autoresizingMask = [.width]
+        Self.fitDocumentWidth(outputView, in: scrollView)
         containerView = NSSplitView()
         containerView.isVertical = false
         containerView.dividerStyle = .thin
@@ -339,7 +339,6 @@ final class OutputTextView: NSObject {
     ) {
         let view = VirtualizedOutputView(frame: NSRect(x: 0, y: 0, width: max(1, outputView.bounds.width), height: 1))
         view.canvasBackgroundColor = defaultBackground
-        view.autoresizingMask = [.width]
         view.onLink = { [weak self] url in self?.perform(url: url) }
         view.onContextMenu = onContextMenu
         view.onPageUp = { [weak self] in self?.performPageUp() ?? false }
@@ -350,6 +349,7 @@ final class OutputTextView: NSObject {
         }
         configure(view: view)
         let secondary = Self.makeScrollView(documentView: view, backgroundColor: defaultBackground)
+        Self.fitDocumentWidth(view, in: secondary)
         secondary.setAccessibilityLabel("Paused output scrollback")
         secondary.borderType = .lineBorder
         secondaryOutputView = view
@@ -654,6 +654,11 @@ final class OutputTextView: NSObject {
         scroll.backgroundColor = backgroundColor
         scroll.translatesAutoresizingMaskIntoConstraints = false
         return scroll
+    }
+
+    private static func fitDocumentWidth(_ documentView: NSView, in scrollView: NSScrollView) {
+        documentView.translatesAutoresizingMaskIntoConstraints = false
+        documentView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor).isActive = true
     }
 }
 

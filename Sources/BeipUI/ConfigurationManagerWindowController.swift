@@ -38,6 +38,7 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
     private let statusLabel = NSTextField(labelWithString: "")
     private var rows: [Row] = []
     private var selection: Selection?
+    private var libraryObserverID: UUID?
 
     private var nameField: NSTextField?
     private var hostField: NSTextField?
@@ -72,11 +73,17 @@ final class ConfigurationManagerWindowController: NSWindowController, NSTableVie
         window.setFrameAutosaveName("BeipMUConfigurationManager")
         window.center()
         configureUI(in: window)
-        library.onChange = { [weak self] in self?.reload() }
+        libraryObserverID = library.addChangeObserver { [weak self] in self?.reload() }
         reload()
     }
 
     required init?(coder: NSCoder) { nil }
+
+    deinit {
+        MainActor.assumeIsolated {
+            library.removeChangeObserver(libraryObserverID)
+        }
+    }
 
     override func showWindow(_ sender: Any?) {
         super.showWindow(sender)

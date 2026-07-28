@@ -25,6 +25,87 @@ final class VirtualizedOutputViewTests: XCTestCase {
         XCTAssertLessThan(view.visibleItemCount(in: NSRect(x: 0, y: 120_000, width: 800, height: 700)), 50)
     }
 
+    func testOutputDocumentWidthTracksNarrowScrollViewport() {
+        let output = OutputTextView()
+        let host = NSView(frame: NSRect(x: 0, y: 0, width: 310, height: 180))
+        output.containerView.frame = host.bounds
+        host.addSubview(output.containerView)
+        host.layoutSubtreeIfNeeded()
+        output.containerView.layoutSubtreeIfNeeded()
+
+        XCTAssertEqual(
+            output.primaryOutputViewForTesting.bounds.width,
+            output.primaryScrollViewForTesting.contentView.bounds.width,
+            accuracy: 0.5
+        )
+        XCTAssertLessThan(output.primaryOutputViewForTesting.bounds.width, 310)
+    }
+
+    func testTriggerParagraphUsesPercentageIndentsAndBorderAsContentSpacing() throws {
+        let view = VirtualizedOutputView(frame: NSRect(x: 0, y: 0, width: 400, height: 200))
+        view.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
+        let text = NSAttributedString(
+            string: "Some sample text.\n",
+            attributes: [.font: NSFont.systemFont(ofSize: 13)]
+        )
+        view.setItems([.init(
+            id: UUID(),
+            attributedText: text,
+            contentRange: NSRange(location: 0, length: 17),
+            assets: [],
+            paragraph: .init(
+                leftIndent: 1,
+                rightIndent: 10,
+                topPadding: 2,
+                bottomPadding: 2,
+                borderWidth: 6,
+                borderStyle: .round,
+                strokeWidth: 2,
+                strokeColor: .white
+            )
+        )])
+
+        let rendered = try XCTUnwrap(view.renderedAttributedTextForTesting(at: 0))
+        let paragraph = try XCTUnwrap(rendered.attribute(
+            .paragraphStyle,
+            at: 0,
+            effectiveRange: nil
+        ) as? NSParagraphStyle)
+        XCTAssertEqual(paragraph.firstLineHeadIndent, 10, accuracy: 0.1)
+        XCTAssertEqual(paragraph.tailIndent, -46, accuracy: 0.1)
+        XCTAssertEqual(paragraph.paragraphSpacingBefore, 0, accuracy: 0.1)
+        XCTAssertEqual(paragraph.paragraphSpacing, 0, accuracy: 0.1)
+        XCTAssertGreaterThan(try XCTUnwrap(view.measuredHeightForTesting(at: 0)), 28)
+
+        let decoration = try XCTUnwrap(view.decorationRectForTesting(
+            at: 0,
+            in: NSRect(x: 0, y: 20, width: 400, height: 30)
+        ))
+        XCTAssertEqual(decoration.minX, 4, accuracy: 0.1)
+        XCTAssertEqual(decoration.maxX, 360, accuracy: 0.1)
+        XCTAssertEqual(decoration.minY, 20, accuracy: 0.1)
+        XCTAssertEqual(decoration.height, 30, accuracy: 0.1)
+    }
+
+    func testTriggerParagraphDecorationFollowsOppositeAsymmetricIndents() throws {
+        let view = VirtualizedOutputView(frame: NSRect(x: 0, y: 0, width: 400, height: 200))
+        view.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
+        view.setItems([.init(
+            id: UUID(),
+            attributedText: NSAttributedString(string: "Some sample text.\n"),
+            contentRange: NSRange(location: 0, length: 17),
+            assets: [],
+            paragraph: .init(leftIndent: 10, rightIndent: 1, borderWidth: 6, strokeWidth: 2)
+        )])
+
+        let decoration = try XCTUnwrap(view.decorationRectForTesting(
+            at: 0,
+            in: NSRect(x: 0, y: 0, width: 400, height: 30)
+        ))
+        XCTAssertEqual(decoration.minX, 40, accuracy: 0.1)
+        XCTAssertEqual(decoration.maxX, 396, accuracy: 0.1)
+    }
+
     func testSelectionSurvivesUnrelatedAppendAndProducesAttributedCopy() throws {
         let view = VirtualizedOutputView(frame: NSRect(x: 0, y: 0, width: 500, height: 300))
         let firstID = UUID()

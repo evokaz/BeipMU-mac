@@ -329,6 +329,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private let commandRegistry = CommandRegistry()
     private let delayScheduler = DelayScheduler()
     private let scriptService = ScriptServiceClient()
+    private let runsScriptServices: Bool
     private let aiClient = AIClient()
     private let triggerEngine = TriggerEngine()
     private let speechSynthesizer = AVSpeechSynthesizer()
@@ -395,8 +396,9 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private var unreadCount = 0
     private var lastFindQuery = ""
     private var sessionTabColor: NSColor?
+    private var profileLibraryObserverID: UUID?
     var sessionTabGroup: ClientTabGroup?
-    private var preferences = WorkspacePreferencesStore.load()
+    private var preferences: WorkspacePreferences
     private var baseWindowTitle = "Untitled"
     private var scriptTitlePrefix = ""
     private var isMuted = false
@@ -484,8 +486,14 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         window.toggleFullScreen(nil)
     }
 
-    init(profileLibrary: ProfileLibrary) {
+    init(
+        profileLibrary: ProfileLibrary,
+        runsScriptServices: Bool = true,
+        initialPreferences: WorkspacePreferences = WorkspacePreferencesStore.load()
+    ) {
         self.profileLibrary = profileLibrary
+        self.runsScriptServices = runsScriptServices
+        self.preferences = initialPreferences
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 980, height: 700),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -495,9 +503,14 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         window.title = "BeipMU"
         window.setAccessibilityIdentifier("mainWindow")
         super.init(window: window)
-        Task { [weak self, scriptService] in
-            await scriptService.startAsyncOutputDelivery { [weak self] outputs in
-                self?.applyScriptEvaluation(.init(outputs: outputs), showValue: false)
+        profileLibraryObserverID = profileLibrary.addChangeObserver { [weak self] in
+            self?.profileLibraryDidChange()
+        }
+        if runsScriptServices {
+            Task { [weak self, scriptService] in
+                await scriptService.startAsyncOutputDelivery { [weak self] outputs in
+                    self?.applyScriptEvaluation(.init(outputs: outputs), showValue: false)
+                }
             }
         }
         mediaController.onError = { [weak self] message in self?.appendError(message) }
@@ -531,6 +544,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     required init?(coder: NSCoder) { nil }
 
     func windowWillClose(_ notification: Notification) {
+        profileLibrary.removeChangeObserver(profileLibraryObserverID)
+        profileLibraryObserverID = nil
         sessionTabGroup?.controllerWillClose(self)
         if let puppet = currentPuppet {
             puppetMaster?.detachPuppetChild(puppet.id)
@@ -540,12 +555,14 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             puppetChildren.removeAll()
             children.forEach { $0.masterConnectionClosed() }
         }
-        Task { [weak self, scriptService] in
-            guard let self else { return }
-            applyScriptEvaluation(
-                await scriptService.dispatchConnectionEvent("window:close", host: scriptHostSnapshot),
-                showValue: false
-            )
+        if runsScriptServices {
+            Task { [weak self, scriptService] in
+                guard let self else { return }
+                applyScriptEvaluation(
+                    await scriptService.dispatchConnectionEvent("window:close", host: scriptHostSnapshot),
+                    showValue: false
+                )
+            }
         }
         dockController?.prepareForOwnerClose()
         secondaryInputWindows.forEach { $0.close() }
@@ -572,7 +589,9 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         scriptDebugWindow?.close()
         closeAIWindow(preservingDockPlacement: false)
         stopAllLogs(announcing: false)
-        Task { [scriptService] in await scriptService.stopAsyncOutputDelivery() }
+        if runsScriptServices {
+            Task { [scriptService] in await scriptService.stopAsyncOutputDelivery() }
+        }
         sessionTask?.cancel()
         if let session { Task { await session.disconnect() } }
         onClose?()
@@ -644,6 +663,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         if let layout = preferences.workspaceLayouts[notesKey] ?? preferences.workspaceLayout {
             dockController.apply(layout: layout)
         }
+        restoreSpawnSurfacePreferences()
         updateWindowTitle()
         refreshDiagnostics()
     }
@@ -2699,6 +2719,42 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     var ownsNetworkSession: Bool { session != nil }
     var isPuppetAttachment: Bool { currentPuppet != nil && puppetMaster != nil && session == nil }
 
+    func testingAutomationSnapshot() -> (
+        variables: [String: String],
+        aliasGroupCount: Int,
+        triggerGroupCount: Int,
+        activeTriggerGroupCount: Int,
+        triggerCount: Int,
+        macroGroupCount: Int
+    ) {
+        (
+            variables,
+            aliasGroups.count,
+            triggerGroups.count,
+            triggerGroups.filter(\.active).count,
+            triggerGroups.reduce(0) { $0 + $1.triggers.count },
+            keyboardMacroGroups.count
+        )
+    }
+
+    func testingReceiveLine(_ text: String) async {
+        await presentIncoming(.init(text: text), isPrompt: false)
+    }
+
+    func testingSpawnLines(named title: String) -> [String] {
+        triggerSpawnWindows[title]?.retainedLines.map(\.text) ?? []
+    }
+
+    func testingSpawnSurfaceState() -> (
+        standalone: [String: Bool],
+        tabGroups: [String: Bool]
+    ) {
+        (
+            triggerSpawnWindows.mapValues(\.isDocked),
+            triggerSpawnTabGroups.mapValues(\.isDocked)
+        )
+    }
+
     private func attachPuppetChild(_ controller: ClientWindowController, puppet: PuppetProfile) {
         if let previous = puppetChildren.updateValue(controller, forKey: puppet.id), previous !== controller {
             previous.masterConnectionClosed()
@@ -2936,6 +2992,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     private func applyScriptDisplayHook(to line: RenderedLine) async -> RenderedLine {
+        guard runsScriptServices else { return line }
         let result = await scriptService.dispatchConnectionEvent("display", line: line, host: scriptHostSnapshot)
         applyScriptEvaluation(.init(error: result.error, outputs: result.outputs), showValue: false)
         struct ChangedLine: Decodable { var text: String; var html: String }
@@ -3213,12 +3270,55 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         }
     }
 
-    private func reloadCurrentAutomation() {
+    private func profileLibraryDidChange() {
+        reloadCurrentAutomation(resetRuntimeState: true)
+        refreshDiagnostics()
+        updateWindowTitle()
+    }
+
+    private func refreshCurrentProfileReferences() {
+        guard let currentServer else { return }
+        guard let selected = profileLibrary.workspace.projection.servers.first(where: {
+            $0.profile.id == currentServer.id
+        }) ?? profileLibrary.workspace.projection.servers.first(where: {
+            $0.profile.name.caseInsensitiveCompare(currentServer.name) == .orderedSame
+        }) else {
+            self.currentServer = nil
+            currentCharacter = nil
+            currentPuppet = nil
+            return
+        }
+        self.currentServer = selected.profile
+        if let characterID = currentCharacter?.id {
+            let characterName = currentCharacter?.name
+            currentCharacter = selected.characters.first { $0.id == characterID }
+                ?? selected.characters.first {
+                    guard let characterName else { return false }
+                    return $0.name.caseInsensitiveCompare(characterName) == .orderedSame
+                }
+        }
+        if currentCharacter == nil {
+            currentPuppet = nil
+            return
+        }
+        if let puppetID = currentPuppet?.id {
+            let puppetName = currentPuppet?.name
+            currentPuppet = currentCharacter?.puppets.first { $0.id == puppetID }
+                ?? currentCharacter?.puppets.first {
+                    guard let puppetName else { return false }
+                    return $0.name.caseInsensitiveCompare(puppetName) == .orderedSame
+                }
+        }
+    }
+
+    private func reloadCurrentAutomation(resetRuntimeState: Bool = false) {
+        refreshCurrentProfileReferences()
         guard let server = currentServer else {
             variables = [:]
             aliasGroups = []
             triggerGroups = []
             keyboardMacroGroups = []
+            if resetRuntimeState { resetTriggerRuntimeState() }
             return
         }
         variables = profileLibrary.workspace.projection.variables(
@@ -3238,6 +3338,16 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             character: currentCharacter,
             puppet: currentPuppet
         )
+        aliasesEchoResults = profileLibrary.workspace.projection.automation.aliases.echo
+        aliasesProcessCommands = profileLibrary.workspace.projection.automation.aliases.processCommands
+        if resetRuntimeState { resetTriggerRuntimeState() }
+    }
+
+    private func resetTriggerRuntimeState() {
+        let hadSpawnCapture = spawnCapture != nil
+        spawnCapture = nil
+        guard isSessionConnected || hadSpawnCapture else { return }
+        Task { [triggerEngine] in await triggerEngine.resetRuntimeState() }
     }
 
     private func showAIWindow(prompt: String? = nil) {
@@ -3505,7 +3615,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
                 case let .stat(update):
                     updateTriggerStatistic(update)
                 case let .spawn(action, _, children):
-                    if spawnCapture == nil { newSpawn = (action, children) }
+                    if spawnCapture == nil && newSpawn == nil { newSpawn = (action, children) }
                 }
             }
             if let newSpawn {
@@ -3968,7 +4078,12 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         applyThemeSettings(preferences.theme)
     }
 
-    private func savePreferences() { WorkspacePreferencesStore.save(preferences) }
+    private func savePreferences() {
+        preferences = WorkspacePreferencesStore.saveMergingSessionState(
+            preferences,
+            sessionKey: notesKey
+        )
+    }
 
     private var textWindowIdentity: TextWindowSettingsIdentity {
         .init(

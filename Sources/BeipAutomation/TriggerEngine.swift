@@ -358,6 +358,7 @@ public struct Trigger: Identifiable, Sendable, Hashable, Codable {
     public var id: UUID
     public var description: String
     public var match: MatchDefinition
+    public var folder: Bool
     public var disabled: Bool
     public var stopProcessing: Bool
     public var oncePerLine: Bool
@@ -374,6 +375,7 @@ public struct Trigger: Identifiable, Sendable, Hashable, Codable {
         id: UUID = UUID(),
         description: String = "",
         match: MatchDefinition,
+        folder: Bool = false,
         disabled: Bool = false,
         stopProcessing: Bool = false,
         oncePerLine: Bool = false,
@@ -389,6 +391,7 @@ public struct Trigger: Identifiable, Sendable, Hashable, Codable {
         self.id = id
         self.description = description
         self.match = match
+        self.folder = folder
         self.disabled = disabled
         self.stopProcessing = stopProcessing
         self.oncePerLine = oncePerLine
@@ -400,6 +403,43 @@ public struct Trigger: Identifiable, Sendable, Hashable, Codable {
         self.actions = actions
         self.children = children
         self.childrenActive = childrenActive
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case description
+        case match
+        case folder
+        case disabled
+        case stopProcessing
+        case oncePerLine
+        case awayPresent
+        case awayPresentOnce
+        case away
+        case cooldown
+        case multiline
+        case actions
+        case children
+        case childrenActive
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try values.decode(UUID.self, forKey: .id)
+        self.description = try values.decode(String.self, forKey: .description)
+        self.match = try values.decode(MatchDefinition.self, forKey: .match)
+        self.folder = try values.decodeIfPresent(Bool.self, forKey: .folder) ?? false
+        self.disabled = try values.decode(Bool.self, forKey: .disabled)
+        self.stopProcessing = try values.decode(Bool.self, forKey: .stopProcessing)
+        self.oncePerLine = try values.decode(Bool.self, forKey: .oncePerLine)
+        self.awayPresent = try values.decode(Bool.self, forKey: .awayPresent)
+        self.awayPresentOnce = try values.decode(Bool.self, forKey: .awayPresentOnce)
+        self.away = try values.decode(Bool.self, forKey: .away)
+        self.cooldown = try values.decodeIfPresent(TimeInterval.self, forKey: .cooldown)
+        self.multiline = try values.decodeIfPresent(MultilineTriggerOptions.self, forKey: .multiline)
+        self.actions = try values.decode([TriggerAction].self, forKey: .actions)
+        self.children = try values.decode([Trigger].self, forKey: .children)
+        self.childrenActive = try values.decode(Bool.self, forKey: .childrenActive)
     }
 }
 
@@ -465,6 +505,15 @@ public actor TriggerEngine {
 
     public init() {}
 
+    public func resetRuntimeState() {
+        lastHit.removeAll(keepingCapacity: true)
+        multiline.removeAll(keepingCapacity: true)
+        pendingMultiline.removeAll(keepingCapacity: true)
+        traceEvents.removeAll(keepingCapacity: true)
+        isAway = false
+        awayNotified = false
+    }
+
     public func process(_ line: RenderedLine, triggers: [Trigger], variables: [String: String], now: Date = Date(), isAway: Bool = false) throws -> [AutomationEffect] {
         updateAwayState(isAway)
         traceEvents.removeAll(keepingCapacity: true)
@@ -484,7 +533,19 @@ public actor TriggerEngine {
         var stopped = false
         var workingLine = line
         try processMultiline(&workingLine, variables: variables, now: now, effects: &effects, stopped: &stopped)
-        for group in groups where group.active && !stopped {
+        for group in groups where !stopped {
+            guard group.active else {
+                traceEvents.append(.init(
+                    engine: .trigger,
+                    description: "Trigger group",
+                    pattern: "<group>",
+                    input: line.text,
+                    matchCount: 0,
+                    output: line.text,
+                    reason: "Skipped: disabled group"
+                ))
+                continue
+            }
             try process(&workingLine, triggers: group.triggers, variables: variables, now: now, effects: &effects, stopped: &stopped)
         }
         advanceMultiline(now: now)
@@ -517,7 +578,22 @@ public actor TriggerEngine {
         stopped: inout Bool
     ) throws {
         for trigger in triggers where !stopped {
+            if trigger.folder {
+                if trigger.childrenActive {
+                    try process(&line, triggers: trigger.children, variables: variables, now: now, effects: &effects, stopped: &stopped)
+                }
+                continue
+            }
             if trigger.disabled {
+                traceEvents.append(.init(
+                    engine: .trigger,
+                    description: trigger.description,
+                    pattern: trigger.folder ? "<folder>" : trigger.match.text,
+                    input: line.text,
+                    matchCount: 0,
+                    output: line.text,
+                    reason: "Skipped: trigger disabled"
+                ))
                 if let options = trigger.multiline, options.isEnabled {
                     activateMultiline(for: trigger, options: options, now: now)
                 } else if trigger.childrenActive {
@@ -526,11 +602,49 @@ public actor TriggerEngine {
                 continue
             }
             if let cooldown = trigger.cooldown,
-               let previous = lastHit[trigger.id], now.timeIntervalSince(previous) < cooldown { continue }
+               let previous = lastHit[trigger.id], now.timeIntervalSince(previous) < cooldown {
+                traceEvents.append(.init(
+                    engine: .trigger,
+                    description: trigger.description,
+                    pattern: trigger.match.text,
+                    input: line.text,
+                    matchCount: 0,
+                    output: line.text,
+                    reason: "Skipped: cooldown active"
+                ))
+                continue
+            }
             if trigger.awayPresent,
                (trigger.away && (!isAway || (trigger.awayPresentOnce && awayNotified))
-                || (!trigger.away && isAway)) { continue }
-            let captures = try trigger.match.matches(in: line.text)
+                || (!trigger.away && isAway)) {
+                let state = trigger.away ? "Away" : "Present"
+                let once = trigger.awayPresentOnce && awayNotified ? " once-per-state already fired" : ""
+                traceEvents.append(.init(
+                    engine: .trigger,
+                    description: trigger.description,
+                    pattern: trigger.match.text,
+                    input: line.text,
+                    matchCount: 0,
+                    output: line.text,
+                    reason: "Skipped: \(state) condition not met\(once)"
+                ))
+                continue
+            }
+            let captures: [MatchCapture]
+            do {
+                captures = try trigger.match.matches(in: line.text)
+            } catch {
+                traceEvents.append(.init(
+                    engine: .trigger,
+                    description: trigger.description,
+                    pattern: trigger.match.text,
+                    input: line.text,
+                    matchCount: 0,
+                    output: "Invalid regular expression: \(error.localizedDescription)",
+                    reason: "Skipped: invalid regex"
+                ))
+                continue
+            }
             traceEvents.append(.init(
                 engine: .trigger,
                 description: trigger.description,
@@ -570,7 +684,18 @@ public actor TriggerEngine {
                     try process(&line, triggers: trigger.children, variables: variables, now: now, effects: &effects, stopped: &stopped)
                 }
             }
-            if trigger.stopProcessing { stopped = true }
+            if trigger.stopProcessing {
+                traceEvents.append(.init(
+                    engine: .trigger,
+                    description: trigger.description,
+                    pattern: trigger.match.text,
+                    input: line.text,
+                    matchCount: 0,
+                    output: line.text,
+                    reason: "Stop Processing: remaining triggers skipped"
+                ))
+                stopped = true
+            }
         }
     }
 
@@ -668,7 +793,10 @@ public actor TriggerEngine {
         case let .replace(template, expand):
             return [.replace(range: capture.range, with: Expansion.apply(template, capture: capture, variables: expand ? variables : [:]))]
         case let .replaceHTML(template, expand):
-            return [.replaceHTML(range: capture.range, with: Expansion.apply(template, capture: capture, variables: expand ? variables : [:]))]
+            return [.replaceHTML(
+                range: capture.range,
+                with: Expansion.apply(template, capture: capture, variables: expand ? variables : [:], escapeHTML: true)
+            )]
         case let .gag(display, log):
             return (display ? [.gagDisplay] : []) + (log ? [.gagLog] : [])
         case let .send(template, captureIndex, expand, sendOnClick):

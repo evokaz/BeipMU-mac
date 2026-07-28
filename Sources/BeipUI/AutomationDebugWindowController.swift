@@ -24,6 +24,8 @@ final class AutomationDebugWindowController: NSWindowController, NSWindowDelegat
         textView.isSelectable = true
         textView.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         textView.textContainerInset = .init(width: 12, height: 12)
+        textView.setAccessibilityIdentifier("\(kind.rawValue)DebuggerLog")
+        textView.setAccessibilityLabel("\(kind.rawValue.capitalized) debugger log")
         let scroll = NSScrollView()
         scroll.documentView = textView
         scroll.hasVerticalScroller = true
@@ -44,7 +46,8 @@ final class AutomationDebugWindowController: NSWindowController, NSWindowDelegat
         guard !events.isEmpty else { return }
         let lines = events.map { event in
             let name = event.description.isEmpty ? event.pattern : event.description
-            return "[\(event.engine.rawValue)] \(name) — \(event.matchCount) match\(event.matchCount == 1 ? "" : "es")\n  input:  \(event.input)\n  output: \(event.output)\n"
+            let reason = event.reason.map { "\n  reason: \($0)" } ?? ""
+            return "[\(event.engine.rawValue)] \(name) — \(event.matchCount) match\(event.matchCount == 1 ? "" : "es")\(reason)\n  input:  \(event.input)\n  output: \(event.output)\n"
         }.joined()
         textView.textStorage?.append(.init(string: lines))
         textView.scrollToEndOfDocument(nil)

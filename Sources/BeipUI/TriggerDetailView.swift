@@ -4,7 +4,19 @@ import BeipCore
 
 @MainActor
 final class TriggerDetailView: NSView {
+    private enum MatchValidationError: LocalizedError {
+        case invalidRegularExpression(String)
+
+        var errorDescription: String? {
+            switch self {
+            case let .invalidRegularExpression(message):
+                "Invalid regular expression: \(message)"
+            }
+        }
+    }
+
     private let enabled = NSButton(checkboxWithTitle: "Enabled", target: nil, action: nil)
+    private let folder = NSButton(checkboxWithTitle: "Folder", target: nil, action: nil)
     private let processChildren = NSButton(checkboxWithTitle: "Process child triggers", target: nil, action: nil)
     private let descriptionField = NSTextField()
     private let matchField = NSTextField()
@@ -14,6 +26,8 @@ final class TriggerDetailView: NSView {
     private let wholeWord = NSButton(checkboxWithTitle: "Whole Word", target: nil, action: nil)
     private let startsWith = NSButton(checkboxWithTitle: "Line Starts With", target: nil, action: nil)
     private let endsWith = NSButton(checkboxWithTitle: "Line Ends With", target: nil, action: nil)
+    private let testResult = NSTextField(labelWithString: "")
+    private let testError = NSTextField(labelWithString: "")
     private let stopProcessing = NSButton(checkboxWithTitle: "Stop Processing if hit", target: nil, action: nil)
     private let oncePerLine = NSButton(checkboxWithTitle: "Once per line", target: nil, action: nil)
     private let cooldownEnabled = NSButton(checkboxWithTitle: "Limit to once every", target: nil, action: nil)
@@ -132,14 +146,20 @@ final class TriggerDetailView: NSView {
         filterTextView = filterScroll.documentView as! NSTextView
         super.init(frame: frameRect)
         build(speechScroll: speechScroll, sendScroll: sendScroll, filterScroll: filterScroll)
+        configureMatchTester()
         reset()
     }
 
     required init?(coder: NSCoder) { nil }
 
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
     func load(_ trigger: Trigger) {
         reset()
         enabled.state = trigger.disabled ? .off : .on
+        folder.state = trigger.folder ? .on : .off
         processChildren.state = trigger.childrenActive ? .on : .off
         descriptionField.stringValue = trigger.description
         matchField.stringValue = trigger.match.text
@@ -148,6 +168,7 @@ final class TriggerDetailView: NSView {
         wholeWord.state = trigger.match.wholeWord ? .on : .off
         startsWith.state = trigger.match.startsWith ? .on : .off
         endsWith.state = trigger.match.endsWith ? .on : .off
+        updateMatchTester()
         stopProcessing.state = trigger.stopProcessing ? .on : .off
         oncePerLine.state = trigger.oncePerLine ? .on : .off
         cooldownEnabled.state = trigger.cooldown == nil ? .off : .on
@@ -250,6 +271,7 @@ final class TriggerDetailView: NSView {
                 scriptFunction.stringValue = function
             }
         }
+        refreshAccessibilityStateDescriptions()
     }
 
     func reset() {
@@ -288,7 +310,37 @@ final class TriggerDetailView: NSView {
         speechText.string = ""
         sendTextView.string = ""
         filterTextView.string = ""
+        updateMatchTester()
+        refreshAccessibilityStateDescriptions()
     }
+
+    func validateForApply() throws {
+        if let error = currentMatchErrorDescription() {
+            throw MatchValidationError.invalidRegularExpression(error)
+        }
+    }
+
+    func testingConfigureMatch(
+        text: String,
+        testString: String,
+        isRegularExpression: Bool = false,
+        matchCase: Bool = false,
+        startsWith: Bool = false,
+        endsWith: Bool = false,
+        wholeWord: Bool = false
+    ) {
+        matchField.stringValue = text
+        testStringField.stringValue = testString
+        regex.state = isRegularExpression ? .on : .off
+        self.matchCase.state = matchCase ? .on : .off
+        self.startsWith.state = startsWith ? .on : .off
+        self.endsWith.state = endsWith ? .on : .off
+        self.wholeWord.state = wholeWord ? .on : .off
+        updateMatchTester()
+    }
+
+    var testingMatchResult: String { testResult.stringValue }
+    var testingMatchError: String { testError.stringValue }
 
     func updatedTrigger(preserving trigger: Trigger) -> Trigger {
         var actions: [TriggerAction] = []
@@ -380,6 +432,7 @@ final class TriggerDetailView: NSView {
             id: trigger.id,
             description: descriptionField.stringValue,
             match: match,
+            folder: folder.state == .on,
             disabled: enabled.state != .on,
             stopProcessing: stopProcessing.state == .on,
             oncePerLine: oncePerLine.state == .on,
@@ -401,12 +454,22 @@ final class TriggerDetailView: NSView {
         descriptionField.setAccessibilityIdentifier("triggerDescription")
         matchField.setAccessibilityIdentifier("triggerMatch")
         testStringField.setAccessibilityIdentifier("triggerTestString")
+        testResult.setAccessibilityIdentifier("triggerTestResult")
+        testResult.setAccessibilityLabel("Trigger test result")
+        testResult.maximumNumberOfLines = 3
+        testResult.lineBreakMode = .byTruncatingTail
+        testError.setAccessibilityIdentifier("triggerTestError")
+        testError.setAccessibilityLabel("Trigger test error")
+        testError.textColor = .systemRed
+        testError.maximumNumberOfLines = 2
         let top = NSStackView(views: [
-            row([enabled, NSButton(radioButtonWithTitle: "Folder", target: nil, action: nil), processChildren]),
+            row([enabled, folder, processChildren]),
             formRow("Description:", descriptionField),
             formRow("Matcharoo:", matchField),
             formRow("Test String:", testStringField),
             row([regex, matchCase, wholeWord, startsWith, endsWith]),
+            testResult,
+            testError,
             row([stopProcessing, oncePerLine]),
             row([cooldownEnabled, fixed(cooldownSeconds, width: 72), label("seconds")]),
             row([multilineEnabled, fixed(multilineLines, width: 72), label("lines or after"), fixed(multilineSeconds, width: 72), label("seconds")]),
@@ -443,6 +506,228 @@ final class TriggerDetailView: NSView {
             tabs.heightAnchor.constraint(greaterThanOrEqualToConstant: 330),
             tabs.widthAnchor.constraint(greaterThanOrEqualToConstant: 560),
         ])
+        configureAccessibility()
+    }
+
+    private func configureAccessibility() {
+        let controls: [(NSView, String)] = [
+            (enabled, "triggerEnabled"),
+            (folder, "triggerFolder"),
+            (processChildren, "triggerProcessChildren"),
+            (regex, "triggerRegularExpression"),
+            (matchCase, "triggerMatchCase"),
+            (wholeWord, "triggerWholeWord"),
+            (startsWith, "triggerStartsWith"),
+            (endsWith, "triggerEndsWith"),
+            (stopProcessing, "triggerStopProcessing"),
+            (oncePerLine, "triggerOncePerLine"),
+            (cooldownEnabled, "triggerCooldownEnabled"),
+            (cooldownSeconds, "triggerCooldownSeconds"),
+            (multilineEnabled, "triggerMultilineEnabled"),
+            (multilineLines, "triggerMultilineLines"),
+            (multilineSeconds, "triggerMultilineSeconds"),
+            (onlyWhen, "triggerAwayPresentEnabled"),
+            (away, "triggerAway"),
+            (present, "triggerPresent"),
+            (awayPresentOnce, "triggerAwayPresentOnce"),
+            (fontEnabled, "triggerFontEnabled"),
+            (fontFace, "triggerFontFace"),
+            (fontSize, "triggerFontSize"),
+            (fontDefault, "triggerFontDefault"),
+            (wholeLineAppearance, "triggerWholeLineAppearance"),
+            (foregroundEnabled, "triggerForegroundEnabled"),
+            (foregroundColor, "triggerForegroundColor"),
+            (foregroundDefault, "triggerForegroundDefault"),
+            (foregroundHash, "triggerForegroundHash"),
+            (backgroundEnabled, "triggerBackgroundEnabled"),
+            (backgroundColor, "triggerBackgroundColor"),
+            (backgroundDefault, "triggerBackgroundDefault"),
+            (backgroundHash, "triggerBackgroundHash"),
+            (bold, "triggerBold"),
+            (italic, "triggerItalic"),
+            (underline, "triggerUnderline"),
+            (strikeout, "triggerStrikeout"),
+            (flashing, "triggerFlashing"),
+            (fastFlash, "triggerFastFlash"),
+            (paragraphBackground, "triggerParagraphBackground"),
+            (paragraphBackgroundColor, "triggerParagraphBackgroundColor"),
+            (paragraphBackgroundHash, "triggerParagraphBackgroundHash"),
+            (strokeEnabled, "triggerStrokeEnabled"),
+            (strokeWidth, "triggerStrokeWidth"),
+            (strokeColor, "triggerStrokeColor"),
+            (strokeHash, "triggerStrokeHash"),
+            (strokeStyle, "triggerStrokeStyle"),
+            (borderEnabled, "triggerBorderEnabled"),
+            (borderWidth, "triggerBorderWidth"),
+            (borderStyle, "triggerBorderStyle"),
+            (alignmentEnabled, "triggerAlignmentEnabled"),
+            (alignment, "triggerAlignment"),
+            (leftIndentEnabled, "triggerLeftIndentEnabled"),
+            (leftIndent, "triggerLeftIndent"),
+            (rightIndentEnabled, "triggerRightIndentEnabled"),
+            (rightIndent, "triggerRightIndent"),
+            (topPaddingEnabled, "triggerTopPaddingEnabled"),
+            (topPadding, "triggerTopPadding"),
+            (bottomPaddingEnabled, "triggerBottomPaddingEnabled"),
+            (bottomPadding, "triggerBottomPadding"),
+            (playSound, "triggerPlaySound"),
+            (soundFile, "triggerSoundFile"),
+            (speak, "triggerSpeak"),
+            (speakWholeLine, "triggerSpeakWholeLine"),
+            (spawnActive, "triggerSpawnActive"),
+            (spawnTitle, "triggerSpawnTitle"),
+            (spawnTabGroup, "triggerSpawnTabGroup"),
+            (spawnCaptureUntil, "triggerSpawnCaptureUntil"),
+            (spawnOnlyChildren, "triggerSpawnOnlyChildren"),
+            (spawnClear, "triggerSpawnClear"),
+            (spawnShowTab, "triggerSpawnShowTab"),
+            (spawnGagLog, "triggerSpawnGagLog"),
+            (spawnCopy, "triggerSpawnCopy"),
+            (statPrefix, "triggerStatPrefix"),
+            (statTitle, "triggerStatTitle"),
+            (statName, "triggerStatName"),
+            (statValue, "triggerStatValue"),
+            (statAlignment, "triggerStatAlignment"),
+            (statColorEnabled, "triggerStatColorEnabled"),
+            (statColor, "triggerStatColor"),
+            (statFontEnabled, "triggerStatFontEnabled"),
+            (statFontName, "triggerStatFontName"),
+            (statFontSize, "triggerStatFontSize"),
+            (statKind, "triggerStatKind"),
+            (statAddValue, "triggerStatAddValue"),
+            (statRangeMin, "triggerStatRangeMin"),
+            (statRangeMax, "triggerStatRangeMax"),
+            (statRangeColor, "triggerStatRangeColor"),
+            (sendText, "triggerSendText"),
+            (sendOnClick, "triggerSendOnClick"),
+            (sendCaptureIndex, "triggerSendCaptureIndex"),
+            (sendExpandVariables, "triggerSendExpandVariables"),
+            (filterText, "triggerFilterText"),
+            (filterHTML, "triggerFilterHTML"),
+            (filterExpandVariables, "triggerFilterExpandVariables"),
+            (avatarURL, "triggerAvatarURL"),
+            (gagDisplay, "triggerGagDisplay"),
+            (gagLog, "triggerGagLog"),
+            (activityImportant, "triggerActivityImportant"),
+            (activateWindow, "triggerActivateWindow"),
+            (activityNormal, "triggerActivityNormal"),
+            (suppressActivity, "triggerSuppressActivity"),
+            (systemNotification, "triggerSystemNotification"),
+            (scriptEnabled, "triggerScriptEnabled"),
+            (scriptFunction, "triggerScriptFunction"),
+        ]
+        for (view, identifier) in controls {
+            view.setAccessibilityIdentifier(identifier)
+        }
+        speechText.setAccessibilityIdentifier("triggerSpeechText")
+        speechText.setAccessibilityLabel("Trigger speech text")
+        sendTextView.setAccessibilityIdentifier("triggerSendTextBody")
+        sendTextView.setAccessibilityLabel("Trigger send text")
+        filterTextView.setAccessibilityIdentifier("triggerFilterTextBody")
+        filterTextView.setAccessibilityLabel("Trigger filter text")
+        refreshAccessibilityStateDescriptions()
+    }
+
+    private func refreshAccessibilityStateDescriptions() {
+        for button in recursiveSubviews().compactMap({ $0 as? NSButton }) {
+            button.setAccessibilityValue(button.state == .on ? "On" : "Off")
+        }
+        if statKind.selectedSegment >= 0 {
+            statKind.setAccessibilityValue(statKind.label(forSegment: statKind.selectedSegment) ?? "")
+        }
+        if statAlignment.selectedSegment >= 0 {
+            statAlignment.setAccessibilityValue(statAlignment.label(forSegment: statAlignment.selectedSegment) ?? "")
+        }
+        if alignment.selectedSegment >= 0 {
+            alignment.setAccessibilityValue(alignment.label(forSegment: alignment.selectedSegment) ?? "")
+        }
+        if borderStyle.selectedSegment >= 0 {
+            borderStyle.setAccessibilityValue(borderStyle.label(forSegment: borderStyle.selectedSegment) ?? "")
+        }
+    }
+
+    private func configureMatchTester() {
+        for field in [matchField, testStringField] {
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(matchTesterChanged(_:)),
+                name: NSControl.textDidChangeNotification,
+                object: field
+            )
+        }
+        for button in [regex, matchCase, wholeWord, startsWith, endsWith] {
+            button.target = self
+            button.action = #selector(matchTesterChanged(_:))
+        }
+    }
+
+    @objc private func matchTesterChanged(_ sender: Any?) {
+        updateMatchTester()
+    }
+
+    private func currentMatchDefinition() -> MatchDefinition {
+        MatchDefinition(
+            text: matchField.stringValue,
+            isRegularExpression: regex.state == .on,
+            matchCase: matchCase.state == .on,
+            startsWith: startsWith.state == .on,
+            endsWith: endsWith.state == .on,
+            wholeWord: wholeWord.state == .on
+        )
+    }
+
+    private func currentMatchErrorDescription() -> String? {
+        guard regex.state == .on else { return nil }
+        do {
+            _ = try currentMatchDefinition().matches(in: testStringField.stringValue)
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    private func updateMatchTester() {
+        if regex.state == .on {
+            wholeWord.state = .off
+            startsWith.state = .off
+            endsWith.state = .off
+            wholeWord.isEnabled = false
+            startsWith.isEnabled = false
+            endsWith.isEnabled = false
+        } else {
+            wholeWord.isEnabled = true
+            startsWith.isEnabled = true
+            endsWith.isEnabled = true
+        }
+        do {
+            let matches = try currentMatchDefinition().matches(in: testStringField.stringValue)
+            testError.stringValue = ""
+            testError.setAccessibilityValue("")
+            let summary = Self.matchSummary(matches)
+            testResult.stringValue = summary
+            testResult.setAccessibilityValue(summary)
+        } catch {
+            testResult.stringValue = "Matches: 0"
+            testResult.setAccessibilityValue(testResult.stringValue)
+            let message = "Invalid regular expression: \(error.localizedDescription)"
+            testError.stringValue = message
+            testError.setAccessibilityValue(message)
+        }
+    }
+
+    private static func matchSummary(_ matches: [MatchCapture]) -> String {
+        guard !matches.isEmpty else { return "Matches: 0" }
+        let captureSummaries = matches.prefix(3).enumerated().map { matchIndex, capture in
+            capture.values.enumerated().map { captureIndex, value in
+                let range = capture.ranges[captureIndex]
+                let rangeText = range.location == NSNotFound
+                    ? "not found"
+                    : "\(range.location)-\(range.location + range.length)"
+                return "$\(captureIndex)=\(value ?? "") [\(rangeText)]"
+            }.joined(separator: ", ")
+        }
+        let suffix = matches.count > 3 ? " ..." : ""
+        return "Matches: \(matches.count) " + captureSummaries.joined(separator: " | ") + suffix
     }
 
     private func appearancePane() -> NSView {

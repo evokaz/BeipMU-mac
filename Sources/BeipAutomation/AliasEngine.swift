@@ -74,6 +74,7 @@ public struct AutomationTraceEvent: Sendable, Equatable {
     public var input: String
     public var matchCount: Int
     public var output: String
+    public var reason: String?
 
     public init(
         engine: Engine,
@@ -81,7 +82,8 @@ public struct AutomationTraceEvent: Sendable, Equatable {
         pattern: String,
         input: String,
         matchCount: Int,
-        output: String
+        output: String,
+        reason: String? = nil
     ) {
         self.engine = engine
         self.description = description
@@ -89,6 +91,7 @@ public struct AutomationTraceEvent: Sendable, Equatable {
         self.input = input
         self.matchCount = matchCount
         self.output = output
+        self.reason = reason
     }
 }
 

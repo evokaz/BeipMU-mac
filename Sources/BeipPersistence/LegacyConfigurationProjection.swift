@@ -266,9 +266,9 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
     }
 
     /// Builds the exact global → server → character → server → global order
-    /// used by Connection.cpp. The global aliases/triggers group acts as the
-    /// master enable switch, while server and character groups supply their
-    /// ordered pre/post slices.
+    /// used by Connection.cpp. Alias scope activation retains its legacy
+    /// master-switch behavior; trigger scopes are always included and their
+    /// AfterCount values only determine the ordered pre/post slices.
     public func automationGroups(
         for server: ServerProfile,
         character: CharacterProfile?
@@ -685,6 +685,7 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
         return Trigger(
             description: nodes.value("Description") ?? "",
             match: matchDefinition(from: nodes),
+            folder: nodes.bool("Folder") ?? false,
             disabled: nodes.bool("Disabled") ?? false,
             stopProcessing: nodes.bool("StopProcessing") ?? false,
             oncePerLine: nodes.bool("OncePerLine") ?? false,
@@ -741,10 +742,11 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
             if hashForeground || hashBackground {
                 actions.append(.colorHash(foreground: hashForeground, background: hashBackground, wholeLine: wholeLine))
             }
+            let fontEnabled = color.bool("UseFont") ?? true
             let useDefaultFont = color.bool("FontDefault") ?? false
             let face = color.value("FontFace") ?? ""
             let size = color.value("FontSize").flatMap(Double.init) ?? 0
-            if useDefaultFont || (!face.isEmpty && size > 0) {
+            if fontEnabled && (useDefaultFont || (!face.isEmpty && size > 0)) {
                 actions.append(.font(face: face, size: size, useDefault: useDefaultFont, wholeLine: wholeLine))
             }
         }
@@ -969,14 +971,13 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
         character: TriggerGroup,
         puppet: TriggerGroup
     ) -> [TriggerGroup] {
-        guard global.active else { return [] }
-        var result = [triggerSlice(global.pre)]
-        if server.active {
-            result.append(triggerSlice(server.pre))
-            if character.active { result.append(triggerSlice(character.triggers)) }
-            if puppet.active { result.append(triggerSlice(puppet.triggers)) }
-            result.append(triggerSlice(server.post))
-        }
+        var result = [
+            triggerSlice(global.pre),
+            triggerSlice(server.pre),
+            triggerSlice(character.triggers),
+            triggerSlice(puppet.triggers),
+            triggerSlice(server.post),
+        ]
         result.append(triggerSlice(global.post))
         return result.filter { !$0.triggers.isEmpty }
     }

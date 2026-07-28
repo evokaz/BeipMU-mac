@@ -1,0 +1,126 @@
+// Phase 5 trigger interoperability corpus for BeipMU Windows v331.
+// Comments, unknown fields, inactive/defaulted actions, and extension payloads
+// are intentionally part of the fixture contract.
+Version=331
+FutureRoot="keep-root"
+Connections {
+  FutureConnections="keep-connections"
+  Triggers {
+    Active=true
+    AfterCount=1
+    { Description="Global pre corpus"
+      FutureTriggerField="keep-global-pre"
+      FindString { MatchText="^HP: ([0-9]+)/([0-9]+)$" RegularExpression=true MatchCase=true StartsWith=true EndsWith=true WholeWord=true }
+      Disabled=false
+      StopProcessing=true
+      OncePerLine=true
+      AwayPresent=true
+      AwayPresentOnce=true
+      Away=false
+      Cooldown=true
+      CooldownTime=7.5
+      Multiline=true
+      Multiline_Limit=4
+      Multiline_Time=9
+      Color {
+        UseForeColor=true Fore=RGB(1,2,3)
+        UseBackColor=true Back=RGB(4,5,6)
+        ForeDefault=true BackDefault=false
+        ForeHash=false BackHash=true
+        UseFont=true FontDefault=false FontFace="Menlo" FontSize=15
+        WholeLine=true
+      }
+      Style {
+        SetBold=true Bold=true
+        SetItalic=true Italic=true
+        SetUnderline=true Underline=true
+        SetStrikeout=true Strikeout=true
+        Flash=true FlashFast=true
+        WholeLine=true
+      }
+      Paragraph {
+        UseAlignment=true Alignment=2
+        UseIndent_Left=true Indent_Left=1
+        UseIndent_Right=true Indent_Right=2
+        UsePadding_Top=true Padding_Top=3
+        UsePadding_Bottom=true Padding_Bottom=4
+        UseBackgroundColor=true Background=RGB(7,8,9) BackgroundHash=true
+        UseBorder=true Border=5
+        UseBorderStyle=true BorderStyle=1
+        UseStroke=true StrokeWidth=6 Stroke=RGB(10,11,12) StrokeHash=true StrokeStyle=2
+        UseHorizontalRule=true
+      }
+      Gag { Active=true Log=true }
+      Activate { Active=true ImportantActivity=true NoActivity=true }
+      Spawn {
+        Active=true Title="Vitals $1" TabGroup="Vitals-%character%" CaptureUntil="END $2"
+        OnlyChildrenDuringCapture=true Clear=true ShowTab=true GagLog=true Copy=true
+      }
+      Stat {
+        Title="Vitals" Prefix="01" Name="HP" Value="$1" Type=2
+        UseColor=true Color=RGB(255,255,255) NameAlignment=0
+        Int { Add=true }
+        Range { Lower="0" Upper="$2" Color=RGB(0,255,0) }
+        UseFont=true Font { Name="Menlo" Size=13 Bold=true Italic=true Underline=true Strikeout=true }
+      }
+      Sound { Active=true Sound="notify.wav" }
+      Speech { Active=true Say="HP $1" WholeLine=true }
+      Send { Active=true Send="score $1" CaptureIndex=1 ExpandVariables=true SendOnClick=true }
+      Toast { Active=true }
+      Filter { Active=true HTML=true Replace="<b>$1</b>" ExpandVariables=true }
+      Avatar { URL="https://example.test/avatar.png" }
+      Script { Active=true Function="OnHp" }
+      Extensions {
+        {
+          GUID="{01234567-89AB-CDEF-0123-456789ABCDEF}"
+          OpaqueBytes="00 FF 10"
+          NestedOpaque { Payload="keep-extension" }
+        }
+      }
+      Triggers {
+        Active=false
+        { Description="Nested child"
+          FutureChildField="keep-child"
+          FindString { MatchText="child" }
+          Send { Active=false Send="inactive child send" CaptureIndex=9 ExpandVariables=true SendOnClick=true }
+          Gag { Active=false Log=true }
+        }
+      }
+    }
+    { Description="Global post corpus"
+      FindString { MatchText="global-post" }
+      Filter { Active=false HTML=true Replace="inactive filter" ExpandVariables=true }
+      Sound { Active=false Sound="inactive.wav" }
+    }
+  }
+  Shortcuts {
+    CorpusWorld {
+      Host="corpus.example:8888"
+      FutureWorldField="keep-world"
+      Triggers {
+        Active=true
+        AfterCount=1
+        { Description="World pre corpus" FindString { MatchText="world-pre" } }
+        { Description="World post corpus" FindString { MatchText="world-post" } }
+      }
+      Characters {
+        Hero {
+          FutureCharacterField="keep-character"
+          Triggers {
+            Active=true
+            { Description="Character corpus" FindString { MatchText="character" } }
+          }
+          Puppets {
+            Scout {
+              FuturePuppetField="keep-puppet"
+              Triggers {
+                Active=true
+                { Description="Puppet corpus" FindString { MatchText="puppet" } }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

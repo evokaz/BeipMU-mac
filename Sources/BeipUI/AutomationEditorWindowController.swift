@@ -44,13 +44,17 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
     private let actionPopup = NSPopUpButton()
     private let actionField = NSTextField()
     private var triggerDetail: TriggerDetailView?
+    private let triggerScopeAfterCount = NSTextField()
+    private let triggerScopeApply = NSButton(title: "Save Post Count", target: nil, action: nil)
     private var selectedIndex: Int?
+    private var selectedTriggerPath: [Int]?
+    private var selectedTriggerIdentity: TriggerSelectionIdentity?
     var onClose: (() -> Void)?
 
     private final class TriggerOutlineNode {
         enum Kind {
             case scope(LegacyConfigurationWorkspace.AutomationScope)
-            case trigger(LegacyConfigurationWorkspace.AutomationScope, Int)
+            case trigger(LegacyConfigurationWorkspace.AutomationScope, [Int], TriggerSelectionIdentity)
         }
 
         let title: String
@@ -67,7 +71,56 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
     private struct TriggerSelectionKey: Equatable {
         var scope: LegacyConfigurationWorkspace.AutomationScope
         var path: [String]
-        var index: Int?
+        var triggerPath: [Int]?
+        var triggerIdentity: TriggerSelectionIdentity?
+    }
+
+    private struct TriggerSelectionIdentity: Equatable {
+        var id: UUID
+        var fingerprint: TriggerFingerprint
+
+        init(_ trigger: Trigger) {
+            id = trigger.id
+            fingerprint = TriggerFingerprint(trigger)
+        }
+
+        func matches(_ other: TriggerSelectionIdentity) -> Bool {
+            id == other.id || fingerprint == other.fingerprint
+        }
+    }
+
+    private struct TriggerFingerprint: Equatable {
+        var description: String
+        var match: MatchDefinition
+        var folder: Bool
+        var disabled: Bool
+        var stopProcessing: Bool
+        var oncePerLine: Bool
+        var awayPresent: Bool
+        var awayPresentOnce: Bool
+        var away: Bool
+        var cooldown: TimeInterval?
+        var multiline: MultilineTriggerOptions?
+        var actions: [TriggerAction]
+        var childrenActive: Bool
+        var children: [TriggerFingerprint]
+
+        init(_ trigger: Trigger) {
+            description = trigger.description
+            match = trigger.match
+            folder = trigger.folder
+            disabled = trigger.disabled
+            stopProcessing = trigger.stopProcessing
+            oncePerLine = trigger.oncePerLine
+            awayPresent = trigger.awayPresent
+            awayPresentOnce = trigger.awayPresentOnce
+            away = trigger.away
+            cooldown = trigger.cooldown
+            multiline = trigger.multiline
+            actions = trigger.actions
+            childrenActive = trigger.childrenActive
+            children = trigger.children.map(TriggerFingerprint.init)
+        }
     }
 
     init(library: ProfileLibrary, kind: Kind, scope: LegacyConfigurationWorkspace.AutomationScope = .global) {
@@ -243,13 +296,46 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
         listScroll.hasVerticalScroller = true
         listScroll.hasHorizontalScroller = true
         listScroll.borderType = .bezelBorder
+        triggerScopeAfterCount.setAccessibilityIdentifier("triggerScopeAfterCount")
+        triggerScopeAfterCount.controlSize = .small
+        triggerScopeApply.target = self
+        triggerScopeApply.action = #selector(applyTriggerScopeSettings(_:))
+        triggerScopeApply.bezelStyle = .rounded
+        triggerScopeApply.controlSize = .small
+        triggerScopeApply.setAccessibilityIdentifier("triggerScopeApply")
+        triggerScopeAfterCount.widthAnchor.constraint(equalToConstant: 52).isActive = true
+        let scopeControls = NSStackView(views: [
+            NSTextField(labelWithString: "Post count:"),
+            triggerScopeAfterCount,
+            triggerScopeApply,
+        ])
+        scopeControls.orientation = NSUserInterfaceLayoutOrientation.horizontal
+        scopeControls.alignment = NSLayoutConstraint.Attribute.centerY
+        scopeControls.spacing = 5
 
         let new = NSButton(title: "New", target: self, action: #selector(addEntry(_:)))
         let copy = NSButton(title: "Copy", target: self, action: #selector(copyTrigger(_:)))
         let delete = NSButton(title: "Delete", target: self, action: #selector(removeEntry(_:)))
+        let moveUp = NSButton(title: "Up", target: self, action: #selector(moveTriggerUp(_:)))
+        let moveDown = NSButton(title: "Down", target: self, action: #selector(moveTriggerDown(_:)))
+        let moveIn = NSButton(title: "In", target: self, action: #selector(moveTriggerIn(_:)))
+        let moveOut = NSButton(title: "Out", target: self, action: #selector(moveTriggerOut(_:)))
         let importButton = NSButton(title: "Import…", target: self, action: #selector(importTriggers(_:)))
         let exportButton = NSButton(title: "Export…", target: self, action: #selector(exportTriggers(_:)))
-        for button in [new, copy, delete, importButton, exportButton] {
+        new.setAccessibilityIdentifier("triggerNew")
+        copy.setAccessibilityIdentifier("triggerCopy")
+        delete.setAccessibilityIdentifier("triggerDelete")
+        moveUp.setAccessibilityIdentifier("triggerMoveUp")
+        moveDown.setAccessibilityIdentifier("triggerMoveDown")
+        moveIn.setAccessibilityIdentifier("triggerMoveIn")
+        moveOut.setAccessibilityIdentifier("triggerMoveOut")
+        importButton.setAccessibilityIdentifier("triggerImport")
+        exportButton.setAccessibilityIdentifier("triggerExport")
+        moveUp.toolTip = "Move selected trigger up"
+        moveDown.toolTip = "Move selected trigger down"
+        moveIn.toolTip = "Move selected trigger into the previous trigger"
+        moveOut.toolTip = "Move selected trigger out to its parent's level"
+        for button in [new, copy, delete, moveUp, moveDown, moveIn, moveOut, importButton, exportButton] {
             button.bezelStyle = .rounded
             button.controlSize = .small
         }
@@ -257,9 +343,13 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
         listButtons.orientation = .horizontal
         listButtons.spacing = 4
         listButtons.distribution = .fillEqually
+        let moveButtons = NSStackView(views: [moveUp, moveDown, moveIn, moveOut])
+        moveButtons.orientation = .horizontal
+        moveButtons.spacing = 4
+        moveButtons.distribution = .fillEqually
 
-        let sidebar = NSStackView(views: [listScroll, listButtons])
-        sidebar.orientation = .vertical
+        let sidebar = NSStackView(views: [listScroll, scopeControls, listButtons, moveButtons])
+        sidebar.orientation = NSUserInterfaceLayoutOrientation.vertical
         sidebar.spacing = 8
         sidebar.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 8)
         sidebar.widthAnchor.constraint(equalToConstant: 370).isActive = true
@@ -273,6 +363,8 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
         note.maximumNumberOfLines = 0
         let apply = NSButton(title: "Apply", target: self, action: #selector(applyEntry(_:)))
         apply.keyEquivalent = "\r"
+        apply.setAccessibilityIdentifier("triggerApply")
+        status.setAccessibilityIdentifier("triggerEditorStatus")
         let detail = NSStackView(views: [heading, triggerDetail, note, NSView(), status, apply])
         detail.orientation = .vertical
         detail.alignment = .leading
@@ -378,6 +470,8 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
               let node = triggerOutline.item(atRow: triggerOutline.selectedRow) as? TriggerOutlineNode else {
             selectedIndex = nil
             selectedTriggerScope = nil
+            selectedTriggerPath = nil
+            selectedTriggerIdentity = nil
             clearFields()
             return
         }
@@ -385,24 +479,31 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
         case let .scope(scope):
             selectedTriggerScope = scope
             selectedIndex = nil
+            selectedTriggerPath = nil
+            selectedTriggerIdentity = nil
+            loadTriggerScopeSettings(scope)
             clearFields()
-        case let .trigger(scope, index):
+        case let .trigger(scope, path, identity):
             selectedTriggerScope = scope
-            selectedIndex = index
-            loadTrigger(at: index, in: scope)
+            selectedTriggerPath = path
+            selectedTriggerIdentity = identity
+            selectedIndex = path.first
+            loadTriggerScopeSettings(scope)
+            loadTrigger(at: path, in: scope)
         }
     }
 
     @objc private func addEntry(_ sender: Any?) {
         if kind == .triggers {
             let targetScope = selectedTriggerScope ?? scope
-            var selection = triggerSelectionKey(scope: targetScope, index: nil)
+            let parentPath = selectedTriggerPath ?? []
+            var selection = triggerSelectionKey(scope: targetScope, triggerPath: nil)
             do {
-                var added = 0
+                var added: [Int] = []
                 try library.mutate {
-                    added = try $0.addTrigger(in: targetScope, description: kind.emptyTitle)
+                    added = try $0.addTrigger(in: targetScope, parentPath: parentPath, description: kind.emptyTitle)
                 }
-                selection.index = added
+                selection.triggerPath = added
                 reloadTriggerOutline(selecting: selection)
             } catch { present(error) }
             return
@@ -429,11 +530,12 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
 
     @objc private func removeEntry(_ sender: Any?) {
         if kind == .triggers {
-            guard let selectedIndex, let selectedTriggerScope else { NSSound.beep(); return }
-            let selection = triggerSelectionKey(scope: selectedTriggerScope, index: nil)
+            guard let selectedTriggerPath, let selectedTriggerScope else { NSSound.beep(); return }
+            let parentPath = Array(selectedTriggerPath.dropLast())
+            let selection = triggerSelectionKey(scope: selectedTriggerScope, triggerPath: parentPath.isEmpty ? nil : parentPath)
             do {
                 try library.mutate {
-                    try $0.removeAutomationEntry(at: selectedIndex, in: selectedTriggerScope, kind: .triggers)
+                    try $0.removeTrigger(at: selectedTriggerPath, in: selectedTriggerScope)
                 }
                 reloadTriggerOutline(selecting: selection)
             } catch { present(error) }
@@ -453,21 +555,27 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
     }
 
     @objc private func applyEntry(_ sender: Any?) {
-        guard let selectedIndex else { NSSound.beep(); return }
         if kind == .triggers {
-            guard let triggerDetail, let selectedTriggerScope else { NSSound.beep(); return }
-            let existing = library.workspace.triggers(in: selectedTriggerScope)[selectedIndex]
-            let updated = triggerDetail.updatedTrigger(preserving: existing)
-            let selection = triggerSelectionKey(scope: selectedTriggerScope, index: selectedIndex)
+            guard let triggerDetail, let selectedTriggerScope, let selectedTriggerPath else { NSSound.beep(); return }
             do {
+                try triggerDetail.validateForApply()
+                guard let existing = library.workspace.trigger(at: selectedTriggerPath, in: selectedTriggerScope) else {
+                    throw LegacyConfigurationWorkspace.WorkspaceError.automationEntryNotFound
+                }
+                let updated = triggerDetail.updatedTrigger(preserving: existing)
+                let selection = triggerSelectionKey(scope: selectedTriggerScope, triggerPath: selectedTriggerPath)
                 try library.mutate {
-                    try $0.updateTrigger(at: selectedIndex, in: selectedTriggerScope, trigger: updated)
+                    try $0.updateTrigger(at: selectedTriggerPath, in: selectedTriggerScope, trigger: updated)
                 }
                 status.stringValue = "Applied and saved."
                 reloadTriggerOutline(selecting: selection)
-            } catch { present(error) }
+            } catch {
+                status.stringValue = error.localizedDescription
+                NSSound.beep()
+            }
             return
         }
+        guard let selectedIndex else { NSSound.beep(); return }
         if kind == .macros {
             do {
                 try library.mutate {
@@ -516,25 +624,127 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
 
     @objc private func actionChanged(_ sender: Any?) { updateActionFieldState() }
 
+    @objc private func applyTriggerScopeSettings(_ sender: Any?) {
+        guard kind == .triggers, let selectedTriggerScope else { NSSound.beep(); return }
+        do {
+            try library.mutate {
+                try $0.updateTriggerGroupSettings(
+                    in: selectedTriggerScope,
+                    active: true,
+                    afterCount: max(0, triggerScopeAfterCount.integerValue)
+                )
+            }
+            status.stringValue = "Scope settings saved."
+            reloadTriggerOutline(selecting: triggerSelectionKey(
+                scope: selectedTriggerScope,
+                triggerPath: selectedTriggerPath,
+                triggerIdentity: selectedTriggerIdentity
+            ))
+        } catch { present(error) }
+    }
+
     @objc private func copyTrigger(_ sender: Any?) {
         guard kind == .triggers,
-              let selectedIndex,
+              let selectedTriggerPath,
               let selectedTriggerScope else {
             NSSound.beep()
             return
         }
         do {
-            let source = library.workspace.triggers(in: selectedTriggerScope)[selectedIndex]
+            guard let source = library.workspace.trigger(at: selectedTriggerPath, in: selectedTriggerScope) else {
+                throw LegacyConfigurationWorkspace.WorkspaceError.automationEntryNotFound
+            }
             var copy = source
             copy.description = source.description.isEmpty ? "Copy of \(source.match.text)" : "Copy of \(source.description)"
-            var selection = triggerSelectionKey(scope: selectedTriggerScope, index: nil)
-            var added = 0
+            let parentPath = Array(selectedTriggerPath.dropLast())
+            var selection = triggerSelectionKey(scope: selectedTriggerScope, triggerPath: nil)
+            var added: [Int] = []
             try library.mutate {
-                added = try $0.addTrigger(in: selectedTriggerScope, trigger: copy)
+                added = try $0.addTrigger(in: selectedTriggerScope, parentPath: parentPath, trigger: copy)
             }
-            selection.index = added
+            selection.triggerPath = added
             reloadTriggerOutline(selecting: selection)
         } catch { present(error) }
+    }
+
+    @objc private func moveTriggerUp(_ sender: Any?) {
+        guard let selectedTriggerPath,
+              let index = selectedTriggerPath.last,
+              index > 0 else {
+            NSSound.beep()
+            return
+        }
+        moveSelectedTrigger(toParentPath: Array(selectedTriggerPath.dropLast()), index: index - 1)
+    }
+
+    @objc private func moveTriggerDown(_ sender: Any?) {
+        guard let selectedTriggerPath,
+              let index = selectedTriggerPath.last else {
+            NSSound.beep()
+            return
+        }
+        let parentPath = Array(selectedTriggerPath.dropLast())
+        guard index + 1 < triggerCount(inParentPath: parentPath) else {
+            NSSound.beep()
+            return
+        }
+        moveSelectedTrigger(toParentPath: parentPath, index: index + 1)
+    }
+
+    @objc private func moveTriggerIn(_ sender: Any?) {
+        guard let selectedTriggerPath,
+              let index = selectedTriggerPath.last,
+              index > 0 else {
+            NSSound.beep()
+            return
+        }
+        let parentPath = Array(selectedTriggerPath.dropLast())
+        let destinationParent = parentPath + [index - 1]
+        moveSelectedTrigger(
+            toParentPath: destinationParent,
+            index: triggerCount(inParentPath: destinationParent)
+        )
+    }
+
+    @objc private func moveTriggerOut(_ sender: Any?) {
+        guard let selectedTriggerPath,
+              selectedTriggerPath.count > 1 else {
+            NSSound.beep()
+            return
+        }
+        let parentPath = Array(selectedTriggerPath.dropLast())
+        guard let parentIndex = parentPath.last else {
+            NSSound.beep()
+            return
+        }
+        moveSelectedTrigger(toParentPath: Array(parentPath.dropLast()), index: parentIndex + 1)
+    }
+
+    private func moveSelectedTrigger(toParentPath destinationParentPath: [Int], index destinationIndex: Int) {
+        guard kind == .triggers,
+              let selectedTriggerPath,
+              let selectedTriggerScope else {
+            NSSound.beep()
+            return
+        }
+        do {
+            var movedPath: [Int] = []
+            try library.mutate {
+                movedPath = try $0.moveTrigger(
+                    at: selectedTriggerPath,
+                    in: selectedTriggerScope,
+                    toParentPath: destinationParentPath,
+                    index: destinationIndex
+                )
+            }
+            reloadTriggerOutline(selecting: triggerSelectionKey(scope: selectedTriggerScope, triggerPath: movedPath))
+        } catch { present(error) }
+    }
+
+    private func triggerCount(inParentPath parentPath: [Int]) -> Int {
+        guard let selectedTriggerScope else { return 0 }
+        if parentPath.isEmpty { return library.workspace.triggers(in: selectedTriggerScope).count }
+        return library.workspace.trigger(at: parentPath, in: selectedTriggerScope)?.children.count ?? 0
     }
 
     @objc private func importTriggers(_ sender: Any?) {
@@ -575,7 +785,7 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
 
     private func reload(selecting index: Int?) {
         if kind == .triggers {
-            reloadTriggerOutline(selecting: triggerSelectionKey(scope: scope, index: index))
+            reloadTriggerOutline(selecting: triggerSelectionKey(scope: scope, triggerPath: index.map { [$0] }))
             return
         }
         table.reloadData()
@@ -590,7 +800,11 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
         triggerOutline.reloadData()
         triggerOutlineNodes.forEach { triggerOutline.expandItem($0, expandChildren: true) }
 
-        let fallback = selection ?? triggerSelectionKey(scope: selectedTriggerScope ?? scope, index: selectedIndex)
+        let fallback = selection ?? triggerSelectionKey(
+            scope: selectedTriggerScope ?? scope,
+            triggerPath: selectedTriggerPath,
+            triggerIdentity: selectedTriggerIdentity
+        )
         if let row = rowForTriggerSelection(fallback) {
             triggerOutline.selectRowIndexes(.init(integer: row), byExtendingSelection: false)
             triggerOutline.scrollRowToVisible(row)
@@ -598,6 +812,9 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
         } else {
             selectedTriggerScope = fallback.scope
             selectedIndex = nil
+            selectedTriggerPath = nil
+            selectedTriggerIdentity = nil
+            loadTriggerScopeSettings(fallback.scope)
             clearFields()
         }
     }
@@ -613,7 +830,16 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
                     server: server.profile.id,
                     character: character.id
                 )
-                serverNode.children.append(scopeNode(character.name, scope: characterScope))
+                let characterNode = scopeNode(character.name, scope: characterScope)
+                for puppet in character.puppets {
+                    let puppetScope: LegacyConfigurationWorkspace.AutomationScope = .puppet(
+                        server: server.profile.id,
+                        character: character.id,
+                        puppet: puppet.id
+                    )
+                    characterNode.children.append(scopeNode(puppet.name, scope: puppetScope))
+                }
+                serverNode.children.append(characterNode)
             }
             roots.append(serverNode)
         }
@@ -621,23 +847,38 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
     }
 
     private func scopeNode(_ title: String, scope: LegacyConfigurationWorkspace.AutomationScope) -> TriggerOutlineNode {
-        let children = library.workspace.triggers(in: scope).enumerated().map { index, trigger in
-            TriggerOutlineNode(
+        let children = triggerNodes(library.workspace.triggers(in: scope), scope: scope, parentPath: [])
+        return TriggerOutlineNode(title: title, kind: .scope(scope), children: children)
+    }
+
+    private func triggerNodes(
+        _ triggers: [Trigger],
+        scope: LegacyConfigurationWorkspace.AutomationScope,
+        parentPath: [Int]
+    ) -> [TriggerOutlineNode] {
+        triggers.enumerated().map { index, trigger in
+            let path = parentPath + [index]
+            return TriggerOutlineNode(
                 title: trigger.description.isEmpty ? trigger.match.text : trigger.description,
-                kind: .trigger(scope, index)
+                kind: .trigger(scope, path, TriggerSelectionIdentity(trigger)),
+                children: triggerNodes(trigger.children, scope: scope, parentPath: path)
             )
         }
-        return TriggerOutlineNode(title: title, kind: .scope(scope), children: children)
     }
 
     private func rowForTriggerSelection(_ selection: TriggerSelectionKey) -> Int? {
         for row in 0..<triggerOutline.numberOfRows {
             guard let node = triggerOutline.item(atRow: row) as? TriggerOutlineNode else { continue }
             switch node.kind {
-            case let .scope(scope) where selection.index == nil && triggerScopeMatches(scope, selection):
+            case let .scope(scope) where selection.triggerPath == nil && triggerScopeMatches(scope, selection):
                 return row
-            case let .trigger(scope, index) where selection.index == index && triggerScopeMatches(scope, selection):
-                return row
+            case let .trigger(scope, path, identity) where triggerScopeMatches(scope, selection):
+                if selection.triggerIdentity?.matches(identity) == true {
+                    return row
+                }
+                if selection.triggerPath == path {
+                    return row
+                }
             default:
                 continue
             }
@@ -647,9 +888,13 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
 
     private func triggerSelectionKey(
         scope: LegacyConfigurationWorkspace.AutomationScope,
-        index: Int?
+        triggerPath: [Int]?,
+        triggerIdentity: TriggerSelectionIdentity? = nil
     ) -> TriggerSelectionKey {
-        .init(scope: scope, path: triggerScopePath(scope), index: index)
+        let identity = triggerIdentity ?? triggerPath
+            .flatMap { library.workspace.trigger(at: $0, in: scope) }
+            .map(TriggerSelectionIdentity.init)
+        return .init(scope: scope, path: triggerScopePath(scope), triggerPath: triggerPath, triggerIdentity: identity)
     }
 
     private func triggerScopeMatches(
@@ -706,15 +951,22 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
         }
     }
 
-    private func loadTrigger(at index: Int, in scope: LegacyConfigurationWorkspace.AutomationScope) {
-        let triggers = library.workspace.triggers(in: scope)
-        guard triggers.indices.contains(index) else { clearFields(); return }
-        triggerDetail?.load(triggers[index])
+    private func loadTrigger(at path: [Int], in scope: LegacyConfigurationWorkspace.AutomationScope) {
+        guard let trigger = library.workspace.trigger(at: path, in: scope) else { clearFields(); return }
+        triggerDetail?.load(trigger)
         status.stringValue = ""
+    }
+
+    private func loadTriggerScopeSettings(_ scope: LegacyConfigurationWorkspace.AutomationScope) {
+        let group = library.workspace.triggerGroup(in: scope)
+        triggerScopeAfterCount.stringValue = String(group.afterCount)
+        triggerScopeAfterCount.setAccessibilityValue(String(group.afterCount))
     }
 
     private func clearFields() {
         selectedIndex = nil
+        selectedTriggerPath = nil
+        selectedTriggerIdentity = nil
         descriptionField.stringValue = ""
         matchField.stringValue = ""
         regex.state = .off
@@ -741,14 +993,14 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
                 return
             }
             var lastIndex = 0
-            var selection = triggerSelectionKey(scope: scope, index: nil)
+            var selection = triggerSelectionKey(scope: scope, triggerPath: nil)
             try library.mutate { workspace in
                 for trigger in triggers {
                     lastIndex = try workspace.addTrigger(in: scope, trigger: trigger)
                 }
             }
             status.stringValue = "Imported \(triggers.count) trigger\(triggers.count == 1 ? "" : "s")."
-            selection.index = lastIndex
+            selection.triggerPath = [lastIndex]
             reloadTriggerOutline(selecting: selection)
         } catch { present(error) }
     }

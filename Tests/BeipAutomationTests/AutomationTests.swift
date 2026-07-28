@@ -108,6 +108,91 @@ final class AutomationTests: XCTestCase {
         XCTAssertEqual(trace.map(\.matchCount), [0, 1])
     }
 
+    func testInvalidImportedRegexIsSkippedWithTraceDiagnostic() async throws {
+        let invalid = Trigger(
+            description: "Imported Bad Regex",
+            match: .init(text: "(", isRegularExpression: true),
+            actions: [.send("bad", captureIndex: 1, expandVariables: false)]
+        )
+        let valid = Trigger(
+            description: "Still Runs",
+            match: .init(text: "alert"),
+            actions: [.send("ok", captureIndex: 1, expandVariables: false)]
+        )
+        let engine = TriggerEngine()
+
+        let effects = try await engine.process(.init(text: "alert"), triggers: [invalid, valid], variables: [:])
+        let trace = await engine.lastTrace()
+
+        XCTAssertEqual(effects, [.send("ok")])
+        XCTAssertEqual(trace.map(\.description), ["Imported Bad Regex", "Still Runs"])
+        XCTAssertEqual(trace.map(\.matchCount), [0, 1])
+        XCTAssertTrue(trace.first?.output.contains("Invalid regular expression") == true)
+    }
+
+    func testTriggerTraceExposesPhase6SkipReasons() async throws {
+        let cooldown = Trigger(
+            description: "Cooldown",
+            match: .init(text: "alert"),
+            cooldown: 30,
+            actions: [.activity(important: true)]
+        )
+        let away = Trigger(
+            description: "Away Only",
+            match: .init(text: "alert"),
+            awayPresent: true,
+            away: true,
+            actions: [.activity(important: true)]
+        )
+        let stopper = Trigger(
+            description: "Stopper",
+            match: .init(text: "stop"),
+            stopProcessing: true,
+            actions: [.send("halt", captureIndex: 0, expandVariables: false)]
+        )
+        let afterStop = Trigger(
+            description: "After Stop",
+            match: .init(text: "stop"),
+            actions: [.send("missed", captureIndex: 0, expandVariables: false)]
+        )
+        let engine = TriggerEngine()
+        let now = Date()
+
+        _ = try await engine.process(
+            .init(text: "alert"),
+            groups: [
+                .init(active: false, triggers: [cooldown]),
+                .init(triggers: [cooldown, away]),
+            ],
+            variables: [:],
+            now: now,
+            isAway: false
+        )
+        let disabledGroup = await engine.lastTrace()
+        XCTAssertTrue(disabledGroup.contains { $0.reason == "Skipped: disabled group" })
+
+        _ = try await engine.process(
+            .init(text: "alert"),
+            groups: [.init(triggers: [cooldown, away])],
+            variables: [:],
+            now: now.addingTimeInterval(1),
+            isAway: false
+        )
+        let skipped = await engine.lastTrace()
+
+        XCTAssertTrue(skipped.contains { $0.reason == "Skipped: cooldown active" })
+        XCTAssertTrue(skipped.contains { $0.reason == "Skipped: Away condition not met" })
+
+        _ = try await engine.process(
+            .init(text: "stop"),
+            triggers: [stopper, afterStop],
+            variables: [:],
+            now: now.addingTimeInterval(40)
+        )
+        let stopped = await engine.lastTrace()
+        XCTAssertTrue(stopped.contains { $0.reason == "Stop Processing: remaining triggers skipped" })
+    }
+
     func testAwayPresentTriggersFollowWindowActivityAndOncePerAwayState() async throws {
         let away = Trigger(
             match: .init(text: "alert"),
@@ -188,6 +273,70 @@ final class AutomationTests: XCTestCase {
         XCTAssertEqual(Expansion.apply("$99", capture: capture, variables: [:]), "a")
     }
 
+    func testCaptureExpansionSupportsWindowsBackslashFormsAndEscapedSlash() throws {
+        let capture = try XCTUnwrap(MatchDefinition(text: "(hp) (<tag&>)", isRegularExpression: true).matches(in: "hp <tag&>").first)
+
+        XCTAssertEqual(
+            Expansion.apply("\\0|\\1|\\a02|\\\\|\\9", capture: capture, variables: [:]),
+            "hp <tag&>|hp|<tag&>|\\|\\9"
+        )
+    }
+
+    func testHTMLCaptureExpansionEscapesSubstitutions() throws {
+        let capture = try XCTUnwrap(MatchDefinition(text: "(<tag&>)", isRegularExpression: true).matches(in: "<tag&>").first)
+
+        XCTAssertEqual(
+            Expansion.apply("<b>\\1</b>", capture: capture, variables: [:], escapeHTML: true),
+            "<b>&lt;tag&amp;></b>"
+        )
+    }
+
+    func testEmptyLiteralMatchProducesSingleStartCapture() throws {
+        let captures = try MatchDefinition(text: "").matches(in: "abc")
+
+        XCTAssertEqual(captures.count, 1)
+        XCTAssertEqual(captures.first?.range, NSRange(location: 0, length: 0))
+        XCTAssertEqual(captures.first?.values, [""])
+    }
+
+    func testLiteralWholeWordUsesWindowsLetterBoundaries() throws {
+        let captures = try MatchDefinition(text: "cat", wholeWord: true).matches(in: "cat9 bobcat cat")
+
+        XCTAssertEqual(captures.map(\.range), [
+            NSRange(location: 0, length: 3),
+            NSRange(location: 12, length: 3),
+        ])
+    }
+
+    func testLiteralStartsWithAndEndsWithCombinationRequiresWholeLine() throws {
+        let exact = MatchDefinition(text: "cat", startsWith: true, endsWith: true)
+        let prefix = MatchDefinition(text: "cat", startsWith: true)
+        let suffix = MatchDefinition(text: "cat", endsWith: true)
+
+        XCTAssertEqual(try exact.matches(in: "cat").count, 1)
+        XCTAssertEqual(try exact.matches(in: "cat nap").count, 0)
+        XCTAssertEqual(try prefix.matches(in: "cat nap").first?.range, NSRange(location: 0, length: 3))
+        XCTAssertEqual(try suffix.matches(in: "bobcat").first?.range, NSRange(location: 3, length: 3))
+    }
+
+    func testZeroLengthRegexStopsAfterFirstEmptyCapture() throws {
+        let captures = try MatchDefinition(text: "(?=a)", isRegularExpression: true).matches(in: "aaa")
+
+        XCTAssertEqual(captures.count, 1)
+        XCTAssertEqual(captures.first?.range, NSRange(location: 0, length: 0))
+    }
+
+    func testFilterHTMLCaptureExpansionEscapesCaptureSubstitutions() async throws {
+        let trigger = Trigger(
+            match: .init(text: "(<tag&>)", isRegularExpression: true),
+            actions: [.replaceHTML("<b>\\1</b>", expandVariables: false)]
+        )
+
+        let effects = try await TriggerEngine().process(.init(text: "<tag&>"), triggers: [trigger], variables: [:])
+
+        XCTAssertEqual(effects, [.replaceHTML(range: NSRange(location: 0, length: 6), with: "<b>&lt;tag&amp;></b>")])
+    }
+
     func testTriggerHashDefaultFontAndParagraphOptionsProduceExecutableEffects() async throws {
         let paragraph = ParagraphPatch(
             backgroundHash: true,
@@ -242,6 +391,31 @@ final class AutomationTests: XCTestCase {
         XCTAssertEqual(effects, [.send("first")])
     }
 
+    func testTriggerStopProcessingRunsChildrenBeforeStoppingLaterTriggers() async throws {
+        let child = Trigger(
+            match: .init(text: "alert"),
+            actions: [.send("child", captureIndex: 1, expandVariables: false)]
+        )
+        let stop = Trigger(
+            match: .init(text: "alert"),
+            stopProcessing: true,
+            actions: [.send("parent", captureIndex: 1, expandVariables: false)],
+            children: [child]
+        )
+        let later = Trigger(
+            match: .init(text: "alert"),
+            actions: [.send("later", captureIndex: 1, expandVariables: false)]
+        )
+
+        let effects = try await TriggerEngine().process(
+            .init(text: "alert"),
+            triggers: [stop, later],
+            variables: [:]
+        )
+
+        XCTAssertEqual(effects, [.send("parent"), .send("child")])
+    }
+
     func testDisabledTriggerActsAsContainerAndInactiveChildrenStayDisabled() async throws {
         let child = Trigger(match: .init(text: "alert"), actions: [.send("child", captureIndex: 1, expandVariables: false)])
         let enabledContainer = Trigger(match: .init(text: "never"), disabled: true, children: [child])
@@ -252,6 +426,60 @@ final class AutomationTests: XCTestCase {
 
         XCTAssertEqual(enabled, [.send("child")])
         XCTAssertTrue(inactive.isEmpty)
+    }
+
+    func testTriggerFolderProcessesChildrenWithoutMatchingItself() async throws {
+        let child = Trigger(match: .init(text: "alert"), actions: [.send("child", captureIndex: 1, expandVariables: false)])
+        let folder = Trigger(
+            description: "Folder",
+            match: .init(text: "never"),
+            folder: true,
+            actions: [.send("parent", captureIndex: 1, expandVariables: false)],
+            children: [child]
+        )
+        let inactiveFolder = Trigger(
+            description: "Inactive Folder",
+            match: .init(text: "never"),
+            folder: true,
+            children: [child],
+            childrenActive: false
+        )
+
+        let effects = try await TriggerEngine().process(.init(text: "alert"), triggers: [folder], variables: [:])
+        let inactiveEffects = try await TriggerEngine().process(.init(text: "alert"), triggers: [inactiveFolder], variables: [:])
+
+        XCTAssertEqual(effects, [.send("child")])
+        XCTAssertTrue(inactiveEffects.isEmpty)
+    }
+
+    func testTriggerDecodesMissingFolderFlagAsFalse() throws {
+        let json = """
+        {
+          "id": "00000000-0000-0000-0000-000000000001",
+          "description": "Legacy",
+          "match": {
+            "text": "legacy",
+            "isRegularExpression": false,
+            "matchCase": false,
+            "startsWith": false,
+            "endsWith": false,
+            "wholeWord": false
+          },
+          "disabled": false,
+          "stopProcessing": false,
+          "oncePerLine": false,
+          "awayPresent": false,
+          "awayPresentOnce": false,
+          "away": true,
+          "actions": [],
+          "children": [],
+          "childrenActive": true
+        }
+        """
+
+        let trigger = try JSONDecoder().decode(Trigger.self, from: Data(json.utf8))
+
+        XCTAssertFalse(trigger.folder)
     }
 
     func testFilterMutatesTextSeenByLaterTriggersAndScriptCallbackLine() async throws {
@@ -394,6 +622,7 @@ final class AutomationTests: XCTestCase {
     func testSpawnTriggerExpandsCaptureAndPreservesCaptureOptions() async throws {
         let action = TriggerSpawnAction(
             title: "Combat $1",
+            tabGroup: "Group %zone% $1",
             captureUntil: "^END $1$",
             clear: true,
             gagLog: true,
@@ -406,12 +635,21 @@ final class AutomationTests: XCTestCase {
             children: [child]
         )
 
-        let effects = try await TriggerEngine().process(.init(text: "BEGIN ROOM"), triggers: [trigger], variables: [:])
+        let effects = try await TriggerEngine().process(.init(text: "BEGIN ROOM"), triggers: [trigger], variables: ["zone": "Alpha"])
 
         guard effects.count == 1, case let .spawn(expanded, line, children) = effects[0] else {
             return XCTFail("missing spawn effect")
         }
-        XCTAssertEqual(expanded, .init(title: "Combat ROOM", captureUntil: "^END ROOM$", clear: true, gagLog: true))
+        XCTAssertEqual(
+            expanded,
+            .init(
+                title: "Combat ROOM",
+                tabGroup: "Group Alpha $1",
+                captureUntil: "^END ROOM$",
+                clear: true,
+                gagLog: true
+            )
+        )
         XCTAssertEqual(line.text, "BEGIN ROOM")
         XCTAssertEqual(children, [child])
     }

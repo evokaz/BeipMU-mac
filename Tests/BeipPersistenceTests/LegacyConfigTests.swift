@@ -461,6 +461,154 @@ final class LegacyConfigTests: XCTestCase {
         XCTAssertTrue(actions.contains { if case .stat = $0 { return true }; return false })
     }
 
+    func testPhase5TriggerCorpusProjectsEveryScopeAndStandardTriggerField() throws {
+        let source = try String(contentsOf: Self.fixtureURL("trigger-parity-v331-corpus.txt"), encoding: .utf8)
+        let projection = try LegacyConfigurationProjection(document: .init(source: source))
+        let server = try XCTUnwrap(projection.servers.first)
+        let character = try XCTUnwrap(server.characters.first)
+        let puppet = try XCTUnwrap(character.puppets.first)
+        let trigger = try XCTUnwrap(projection.automation.triggers.triggers.first)
+
+        XCTAssertEqual(projection.sourceVersion, LegacyConfigurationProjection.currentWindowsVersion)
+        XCTAssertEqual(projection.automation.triggers.afterCount, 1)
+        XCTAssertEqual(projection.automation.triggers.triggers.map(\.description), [
+            "Global pre corpus",
+            "Global post corpus",
+        ])
+        XCTAssertEqual(
+            projection.automationGroups(for: server.profile, character: character, puppet: puppet)
+                .triggers.flatMap(\.triggers).map(\.description),
+            [
+                "Global pre corpus",
+                "World pre corpus",
+                "Character corpus",
+                "Puppet corpus",
+                "World post corpus",
+                "Global post corpus",
+            ]
+        )
+
+        XCTAssertEqual(trigger.match.text, "^HP: ([0-9]+)/([0-9]+)$")
+        XCTAssertTrue(trigger.match.isRegularExpression)
+        XCTAssertTrue(trigger.match.matchCase)
+        XCTAssertTrue(trigger.match.startsWith)
+        XCTAssertTrue(trigger.match.endsWith)
+        XCTAssertTrue(trigger.match.wholeWord)
+        XCTAssertFalse(trigger.disabled)
+        XCTAssertTrue(trigger.stopProcessing)
+        XCTAssertTrue(trigger.oncePerLine)
+        XCTAssertTrue(trigger.awayPresent)
+        XCTAssertTrue(trigger.awayPresentOnce)
+        XCTAssertFalse(trigger.away)
+        XCTAssertEqual(trigger.cooldown, 7.5)
+        XCTAssertEqual(trigger.multiline?.lineLimit, 4)
+        XCTAssertEqual(trigger.multiline?.timeLimit, 9)
+        XCTAssertFalse(trigger.childrenActive)
+        XCTAssertEqual(trigger.children.first?.description, "Nested child")
+
+        XCTAssertTrue(trigger.actions.contains(.color(
+            foreground: .init(red: 1, green: 2, blue: 3),
+            background: .init(red: 4, green: 5, blue: 6),
+            wholeLine: true
+        )))
+        XCTAssertTrue(trigger.actions.contains(.colorDefault(foreground: true, background: false, wholeLine: true)))
+        XCTAssertTrue(trigger.actions.contains(.colorHash(foreground: false, background: true, wholeLine: true)))
+        XCTAssertTrue(trigger.actions.contains(.font(face: "Menlo", size: 15, useDefault: false, wholeLine: true)))
+        XCTAssertTrue(trigger.actions.contains(.appearance(
+            .init(bold: true, italic: true, underline: true, strikeout: true, blink: .fast),
+            wholeLine: true
+        )))
+        XCTAssertTrue(trigger.actions.contains(.paragraph(.init(
+            alignment: .right,
+            leftIndent: 1,
+            rightIndent: 2,
+            topPadding: 3,
+            bottomPadding: 4,
+            background: .init(red: 7, green: 8, blue: 9),
+            backgroundHash: true,
+            borderWidth: 5,
+            borderStyle: .round,
+            strokeWidth: 6,
+            strokeColor: .init(red: 10, green: 11, blue: 12),
+            strokeHash: true,
+            strokeStyle: .bottom,
+            horizontalRule: true
+        ))))
+        XCTAssertTrue(trigger.actions.contains(.gag(display: true, log: true)))
+        XCTAssertTrue(trigger.actions.contains(.activateWindow))
+        XCTAssertTrue(trigger.actions.contains(.activity(important: true)))
+        XCTAssertTrue(trigger.actions.contains(.suppressActivity))
+        XCTAssertTrue(trigger.actions.contains(.spawn(.init(
+            title: "Vitals $1",
+            tabGroup: "Vitals-%character%",
+            captureUntil: "END $2",
+            onlyChildrenDuringCapture: true,
+            clear: true,
+            showTab: true,
+            gagLog: true,
+            copy: true
+        ))))
+        XCTAssertTrue(trigger.actions.contains(.stat(.init(
+            title: "Vitals",
+            name: "HP",
+            prefix: "01",
+            value: "$1",
+            kind: .range,
+            addsToExistingInteger: true,
+            lower: "0",
+            upper: "$2",
+            color: .white,
+            rangeColor: .init(red: 0, green: 255, blue: 0),
+            nameAlignment: .left,
+            font: .init(name: "Menlo", size: 13, bold: true, italic: true, underline: true, strikeout: true)
+        ))))
+        XCTAssertTrue(trigger.actions.contains(.sound("notify.wav")))
+        XCTAssertTrue(trigger.actions.contains(.speech("HP $1", wholeLine: true)))
+        XCTAssertTrue(trigger.actions.contains(.send("score $1", captureIndex: 1, expandVariables: true, sendOnClick: true)))
+        XCTAssertTrue(trigger.actions.contains(.notification))
+        XCTAssertTrue(trigger.actions.contains(.replaceHTML("<b>$1</b>", expandVariables: true)))
+        XCTAssertTrue(trigger.actions.contains(.avatar("https://example.test/avatar.png")))
+        XCTAssertTrue(trigger.actions.contains(.script("OnHp")))
+    }
+
+    func testPhase5TriggerCorpusEditsSavesReparsesAndPreservesInteropPayloads() throws {
+        let source = try String(contentsOf: Self.fixtureURL("trigger-parity-v331-corpus.txt"), encoding: .utf8)
+        var workspace = try LegacyConfigurationWorkspace(document: .init(source: source))
+        var edited = try XCTUnwrap(workspace.trigger(at: [0], in: .global))
+        edited.description = "Global pre corpus edited on Mac"
+        edited.match.text = "^HP: ([0-9]+)/([0-9]+)$"
+        edited.actions = [.gag(display: true, log: true)]
+
+        try workspace.updateTrigger(at: [0], in: .global, trigger: edited)
+        let saved = try workspace.renderedDocument()
+        let serialized = saved.serialized()
+        let reloaded = try LegacyConfigurationProjection(document: saved)
+        let reparsed = try XCTUnwrap(reloaded.automation.triggers.triggers.first)
+
+        XCTAssertEqual(reloaded.sourceVersion, LegacyConfigurationProjection.currentWindowsVersion)
+        XCTAssertEqual(reparsed.description, "Global pre corpus edited on Mac")
+        XCTAssertEqual(reparsed.actions, [.gag(display: true, log: true)])
+        XCTAssertEqual(reparsed.children.first?.description, "Nested child")
+        XCTAssertTrue(serialized.contains("// Phase 5 trigger interoperability corpus"))
+        XCTAssertLessThan(
+            try XCTUnwrap(serialized.range(of: "Description=\"Global pre corpus edited on Mac\"")?.lowerBound),
+            try XCTUnwrap(serialized.range(of: "Description=\"Global post corpus\"")?.lowerBound)
+        )
+        XCTAssertTrue(serialized.contains("FutureRoot=\"keep-root\""))
+        XCTAssertTrue(serialized.contains("FutureConnections=\"keep-connections\""))
+        XCTAssertTrue(serialized.contains("FutureTriggerField=\"keep-global-pre\""))
+        XCTAssertTrue(serialized.contains("FutureChildField=\"keep-child\""))
+        XCTAssertTrue(serialized.contains("FutureWorldField=\"keep-world\""))
+        XCTAssertTrue(serialized.contains("FutureCharacterField=\"keep-character\""))
+        XCTAssertTrue(serialized.contains("FuturePuppetField=\"keep-puppet\""))
+        XCTAssertTrue(serialized.contains("GUID=\"{01234567-89AB-CDEF-0123-456789ABCDEF}\""))
+        XCTAssertTrue(serialized.contains("OpaqueBytes=\"00 FF 10\""))
+        XCTAssertTrue(serialized.contains("NestedOpaque { Payload=\"keep-extension\" }"))
+        XCTAssertTrue(serialized.contains("Send { Active=false Send=\"inactive child send\" CaptureIndex=9 ExpandVariables=true SendOnClick=true }"))
+        XCTAssertTrue(serialized.contains("Filter { Active=false HTML=true Replace=\"inactive filter\" ExpandVariables=true }"))
+        XCTAssertTrue(serialized.contains("Sound { Active=false Sound=\"inactive.wav\" }"))
+    }
+
     func testPuppetAutomationAndAIProfileRoundTrip() throws {
         let source = """
         Version=331
@@ -518,6 +666,66 @@ final class LegacyConfigTests: XCTestCase {
         let reloaded = try LegacyConfigurationProjection(document: cleared)
         XCTAssertNil(reloaded.servers.first?.profile.aiEndpoint)
         XCTAssertEqual(reloaded.servers.first?.profile.aiModel, "")
+    }
+
+    func testTriggerScopeOrderingUsesGlobalWorldCharacterPuppetThenWorldAndGlobalPost() throws {
+        let source = """
+        Version=331
+        Connections {
+          Triggers {
+            Active=true
+            AfterCount=1
+            { Description="Global Pre" FindString { MatchText="global pre" } }
+            { Description="Global Post" FindString { MatchText="global post" } }
+          }
+          Shortcuts {
+            World {
+              Host="world.example:8888"
+              Triggers {
+                Active=true
+                AfterCount=1
+                { Description="World Pre" FindString { MatchText="world pre" } }
+                { Description="World Post" FindString { MatchText="world post" } }
+              }
+              Characters {
+                Hero {
+                  Triggers {
+                    Active=true
+                    { Description="Character" FindString { MatchText="character" } }
+                  }
+                  Puppets {
+                    Bot {
+                      Triggers {
+                        Active=true
+                        { Description="Puppet" FindString { MatchText="puppet" } }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        """
+        let projection = try LegacyConfigurationProjection(document: .init(source: source))
+        let server = try XCTUnwrap(projection.servers.first)
+        let character = try XCTUnwrap(server.characters.first)
+        let puppet = try XCTUnwrap(character.puppets.first)
+
+        let ordered = projection.automationGroups(
+            for: server.profile,
+            character: character,
+            puppet: puppet
+        ).triggers.flatMap(\.triggers).map(\.description)
+
+        XCTAssertEqual(ordered, [
+            "Global Pre",
+            "World Pre",
+            "Character",
+            "Puppet",
+            "World Post",
+            "Global Post",
+        ])
     }
 
     func testTypedProjectionUsesWindowsDefaultsAndPortableSettings() throws {
@@ -625,6 +833,191 @@ final class LegacyConfigTests: XCTestCase {
         XCTAssertTrue(trigger.awayPresentOnce)
         XCTAssertTrue(trigger.away)
         XCTAssertEqual(trigger.children.first?.match.text, "next")
+    }
+
+    func testWorkspaceEditsNestedTriggersByPathAndPreservesUnknownChildFields() throws {
+        let source = """
+        Version=331
+        Connections {
+          Triggers {
+            Active=true
+            { Description="Parent" FindString { MatchText="parent" }
+              Triggers {
+                Active=true
+                { Description="Child" UnknownChild="keep me" FindString { MatchText="child" }
+                  Send { Active=true Send="old" }
+                }
+              }
+            }
+          }
+        }
+        """
+        var workspace = try LegacyConfigurationWorkspace(document: .init(source: source))
+        let updatedChild = Trigger(
+            description: "Updated Child",
+            match: .init(text: "child ([0-9]+)", isRegularExpression: true),
+            actions: [.send("score $1", captureIndex: 1, expandVariables: true)]
+        )
+
+        try workspace.updateTrigger(at: [0, 0], in: .global, trigger: updatedChild)
+        let rendered = try workspace.renderedDocument()
+        let serialized = rendered.serialized()
+        let reloaded = try LegacyConfigurationProjection(document: rendered)
+        let child = try XCTUnwrap(reloaded.automation.triggers.triggers.first?.children.first)
+
+        XCTAssertTrue(serialized.contains("UnknownChild=\"keep me\""))
+        XCTAssertEqual(child.description, "Updated Child")
+        XCTAssertEqual(child.match.text, "child ([0-9]+)")
+        XCTAssertEqual(child.actions, [.send("score $1", captureIndex: 1, expandVariables: true)])
+    }
+
+    func testWorkspaceAddsAndRemovesNestedTriggersByPath() throws {
+        let source = """
+        Version=331
+        Connections {
+          Triggers {
+            Active=true
+            { Description="Parent" FindString { MatchText="parent" } }
+          }
+        }
+        """
+        var workspace = try LegacyConfigurationWorkspace(document: .init(source: source))
+
+        let addedPath = try workspace.addTrigger(
+            in: .global,
+            parentPath: [0],
+            trigger: Trigger(description: "Child", match: .init(text: "child"), actions: [.gag(display: true, log: false)])
+        )
+        XCTAssertEqual(addedPath, [0, 0])
+        XCTAssertEqual(workspace.trigger(at: [0, 0], in: .global)?.description, "Child")
+
+        try workspace.removeTrigger(at: [0, 0], in: .global)
+        XCTAssertTrue(workspace.triggers(in: .global).first?.children.isEmpty == true)
+    }
+
+    func testWorkspaceMovesTriggersWithinAndAcrossNestedParentsPreservingUnknownFields() throws {
+        let source = """
+        Version=331
+        Connections {
+          Triggers {
+            Active=true
+            { Description="First" FutureFirst="keep first" FindString { MatchText="first" } }
+            { Description="Folder" Folder=true FindString { MatchText="folder" }
+              Triggers {
+                Active=true
+                { Description="Child" FutureChild="keep child" FindString { MatchText="child" } }
+              }
+            }
+            { Description="Third" FutureThird="keep third" FindString { MatchText="third" } }
+          }
+        }
+        """
+        var workspace = try LegacyConfigurationWorkspace(document: .init(source: source))
+
+        let reorderedPath = try workspace.moveTrigger(at: [2], in: .global, toParentPath: [], index: 0)
+        XCTAssertEqual(reorderedPath, [0])
+        XCTAssertEqual(workspace.triggers(in: .global).map(\.description), ["Third", "First", "Folder"])
+
+        let nestedPath = try workspace.moveTrigger(at: [1], in: .global, toParentPath: [2], index: 1)
+        XCTAssertEqual(nestedPath, [1, 1])
+        XCTAssertEqual(workspace.triggers(in: .global).map(\.description), ["Third", "Folder"])
+        XCTAssertEqual(workspace.trigger(at: [1], in: .global)?.children.map(\.description), ["Child", "First"])
+
+        let outdentedPath = try workspace.moveTrigger(at: [1, 0], in: .global, toParentPath: [], index: 2)
+        XCTAssertEqual(outdentedPath, [2])
+        XCTAssertEqual(workspace.triggers(in: .global).map(\.description), ["Third", "Folder", "Child"])
+        XCTAssertEqual(workspace.trigger(at: [1], in: .global)?.children.map(\.description), ["First"])
+
+        let serialized = (try workspace.renderedDocument()).serialized()
+        XCTAssertTrue(serialized.contains("FutureFirst=\"keep first\""))
+        XCTAssertTrue(serialized.contains("FutureChild=\"keep child\""))
+        XCTAssertTrue(serialized.contains("FutureThird=\"keep third\""))
+    }
+
+    func testWorkspaceRejectsMovingTriggerIntoItsOwnDescendant() throws {
+        let source = """
+        Version=331
+        Connections {
+          Triggers {
+            { Description="Parent" FindString { MatchText="parent" }
+              Triggers { { Description="Child" FindString { MatchText="child" } } }
+            }
+          }
+        }
+        """
+        var workspace = try LegacyConfigurationWorkspace(document: .init(source: source))
+
+        XCTAssertThrowsError(try workspace.moveTrigger(at: [0], in: .global, toParentPath: [0, 0], index: 0)) {
+            XCTAssertEqual(
+                $0 as? LegacyConfigurationWorkspace.WorkspaceError,
+                .automationEntryNotFound
+            )
+        }
+    }
+
+    func testWorkspaceUpdatesTriggerGroupActiveAndAfterCount() throws {
+        let source = """
+        Version=331
+        Connections {
+          Triggers {
+            Active=true
+            AfterCount=1
+            { Description="One" FindString { MatchText="one" } }
+            { Description="Two" FindString { MatchText="two" } }
+          }
+        }
+        """
+        var workspace = try LegacyConfigurationWorkspace(document: .init(source: source))
+
+        try workspace.updateTriggerGroupSettings(in: .global, active: false, afterCount: 2)
+        let rendered = try workspace.renderedDocument()
+        let reloaded = try LegacyConfigurationProjection(document: rendered)
+
+        XCTAssertFalse(reloaded.automation.triggers.active)
+        XCTAssertEqual(reloaded.automation.triggers.afterCount, 2)
+        XCTAssertTrue(rendered.serialized().contains("Active=false"))
+        XCTAssertTrue(rendered.serialized().contains("AfterCount=2"))
+    }
+
+    func testWorkspaceReadsAndWritesTriggerFolderFlag() throws {
+        let source = """
+        Version=331
+        Connections {
+          Triggers {
+            Active=true
+            { Description="Container" Folder=true FindString { MatchText="" }
+              Triggers { Active=true { Description="Child" FindString { MatchText="child" } } }
+            }
+          }
+        }
+        """
+        var workspace = try LegacyConfigurationWorkspace(document: .init(source: source))
+        var folder = try XCTUnwrap(workspace.trigger(at: [0], in: .global))
+
+        XCTAssertTrue(folder.folder)
+        folder.folder = false
+        try workspace.updateTrigger(at: [0], in: .global, trigger: folder)
+        XCTAssertFalse(workspace.trigger(at: [0], in: .global)?.folder == true)
+        XCTAssertTrue((try workspace.renderedDocument()).serialized().contains("Folder=false"))
+    }
+
+    func testWorkspaceWritesNestedChildrenWhenAddingFullTriggerTree() throws {
+        var workspace = try LegacyConfigurationWorkspace.empty()
+        let parent = Trigger(
+            description: "Parent",
+            match: .init(text: "parent"),
+            actions: [.activity(important: false)],
+            children: [
+                Trigger(description: "Child", match: .init(text: "child"), actions: [.gag(display: true, log: true)]),
+            ]
+        )
+
+        try workspace.addTrigger(in: .global, trigger: parent)
+        let rendered = try workspace.renderedDocument()
+        let reloaded = try LegacyConfigurationProjection(document: rendered)
+
+        XCTAssertEqual(reloaded.automation.triggers.triggers.first?.children.first?.description, "Child")
+        XCTAssertEqual(reloaded.automation.triggers.triggers.first?.children.first?.actions, [.gag(display: true, log: true)])
     }
 
     func testProjectionReadsTriggerStatAction() throws {
@@ -1302,6 +1695,13 @@ final class LegacyConfigTests: XCTestCase {
             let stable = try RestoreLogCodec.repair(repaired.repairedData, bufferSize: 128)
             XCTAssertTrue(stable.repairedBufferIndices.isEmpty, "iteration \(iteration)")
         }
+    }
+
+    private static func fixtureURL(_ name: String) -> URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/\(name)")
     }
 
 }

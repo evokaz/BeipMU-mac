@@ -201,6 +201,34 @@ final class WorkspacePreferencesTests: XCTestCase {
         XCTAssertEqual(WorkspacePreferencesStore.load(defaults: defaults), .init())
     }
 
+    func testSessionPreferenceWritesDoNotEraseOtherSessionsSpawnState() throws {
+        let suiteName = "WorkspacePreferencesTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        var first = WorkspacePreferences()
+        var second = WorkspacePreferences()
+        first.spawnSurfaces["world/first"] = .init(standaloneWindows: ["Pages"])
+        first.workspaceLayouts["world/first"] = .mainOnly.inserting(.spawn("Pages"), side: .right)
+        second.spawnSurfaces["world/second"] = .init(standaloneWindows: ["WHO"])
+        second.workspaceLayouts["world/second"] = .mainOnly
+
+        _ = WorkspacePreferencesStore.saveMergingSessionState(
+            first,
+            sessionKey: "world/first",
+            defaults: defaults
+        )
+        _ = WorkspacePreferencesStore.saveMergingSessionState(
+            second,
+            sessionKey: "world/second",
+            defaults: defaults
+        )
+
+        let restored = WorkspacePreferencesStore.load(defaults: defaults)
+        XCTAssertEqual(restored.spawnSurfaces["world/first"]?.standaloneWindows, ["Pages"])
+        XCTAssertEqual(restored.spawnSurfaces["world/second"]?.standaloneWindows, ["WHO"])
+        XCTAssertTrue(restored.workspaceLayouts["world/first"]?.panes.contains(.spawn("Pages")) == true)
+    }
+
     func testTextWindowSettingsResolveAcrossWorldCharacterAndTabScopes() {
         let identity = TextWindowSettingsIdentity(world: "Example World", character: "Builder", tab: "Main")
         var preferences = WorkspacePreferences()
@@ -601,6 +629,40 @@ final class WorkspacePreferencesTests: XCTestCase {
         XCTAssertFalse(spawn.isDocked)
         XCTAssertNotNil(spawn.window?.contentView)
         spawn.closeSurface()
+    }
+
+    @MainActor
+    func testRestoredOpenTabRecreatesFloatingAndDockedTriggerSpawns() throws {
+        let server = ServerProfile(name: "Spawn World", host: "example.invalid", port: 8888)
+        let key = "Spawn World".folding(
+            options: [.caseInsensitive, .diacriticInsensitive],
+            locale: .current
+        )
+        let dockedSpawn = WorkspacePaneKind.spawn("Docked")
+        let layout = WorkspaceLayoutNode.mainOnly.inserting(dockedSpawn, side: .right)
+        let preferences = WorkspacePreferences(
+            workspaceLayouts: [key: layout],
+            spawnSurfaces: [
+                key: .init(
+                    standaloneWindows: ["Docked", "Floating"],
+                    tabGroups: [.init(title: "Channels", tabs: ["Public"], selectedTab: "Public")]
+                ),
+            ]
+        )
+        let library = ProfileLibrary(workspace: try .empty(isDirty: false))
+        let controller = ClientWindowController(
+            profileLibrary: library,
+            runsScriptServices: false,
+            initialPreferences: preferences
+        )
+        defer { controller.close() }
+
+        controller.restoreOpenTab(server: server, character: nil)
+
+        let state = controller.testingSpawnSurfaceState()
+        XCTAssertEqual(state.standalone["Docked"], true)
+        XCTAssertEqual(state.standalone["Floating"], false)
+        XCTAssertEqual(state.tabGroups["Channels"], false)
     }
 
     func testWorkspaceLayoutUpdatesNestedDividerWithoutChangingOtherBranches() {

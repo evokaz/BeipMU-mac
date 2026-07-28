@@ -85,6 +85,15 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     var isAnimationTimerActive: Bool { animationTimer != nil }
     var selectedRangeIsEmpty: Bool { anchor == nil || anchor == focus }
     var effectiveContentWidthForTesting: CGFloat { contentWidth }
+    func renderedAttributedTextForTesting(at index: Int) -> NSAttributedString? {
+        item(at: index).map(attributedTextForLayout(_:))
+    }
+    func measuredHeightForTesting(at index: Int) -> Double? {
+        item(at: index).map(measuredHeight(for:))
+    }
+    func decorationRectForTesting(at index: Int, in rect: NSRect) -> NSRect? {
+        item(at: index).map { paragraphDecorationRect($0.paragraph, in: rect) }
+    }
     var selectedItemID: UUID? { focus.flatMap { item(at: $0.item)?.id } }
     var firstVisibleItemID: UUID? {
         guard let clip = enclosingScrollView?.contentView.bounds else { return item(at: 0)?.id }
@@ -302,12 +311,23 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
             drawMarker(for: value, in: rect)
             drawParagraphDecoration(value.paragraph, in: rect)
             let attributed = attributedTextForDrawing(value, itemIndex: index)
-            drawCoreText(attributed, in: rect, context: context)
+            drawCoreText(attributed, paragraph: value.paragraph, in: rect, context: context)
             drawAssets(value.assets, attributedText: attributed, in: rect)
         }
     }
 
     private func drawParagraphDecoration(_ paragraph: ParagraphStyle, in rect: NSRect) {
+        let rect = paragraphDecorationRect(paragraph, in: rect)
+        if let background = paragraph.background {
+            NSColor(
+                calibratedRed: CGFloat(background.red) / 255,
+                green: CGFloat(background.green) / 255,
+                blue: CGFloat(background.blue) / 255,
+                alpha: CGFloat(background.alpha) / 255
+            ).setFill()
+            let radius = paragraph.borderStyle == .round ? min(8, rect.height / 3) : 0
+            NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
+        }
         let color = paragraph.strokeColor.map {
             NSColor(
                 calibratedRed: CGFloat($0.red) / 255,
@@ -317,20 +337,14 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
             )
         } ?? NSColor.separatorColor
         color.setStroke()
-        if paragraph.borderWidth > 0 {
-            let inset = paragraph.borderWidth / 2
-            let pathRect = rect.insetBy(dx: inset, dy: inset)
-            let radius = paragraph.borderStyle == .round ? min(8, pathRect.height / 3) : 0
-            let path = NSBezierPath(roundedRect: pathRect, xRadius: radius, yRadius: radius)
-            path.lineWidth = paragraph.borderWidth
-            path.stroke()
-        }
         if paragraph.strokeWidth > 0 {
             let path = NSBezierPath()
             path.lineWidth = paragraph.strokeWidth
             switch paragraph.strokeStyle {
             case .outline:
-                path.appendRect(rect.insetBy(dx: paragraph.strokeWidth / 2, dy: paragraph.strokeWidth / 2))
+                let pathRect = rect.insetBy(dx: paragraph.strokeWidth / 2, dy: paragraph.strokeWidth / 2)
+                let radius = paragraph.borderStyle == .round ? min(8, pathRect.height / 3) : 0
+                path.appendRoundedRect(pathRect, xRadius: radius, yRadius: radius)
             case .top:
                 path.move(to: .init(x: rect.minX, y: rect.minY))
                 path.line(to: .init(x: rect.maxX, y: rect.minY))
@@ -347,6 +361,17 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
             path.lineWidth = max(1, paragraph.strokeWidth)
             path.stroke()
         }
+    }
+
+    private func paragraphDecorationRect(_ paragraph: ParagraphStyle, in rect: NSRect) -> NSRect {
+        let left = rect.width * CGFloat(max(0, paragraph.leftIndent) / 100)
+        let right = rect.width * CGFloat(max(0, paragraph.rightIndent) / 100)
+        return NSRect(
+            x: rect.minX + min(left, rect.width),
+            y: rect.minY,
+            width: max(0, rect.width - left - right),
+            height: rect.height
+        )
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -480,7 +505,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     }
 
     private func measuredHeight(for item: Item) -> Double {
-        let framesetter = CTFramesetterCreateWithAttributedString(item.attributedText)
+        let framesetter = CTFramesetterCreateWithAttributedString(attributedTextForLayout(item))
         let size = CTFramesetterSuggestFrameSizeWithConstraints(
             framesetter,
             CFRange(location: 0, length: item.attributedText.length),
@@ -489,7 +514,10 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
             nil
         )
         let assetHeight = item.assets.map { $0.asset.kind == .avatar ? 34.0 : 26.0 }.max() ?? 0
-        return Double(max(18, assetHeight, ceil(size.height) + 1))
+        let verticalSpacing = max(0, item.paragraph.topPadding)
+            + max(0, item.paragraph.bottomPadding)
+            + max(0, item.paragraph.borderWidth) * 2
+        return Double(max(18, assetHeight, ceil(size.height) + 1 + verticalSpacing))
     }
 
     private func rebuildMeasurements() {
@@ -524,7 +552,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     }
 
     private func attributedTextForDrawing(_ item: Item, itemIndex: Int) -> NSAttributedString {
-        let result = NSMutableAttributedString(attributedString: item.attributedText)
+        let result = NSMutableAttributedString(attributedString: attributedTextForLayout(item))
         if let range = selectionRange(in: itemIndex), range.length > 0 {
             result.addAttributes([
                 .backgroundColor: NSColor.selectedTextBackgroundColor,
@@ -539,12 +567,51 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         return result
     }
 
-    private func drawCoreText(_ attributed: NSAttributedString, in rect: NSRect, context: CGContext) {
+    private func attributedTextForLayout(_ item: Item) -> NSAttributedString {
+        let result = NSMutableAttributedString(attributedString: item.attributedText)
+        guard result.length > 0 else { return result }
+
+        let range = NSRange(location: 0, length: result.length)
+        let existing = (result.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle)?
+            .mutableCopy() as? NSMutableParagraphStyle ?? NSMutableParagraphStyle()
+        let leftPixels = contentWidth * CGFloat(item.paragraph.leftIndent / 100)
+        let rightPixels = contentWidth * CGFloat(item.paragraph.rightIndent / 100)
+        let originalHeadIndent = CGFloat(item.paragraph.leftIndent + item.paragraph.wrappedIndent)
+        let extraWrappedIndent = max(0, existing.headIndent - originalHeadIndent)
+        let border = CGFloat(max(0, item.paragraph.borderWidth))
+
+        existing.firstLineHeadIndent = leftPixels + border
+        existing.headIndent = leftPixels + border + CGFloat(item.paragraph.wrappedIndent) + extraWrappedIndent
+        existing.tailIndent = -(rightPixels + border)
+        existing.paragraphSpacingBefore = 0
+        existing.paragraphSpacing = max(
+            0,
+            existing.paragraphSpacing - CGFloat(max(0, item.paragraph.bottomPadding))
+        )
+        result.addAttribute(.paragraphStyle, value: existing, range: range)
+        return result
+    }
+
+    private func drawCoreText(
+        _ attributed: NSAttributedString,
+        paragraph: ParagraphStyle,
+        in rect: NSRect,
+        context: CGContext
+    ) {
         context.saveGState()
         context.translateBy(x: rect.minX, y: rect.maxY)
         context.scaleBy(x: 1, y: -1)
         context.textMatrix = .identity
-        let path = CGPath(rect: CGRect(origin: .zero, size: rect.size), transform: nil)
+        let border = CGFloat(max(0, paragraph.borderWidth))
+        let top = CGFloat(max(0, paragraph.topPadding)) + border
+        let bottom = CGFloat(max(0, paragraph.bottomPadding)) + border
+        let textRect = CGRect(
+            x: 0,
+            y: bottom,
+            width: rect.width,
+            height: max(1, rect.height - top - bottom)
+        )
+        let path = CGPath(rect: textRect, transform: nil)
         let framesetter = CTFramesetterCreateWithAttributedString(attributed)
         let frame = CTFramesetterCreateFrame(
             framesetter,
@@ -687,10 +754,20 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
             y: CGFloat(height) - (point.y - contentInsets.top - CGFloat(y))
         )
         let path = CGPath(
-            rect: CGRect(x: 0, y: 0, width: contentWidth, height: CGFloat(height)),
+            rect: CGRect(
+                x: 0,
+                y: CGFloat(max(0, value.paragraph.bottomPadding) + max(0, value.paragraph.borderWidth)),
+                width: contentWidth,
+                height: max(
+                    1,
+                    CGFloat(height)
+                        - CGFloat(max(0, value.paragraph.topPadding) + max(0, value.paragraph.bottomPadding))
+                        - CGFloat(max(0, value.paragraph.borderWidth) * 2)
+                )
+            ),
             transform: nil
         )
-        let framesetter = CTFramesetterCreateWithAttributedString(value.attributedText)
+        let framesetter = CTFramesetterCreateWithAttributedString(attributedTextForLayout(value))
         let frame = CTFramesetterCreateFrame(
             framesetter,
             CFRange(location: 0, length: value.attributedText.length),

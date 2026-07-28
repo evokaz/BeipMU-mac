@@ -7,7 +7,7 @@ final class ProfileLibrary {
     private(set) var workspace: LegacyConfigurationWorkspace
     private let persistentConfigURL: URL?
     private let sidecarURL: URL
-    var onChange: (() -> Void)?
+    private var changeObservers: [UUID: () -> Void] = [:]
 
     init() {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -89,7 +89,7 @@ final class ProfileLibrary {
     func newConfiguration() throws {
         workspace = try .empty(isDirty: persistentConfigURL == nil)
         if persistentConfigURL != nil { try persistCurrentWorkspace() }
-        onChange?()
+        notifyChangeObservers()
     }
 
     /// Imports a plaintext backup and atomically replaces the app-owned
@@ -112,7 +112,7 @@ final class ProfileLibrary {
         } else {
             workspace = imported
         }
-        onChange?()
+        notifyChangeObservers()
     }
 
     func mutate(_ body: (inout LegacyConfigurationWorkspace) throws -> Void) throws {
@@ -124,12 +124,12 @@ final class ProfileLibrary {
             candidate.acceptSavedDocument(rendered, at: persistentConfigURL)
         }
         workspace = candidate
-        onChange?()
+        notifyChangeObservers()
     }
 
     func save() throws {
         try persistCurrentWorkspace()
-        onChange?()
+        notifyChangeObservers()
     }
 
     func export(to url: URL) throws {
@@ -184,5 +184,23 @@ final class ProfileLibrary {
 
     private func backupURL(for url: URL) -> URL {
         url.deletingPathExtension().appendingPathExtension("backup.txt")
+    }
+
+    @discardableResult
+    func addChangeObserver(_ handler: @escaping () -> Void) -> UUID {
+        let id = UUID()
+        changeObservers[id] = handler
+        return id
+    }
+
+    func removeChangeObserver(_ id: UUID?) {
+        guard let id else { return }
+        changeObservers[id] = nil
+    }
+
+    private func notifyChangeObservers() {
+        for observer in changeObservers.values {
+            observer()
+        }
     }
 }
