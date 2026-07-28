@@ -620,6 +620,12 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         fullScreenItem.target = self
         fullScreenItem.keyEquivalentModifierMask = [.control, .command]
         windowMenu.addItem(.separator())
+        addShortcutItem(
+            to: windowMenu,
+            action: .toggleInputHistory,
+            selector: #selector(toggleInputHistoryWindow(_:))
+        )
+        windowMenu.addItem(.separator())
         windowMenu.addItem(withTitle: "Show Previous Tab", action: #selector(NSWindow.selectPreviousTab(_:)), keyEquivalent: "{")
         windowMenu.addItem(withTitle: "Show Next Tab", action: #selector(NSWindow.selectNextTab(_:)), keyEquivalent: "}")
         windowMenu.addItem(withTitle: "Move Tab to New Window", action: #selector(NSWindow.moveTabToNewWindow(_:)), keyEquivalent: "")

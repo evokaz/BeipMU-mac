@@ -2,51 +2,95 @@ import AppKit
 import BeipCore
 
 @MainActor
-final class InputHistoryWindowController: NSWindowController, NSWindowDelegate {
+final class InputHistoryPaneView: NSView {
     private let textView: NSTextView
-    var onClose: (() -> Void)?
+    private let scrollView: NSScrollView
 
-    init(entries: [String]) {
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 320),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .utilityWindow],
-            backing: .buffered,
-            defer: false
-        )
-        let scroll = NSTextView.scrollableTextView()
-        textView = scroll.documentView as! NSTextView
-        super.init(window: window)
-        window.delegate = self
-        window.title = "Input History"
-        window.minSize = NSSize(width: 360, height: 220)
-        window.setFrameAutosaveName("BeipMUInputHistory")
+    override init(frame frameRect: NSRect) {
+        let storage = NSTextStorage()
+        let layoutManager = NSLayoutManager()
+        storage.addLayoutManager(layoutManager)
+        let container = NSTextContainer(containerSize: NSSize(
+            width: 0,
+            height: CGFloat.greatestFiniteMagnitude
+        ))
+        container.widthTracksTextView = true
+        layoutManager.addTextContainer(container)
+
+        textView = NSTextView(frame: .zero, textContainer: container)
+        scrollView = NSScrollView(frame: .zero)
+        super.init(frame: frameRect)
+
+        wantsLayer = true
+        layer?.masksToBounds = true
+        layer?.borderWidth = 1
+        updateBorderColor()
+        setAccessibilityIdentifier("inputHistoryPane")
+        scrollView.documentView = textView
+        scrollView.autoresizingMask = [.width, .height]
         textView.isEditable = false
         textView.isSelectable = true
         textView.isRichText = false
+        textView.drawsBackground = true
         textView.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
+        textView.textContainerInset = NSSize(width: 2, height: 1)
+        textView.isHorizontallyResizable = false
+        textView.isVerticallyResizable = true
+        textView.autoresizingMask = [.width]
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.containerSize = NSSize(
+            width: 0,
+            height: CGFloat.greatestFiniteMagnitude
+        )
         textView.setAccessibilityIdentifier("inputHistoryText")
-        window.contentView = scroll
-        window.center()
-        update(entries)
+        scrollView.borderType = .noBorder
+        scrollView.drawsBackground = true
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = false
+
+        addSubview(scrollView)
+        NSLayoutConstraint.activate([
+            heightAnchor.constraint(greaterThanOrEqualToConstant: 22),
+        ])
+        update([])
     }
 
     required init?(coder: NSCoder) { nil }
 
+    override func layout() {
+        super.layout()
+        scrollView.frame = bounds
+        textView.frame = NSRect(origin: .zero, size: scrollView.contentSize)
+        textView.textContainer?.containerSize = NSSize(
+            width: scrollView.contentSize.width,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+    }
+
     func update(_ entries: [String]) {
         textView.string = entries.isEmpty ? "No input history." : entries.joined(separator: "\n")
+        needsLayout = true
+        textView.scrollRangeToVisible(NSRange(location: 0, length: 0))
     }
 
     func applyTheme(_ palette: WorkspaceThemePalette) {
-        window?.appearance = palette.appearance
-        window?.backgroundColor = palette.chrome
+        layer?.backgroundColor = palette.chrome.cgColor
+        updateBorderColor()
         textView.textColor = palette.foreground
         textView.backgroundColor = palette.background
+        scrollView.backgroundColor = palette.background
     }
 
-    func windowWillClose(_ notification: Notification) { onClose?() }
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateBorderColor()
+    }
+
+    private func updateBorderColor() {
+        layer?.borderColor = NSColor.separatorColor.cgColor
+    }
 }
 
-@MainActor
 final class SecondaryInputWindowController: NSWindowController, NSWindowDelegate {
     private(set) var prefix: String
     let logicalTitle: String

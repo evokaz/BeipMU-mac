@@ -13,6 +13,7 @@ final class CommandInputView: NSTextView {
     var onToggleUseGlobalSettings: (() -> Void)?
     var onPreferredHeightChange: ((CGFloat) -> Void)?
     var onTextChange: ((String) -> Void)?
+    var onHistoryChange: (([String]) -> Void)?
     var usesGlobalSettings = true
     var canToggleUseGlobalSettings = false
     var behavior = InputBehavior()
@@ -177,6 +178,7 @@ final class CommandInputView: NSTextView {
 
     func addToHistory(_ value: String) {
         commandHistory.record(value)
+        onHistoryChange?(commandHistory.entries)
     }
 
     override func paste(_ sender: Any?) {
@@ -220,6 +222,7 @@ final class CommandInputView: NSTextView {
         let original = string
         let submission = behavior.submission(for: original)
         commandHistory.record(original)
+        onHistoryChange?(commandHistory.entries)
         text = submission.replacement
         onSubmit?(submission.outbound)
     }

@@ -81,6 +81,70 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
     }
 
     @MainActor
+    func testInputHistoryTogglesDockedPaneAboveCommandInput() throws {
+        let library = ProfileLibrary(workspace: try .empty(isDirty: false))
+        let controller = ClientWindowController(profileLibrary: library)
+        defer { controller.close() }
+        let window = try XCTUnwrap(controller.window)
+        controller.showWindow(nil)
+        window.setFrame(
+            NSRect(origin: window.frame.origin, size: NSSize(width: window.frame.width, height: 360)),
+            display: false
+        )
+
+        XCTAssertFalse(controller.inputSplitArrangedIdentifiersForTesting.contains("inputHistoryPane"))
+        XCTAssertFalse(controller.isInputHistoryPaneVisibleForTesting)
+
+        controller.addInputHistoryEntryForTesting("test")
+        controller.addInputHistoryEntryForTesting("test 2")
+        controller.toggleInputHistoryWindow()
+        XCTAssertTrue(controller.isInputHistoryPaneVisibleForTesting)
+        XCTAssertTrue(controller.inputSplitArrangedIdentifiersForTesting.contains("inputHistoryPane"))
+        window.contentView?.layoutSubtreeIfNeeded()
+        let inputSplit = try XCTUnwrap(
+            recursiveSubviews(of: window.contentView)
+                .compactMap { $0 as? NSSplitView }
+                .first { $0.accessibilityIdentifier() == "commandInputSplit" }
+        )
+        XCTAssertEqual(inputSplit.subviews.count, 3)
+        XCTAssertLessThanOrEqual(inputSplit.subviews[0].frame.maxY, inputSplit.subviews[1].frame.minY)
+        XCTAssertLessThanOrEqual(inputSplit.subviews[1].frame.maxY, inputSplit.subviews[2].frame.minY)
+        let historyPane = try XCTUnwrap(
+            recursiveSubviews(of: inputSplit)
+                .first { $0.accessibilityIdentifier() == "inputHistoryPane" }
+        )
+        let historyScroll = try XCTUnwrap(
+            recursiveSubviews(of: historyPane)
+                .compactMap { $0 as? NSScrollView }
+                .first
+        )
+        let historyText = try XCTUnwrap(
+            recursiveSubviews(of: historyPane)
+                .compactMap { $0 as? NSTextView }
+                .first { $0.accessibilityIdentifier() == "inputHistoryText" }
+        )
+        XCTAssertEqual(historyText.string, "test\ntest 2")
+        XCTAssertGreaterThanOrEqual(historyPane.frame.width, inputSplit.bounds.width - 1)
+        XCTAssertGreaterThanOrEqual(historyPane.frame.height, 80)
+        XCTAssertEqual(historyPane.layer?.borderWidth, 1)
+        XCTAssertNotNil(historyPane.layer?.borderColor)
+        let initialHistoryHeight = historyPane.frame.height
+        XCTAssertEqual(historyScroll.frame.minX, historyPane.bounds.minX, accuracy: 0.5)
+        XCTAssertEqual(historyScroll.frame.maxX, historyPane.bounds.maxX, accuracy: 0.5)
+        XCTAssertEqual(historyScroll.frame.minY, historyPane.bounds.minY, accuracy: 0.5)
+        XCTAssertEqual(historyScroll.frame.maxY, historyPane.bounds.maxY, accuracy: 0.5)
+
+        controller.addInputHistoryEntryForTesting("test 3")
+        window.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertEqual(historyText.string, "test\ntest 2\ntest 3")
+        XCTAssertEqual(historyPane.frame.height, initialHistoryHeight, accuracy: 0.5)
+
+        controller.toggleInputHistoryWindow()
+        XCTAssertFalse(controller.isInputHistoryPaneVisibleForTesting)
+        XCTAssertFalse(controller.inputSplitArrangedIdentifiersForTesting.contains("inputHistoryPane"))
+    }
+
+    @MainActor
     func testSessionTabTitleDoesNotOverlapCloseButton() throws {
         var workspace = try LegacyConfigurationWorkspace.empty(isDirty: false)
         let serverID = workspace.addServer(named: "MyRhost With A Long World Name")
@@ -208,7 +272,7 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
                 "New Window",
                 "New Input Window",
                 "New Edit Window",
-                "Toggle Input History Window",
+                "Toggle Input History",
                 "Toggle Image Window",
                 "Toggle Map Window",
                 "Toggle Character Notes Window",
@@ -222,7 +286,7 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
         XCTAssertEqual(windowsMenu.item(withTitle: "New Input Window")?.action, #selector(ApplicationDelegate.newInputWindow(_:)))
         XCTAssertEqual(windowsMenu.item(withTitle: "New Edit Window")?.action, #selector(ApplicationDelegate.newEditWindow(_:)))
         XCTAssertEqual(
-            windowsMenu.item(withTitle: "Toggle Input History Window")?.action,
+            windowsMenu.item(withTitle: "Toggle Input History")?.action,
             #selector(ApplicationDelegate.toggleInputHistoryWindow(_:))
         )
         XCTAssertEqual(windowsMenu.item(withTitle: "Toggle Image Window")?.action, #selector(ApplicationDelegate.toggleImageWindow(_:)))
@@ -236,8 +300,10 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
         XCTAssertEqual(windowsMenu.item(withTitle: "Show Hidden Captions")?.action, #selector(ApplicationDelegate.showHiddenCaptions(_:)))
         XCTAssertEqual(windowsMenu.item(withTitle: "New Tab")?.keyEquivalent, "t")
         XCTAssertEqual(windowsMenu.item(withTitle: "New Window")?.keyEquivalent, "n")
+        XCTAssertEqual(windowsMenu.item(withTitle: "Toggle Input History")?.keyEquivalent, "h")
         XCTAssertEqual(windowsMenu.item(withTitle: "New Tab")?.keyEquivalentModifierMask, [.control])
         XCTAssertEqual(windowsMenu.item(withTitle: "New Window")?.keyEquivalentModifierMask, [.control])
+        XCTAssertEqual(windowsMenu.item(withTitle: "Toggle Input History")?.keyEquivalentModifierMask, [.command])
 
         let toolsMenu = try XCTUnwrap(menu.item(withTitle: "Tools")?.submenu)
         XCTAssertEqual(

@@ -10,6 +10,7 @@ enum ShortcutAction: String, CaseIterable, Codable {
     case findOutput
     case clearOutput
     case pauseOutput
+    case toggleInputHistory
     case convertReturns
     case convertTabs
     case convertSpaces
@@ -24,6 +25,7 @@ enum ShortcutAction: String, CaseIterable, Codable {
         case .findOutput: "Find in Output"
         case .clearOutput: "Clear Output"
         case .pauseOutput: "Pause Output"
+        case .toggleInputHistory: "Toggle Input History"
         case .convertReturns: "Convert Returns to %R"
         case .convertTabs: "Convert Tabs to %T"
         case .convertSpaces: "Convert Spaces to %B"
@@ -40,6 +42,7 @@ enum ShortcutAction: String, CaseIterable, Codable {
         case .findOutput: .init(keyEquivalent: "f", modifiers: [.command])
         case .clearOutput: .init(keyEquivalent: "k", modifiers: [.command])
         case .pauseOutput: .init(keyEquivalent: "p", modifiers: [.command, .shift])
+        case .toggleInputHistory: .init(keyEquivalent: "h", modifiers: [.control])
         case .convertReturns: .functionKey(1)
         case .convertTabs: .functionKey(1, modifiers: [.shift])
         case .convertSpaces: .functionKey(2, modifiers: [.shift])

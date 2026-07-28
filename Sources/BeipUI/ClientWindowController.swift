@@ -318,6 +318,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private let output = OutputTextView()
     private let input = CommandInputView()
     private let inputSplitView = NSSplitView()
+    private let inputHistoryPane = InputHistoryPaneView()
     private let inputContainer = NSView()
     private let stateLabel = NSTextField(labelWithString: "Disconnected")
     private let activityLabel = NSTextField(labelWithString: "")
@@ -356,7 +357,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private var preservingAIPlacement = false
     private var grabPrefix: String?
     private var secondaryInputWindows: [SecondaryInputWindowController] = []
-    private var inputHistoryWindow: InputHistoryWindowController?
+    private var isInputHistoryPaneVisible = false
     private var editWindows: [EditWindowController] = []
     private var statisticsWindow: SessionStatisticsWindowController?
     private var triggerStatisticsWindows: [String: TriggerStatisticsWindowController] = [:]
@@ -406,7 +407,12 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private var connectionStateText = "Disconnected"
     private weak var taskbarView: NSStackView?
     private var tracksInputHeight = false
+    private var inputHistoryHeight: CGFloat = 84
+    private var isRestoringInputSplitLayout = false
     private static var didRunStartupScript = false
+    private static let minimumOutputHeight: CGFloat = 80
+    private static let minimumInputHistoryHeight: CGFloat = 22
+    private static let minimumInputHeight: CGFloat = 30
     var onClose: (() -> Void)?
     var onRequestCloseLastTab: ((ClientWindowController) -> Bool)?
     var onTabStateChange: (() -> Void)?
@@ -566,7 +572,6 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         }
         dockController?.prepareForOwnerClose()
         secondaryInputWindows.forEach { $0.close() }
-        inputHistoryWindow?.close()
         editWindows.forEach { $0.close() }
         statisticsTask?.cancel()
         titlebarStatisticsTask?.cancel()
@@ -719,7 +724,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         ofSubviewAt dividerIndex: Int
     ) -> CGFloat {
         guard splitView === inputSplitView else { return proposedMinimumPosition }
-        return max(80, proposedMinimumPosition)
+        return max(minimumCoordinateForInputSplitDivider(at: dividerIndex), proposedMinimumPosition)
     }
 
     func splitView(
@@ -728,16 +733,21 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         ofSubviewAt dividerIndex: Int
     ) -> CGFloat {
         guard splitView === inputSplitView else { return proposedMaximumPosition }
-        return max(80, min(
-            proposedMaximumPosition,
-            splitView.bounds.height - splitView.dividerThickness - 30
-        ))
+        return max(
+            minimumCoordinateForInputSplitDivider(at: dividerIndex),
+            min(proposedMaximumPosition, maximumCoordinateForInputSplitDivider(at: dividerIndex))
+        )
     }
 
     func splitViewDidResizeSubviews(_ notification: Notification) {
+        guard window?.isVisible == true,
+              notification.object as? NSSplitView === inputSplitView else { return }
+        if !isRestoringInputSplitLayout,
+           isInputHistoryPaneVisible,
+           inputHistoryPane.frame.height >= Self.minimumInputHistoryHeight {
+            inputHistoryHeight = inputHistoryPane.frame.height
+        }
         guard tracksInputHeight,
-              window?.isVisible == true,
-              notification.object as? NSSplitView === inputSplitView,
               inputContainer.frame.height >= 30 else { return }
         let height = Double(inputContainer.frame.height)
         guard abs(preferences.inputHeight - height) >= 0.5 else { return }
@@ -932,8 +942,10 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         ))
         windowsMenu.addItem(.separator())
         windowsMenu.addItem(applicationMenuItem(
-            title: "Toggle Input History Window",
-            action: #selector(ApplicationDelegate.toggleInputHistoryWindow(_:))
+            title: "Toggle Input History",
+            action: #selector(ApplicationDelegate.toggleInputHistoryWindow(_:)),
+            keyEquivalent: "h",
+            modifiers: [.command]
         ))
         windowsMenu.addItem(applicationMenuItem(
             title: "Toggle Image Window",
@@ -1161,6 +1173,13 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     var quickConnectMenuForTesting: NSMenu { quickConnectMenu() }
     var sessionTabContextMenuForTesting: NSMenu { sessionTabContextMenu() }
     var inputHeightPreferenceForTesting: Double { preferences.inputHeight }
+    var isInputHistoryPaneVisibleForTesting: Bool { isInputHistoryPaneVisible }
+    var inputSplitArrangedIdentifiersForTesting: [String] {
+        inputSplitView.arrangedSubviews.compactMap { $0.accessibilityIdentifier() }
+    }
+    func addInputHistoryEntryForTesting(_ entry: String) {
+        input.addToHistory(entry)
+    }
     var tabBarControlIdentifiersForTesting: [String] {
         [applicationMenuButton, quickConnectButton, profilesButton].compactMap {
             $0.accessibilityIdentifier()
@@ -1430,20 +1449,24 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     func toggleInputHistoryWindow() {
-        if let inputHistoryWindow, inputHistoryWindow.window?.isVisible == true {
-            inputHistoryWindow.close()
-            return
+        isInputHistoryPaneVisible.toggle()
+        inputHistoryPane.update(input.historyEntriesForDisplay)
+        if isInputHistoryPaneVisible {
+            inputSplitView.insertArrangedSubview(inputHistoryPane, at: 1)
+            inputSplitView.setHoldingPriority(.defaultLow, forSubviewAt: 0)
+            inputSplitView.setHoldingPriority(.defaultHigh, forSubviewAt: 1)
+            inputSplitView.setHoldingPriority(.defaultLow, forSubviewAt: 2)
+        } else {
+            inputSplitView.removeArrangedSubview(inputHistoryPane)
+            inputHistoryPane.removeFromSuperview()
+            inputSplitView.setHoldingPriority(.defaultLow, forSubviewAt: 0)
+            inputSplitView.setHoldingPriority(.defaultHigh, forSubviewAt: 1)
         }
-        let controller = inputHistoryWindow ?? InputHistoryWindowController(entries: input.historyEntriesForDisplay)
-        inputHistoryWindow = controller
-        controller.onClose = { [weak self] in self?.inputHistoryWindow = nil }
-        controller.update(input.historyEntriesForDisplay)
-        controller.applyTheme(preferences.theme.palette)
-        controller.showWindow(nil)
-        if let owner = window, let child = controller.window, child.parent == nil {
-            owner.addChildWindow(child, ordered: .above)
-        }
-        controller.window?.makeKeyAndOrderFront(nil)
+        isRestoringInputSplitLayout = true
+        inputSplitView.adjustSubviews()
+        isRestoringInputSplitLayout = false
+        restoreInputSplitLayout()
+        focusCommandInput()
     }
 
     func toggleImageWindow() {
@@ -2175,6 +2198,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         taskbarView?.layer?.backgroundColor = palette.chrome.cgColor
         output.applyTheme(palette)
         input.applyTheme(palette)
+        inputHistoryPane.applyTheme(palette)
         dockController?.applyTheme(palette)
         secondaryInputWindows.forEach { $0.applyTheme(palette) }
         editWindows.forEach { $0.applyTheme(palette) }
@@ -2397,6 +2421,10 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         input.onToggleUseGlobalSettings = { [weak self] in self?.toggleInputUseGlobalSettings() }
         input.onPreferredHeightChange = { [weak self] height in self?.resizeInput(to: height) }
         input.onTextChange = { [weak self] _ in self?.refreshTitlebarStatistics() }
+        input.onHistoryChange = { [weak self] entries in
+            guard let self else { return }
+            self.inputHistoryPane.update(entries)
+        }
         output.onAction = { [weak self] action in self?.perform(action) }
         output.onContextMenu = { [weak self] _ in self?.outputContextMenu() }
         output.onInteractionCompleted = { [weak self] in self?.focusCommandInput() }
@@ -4215,18 +4243,71 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         preferences.stickyInput = preferences.globalInputWindowSettings.keepsTextOnSubmit
     }
 
-    private func restoreInputHeight() {
+    private var inputDividerIndex: Int {
+        max(0, (inputSplitView.arrangedSubviews.firstIndex { $0 === inputContainer } ?? 1) - 1)
+    }
+
+    private func minimumCoordinateForInputSplitDivider(at dividerIndex: Int) -> CGFloat {
+        if isInputHistoryPaneVisible, dividerIndex == 1 {
+            return Self.minimumOutputHeight
+                + inputSplitView.dividerThickness
+                + Self.minimumInputHistoryHeight
+        }
+        return Self.minimumOutputHeight
+    }
+
+    private func maximumCoordinateForInputSplitDivider(at dividerIndex: Int) -> CGFloat {
+        let splitHeight = inputSplitView.bounds.height
+        if isInputHistoryPaneVisible, dividerIndex == 0 {
+            return splitHeight
+                - (inputSplitView.dividerThickness * 2)
+                - Self.minimumInputHistoryHeight
+                - Self.minimumInputHeight
+        }
+        return splitHeight
+            - inputSplitView.dividerThickness
+            - Self.minimumInputHeight
+    }
+
+    private func maximumInputHeightForCurrentSplitLayout() -> CGFloat {
+        let splitHeight = inputSplitView.bounds.height
+        let reservedHistoryHeight = max(Self.minimumInputHistoryHeight, inputHistoryHeight)
+        let reservedHeight = isInputHistoryPaneVisible
+            ? Self.minimumOutputHeight + reservedHistoryHeight + (inputSplitView.dividerThickness * 2)
+            : Self.minimumOutputHeight + inputSplitView.dividerThickness
+        return max(Self.minimumInputHeight, splitHeight - reservedHeight)
+    }
+
+    private func boundedInputHeight(_ height: CGFloat) -> CGFloat {
+        min(max(Self.minimumInputHeight, height), maximumInputHeightForCurrentSplitLayout())
+    }
+
+    private func restoreInputSplitLayout(inputHeight requestedInputHeight: CGFloat? = nil) {
         guard inputSplitView.bounds.height > 0 else { return }
         inputSplitView.layoutSubtreeIfNeeded()
-        inputSplitView.setPosition(
-            max(
-                80,
-                inputSplitView.bounds.height
-                    - inputSplitView.dividerThickness
-                    - CGFloat(preferences.inputHeight)
-            ),
-            ofDividerAt: 0
-        )
+        let splitHeight = inputSplitView.bounds.height
+        let inputHeight = boundedInputHeight(requestedInputHeight ?? CGFloat(preferences.inputHeight))
+        let inputDividerPosition = splitHeight - inputSplitView.dividerThickness - inputHeight
+        isRestoringInputSplitLayout = true
+        defer { isRestoringInputSplitLayout = false }
+        if isInputHistoryPaneVisible {
+            let historyHeight = min(
+                max(Self.minimumInputHistoryHeight, inputHistoryHeight),
+                max(
+                    Self.minimumInputHistoryHeight,
+                    inputDividerPosition - inputSplitView.dividerThickness - Self.minimumOutputHeight
+                )
+            )
+            inputSplitView.setPosition(
+                max(Self.minimumOutputHeight, inputDividerPosition - inputSplitView.dividerThickness - historyHeight),
+                ofDividerAt: 0
+            )
+        }
+        inputSplitView.setPosition(inputDividerPosition, ofDividerAt: inputDividerIndex)
+    }
+
+    private func restoreInputHeight() {
+        restoreInputSplitLayout()
     }
 
     func synchronizeInputHeight(_ height: Double) {
@@ -4239,11 +4320,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
 
     private func resizeInput(to height: CGFloat) {
         guard activeInputWindowSettings.resizesToFitContents, inputSplitView.bounds.height > 0 else { return }
-        let boundedHeight = min(max(30, height), max(30, inputSplitView.bounds.height - 80))
-        inputSplitView.setPosition(
-            inputSplitView.bounds.height - inputSplitView.dividerThickness - boundedHeight,
-            ofDividerAt: 0
-        )
+        restoreInputSplitLayout(inputHeight: height)
     }
 
     private static func rgbColor(hex: String) -> BeipCore.RGBColor? {

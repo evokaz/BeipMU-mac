@@ -951,6 +951,7 @@ final class WorkspacePreferencesTests: XCTestCase {
         let loaded = KeyboardShortcutStore.load(from: serialized)
         XCTAssertEqual(loaded[.clearOutput], custom)
         XCTAssertEqual(loaded[.newWindow], ShortcutAction.newWindow.defaultShortcut)
+        XCTAssertEqual(loaded[.toggleInputHistory], .init(keyEquivalent: "h", modifiers: [.command]))
         XCTAssertEqual(KeyboardShortcutStore.load()[.clearOutput], ShortcutAction.clearOutput.defaultShortcut)
     }
 
