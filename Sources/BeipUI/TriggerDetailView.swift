@@ -2,6 +2,157 @@ import AppKit
 import BeipAutomation
 import BeipCore
 
+private final class TriggerParagraphPreviewView: NSView {
+    struct Configuration {
+        var paragraph = ParagraphStyle()
+        var backgroundHash = false
+        var strokeHash = false
+    }
+
+    var configuration = Configuration() {
+        didSet {
+            needsDisplay = true
+            updateAccessibilityValue()
+        }
+    }
+
+    override var isFlipped: Bool { true }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.cornerRadius = 4
+        setAccessibilityElement(true)
+        setAccessibilityRole(.group)
+        setAccessibilityLabel("Paragraph preview")
+        updateAccessibilityValue()
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        NSColor.black.setFill()
+        NSBezierPath(roundedRect: bounds, xRadius: 4, yRadius: 4).fill()
+
+        let contentRect = bounds.insetBy(dx: 8, dy: 7)
+        let paragraph = configuration.paragraph
+        let font = NSFont.systemFont(ofSize: 13)
+        let textHeight = ceil(font.ascender - font.descender)
+        let border = CGFloat(max(0, paragraph.borderWidth))
+        let topPadding = CGFloat(max(0, paragraph.topPadding))
+        let bottomPadding = CGFloat(max(0, paragraph.bottomPadding))
+        let sampleHeight = max(28, textHeight + topPadding + bottomPadding + border * 2 + 8)
+        let sampleY = contentRect.midY - sampleHeight / 2
+        let left = contentRect.width * CGFloat(clampedPercent(paragraph.leftIndent)) / 100
+        let right = contentRect.width * CGFloat(clampedPercent(paragraph.rightIndent)) / 100
+        let sampleRect = NSRect(
+            x: contentRect.minX + left,
+            y: sampleY,
+            width: max(1, contentRect.width - left - right),
+            height: sampleHeight
+        )
+
+        drawText(
+            "Not the sample text.",
+            in: NSRect(x: contentRect.minX, y: contentRect.minY, width: contentRect.width, height: textHeight + 2),
+            alignment: .left,
+            font: font
+        )
+        drawParagraphDecoration(in: sampleRect)
+
+        let textRect = sampleRect.insetBy(dx: border + 5, dy: border)
+            .offsetBy(dx: 0, dy: topPadding - bottomPadding)
+        drawText("Some sample text.", in: textRect, alignment: paragraph.alignment, font: font)
+        drawText(
+            "Not the sample text.",
+            in: NSRect(
+                x: contentRect.minX,
+                y: contentRect.maxY - textHeight - 2,
+                width: contentRect.width,
+                height: textHeight + 2
+            ),
+            alignment: .left,
+            font: font
+        )
+    }
+
+    private func drawParagraphDecoration(in rect: NSRect) {
+        let paragraph = configuration.paragraph
+        let radius = paragraph.borderStyle == .round ? min(10, rect.height / 3) : 0
+        if let background = paragraph.background {
+            previewColor(background, hashed: configuration.backgroundHash).setFill()
+            NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
+        }
+        guard paragraph.strokeWidth > 0 else { return }
+        previewColor(paragraph.strokeColor ?? .white, hashed: configuration.strokeHash).setStroke()
+        let path = NSBezierPath()
+        path.lineWidth = CGFloat(max(0.5, paragraph.strokeWidth))
+        switch paragraph.strokeStyle {
+        case .outline:
+            let inset = path.lineWidth / 2
+            let pathRect = rect.insetBy(dx: inset, dy: inset)
+            path.appendRoundedRect(pathRect, xRadius: radius, yRadius: radius)
+        case .top:
+            path.move(to: NSPoint(x: rect.minX, y: rect.minY + path.lineWidth / 2))
+            path.line(to: NSPoint(x: rect.maxX, y: rect.minY + path.lineWidth / 2))
+        case .bottom:
+            path.move(to: NSPoint(x: rect.minX, y: rect.maxY - path.lineWidth / 2))
+            path.line(to: NSPoint(x: rect.maxX, y: rect.maxY - path.lineWidth / 2))
+        }
+        path.stroke()
+    }
+
+    private func drawText(
+        _ text: String,
+        in rect: NSRect,
+        alignment: ParagraphStyle.Alignment,
+        font: NSFont
+    ) {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = switch alignment {
+        case .left: .left
+        case .center: .center
+        case .right: .right
+        }
+        NSAttributedString(
+            string: text,
+            attributes: [
+                .font: font,
+                .foregroundColor: NSColor.white,
+                .paragraphStyle: paragraph,
+            ]
+        ).draw(in: rect)
+    }
+
+    private func previewColor(_ color: BeipCore.RGBColor, hashed: Bool) -> NSColor {
+        guard hashed else { return NSColor(rgb: color) }
+        return NSColor(calibratedRed: 0.31, green: 0.72, blue: 0.96, alpha: 1)
+    }
+
+    private func clampedPercent(_ value: Double) -> Double {
+        min(100, max(0, value.isFinite ? value : 0))
+    }
+
+    private func updateAccessibilityValue() {
+        let paragraph = configuration.paragraph
+        let alignment = paragraph.alignment.rawValue
+        let border = Self.number(paragraph.borderWidth)
+        let stroke = Self.number(paragraph.strokeWidth)
+        setAccessibilityValue(
+            "\(alignment) aligned, \(Self.number(paragraph.leftIndent)) percent left indent, "
+                + "\(Self.number(paragraph.rightIndent)) percent right indent, "
+                + "\(Self.number(paragraph.topPadding)) pixel top padding, "
+                + "\(Self.number(paragraph.bottomPadding)) pixel bottom padding, "
+                + "\(border) pixel border, \(stroke) pixel \(paragraph.strokeStyle.rawValue) stroke"
+        )
+    }
+
+    private static func number(_ value: Double) -> String {
+        value.rounded() == value ? String(Int(value)) : String(value)
+    }
+}
+
 @MainActor
 final class TriggerDetailView: NSView {
     private enum MatchValidationError: LocalizedError {
@@ -82,6 +233,7 @@ final class TriggerDetailView: NSView {
     private let topPadding = NSTextField()
     private let bottomPaddingEnabled = NSButton(checkboxWithTitle: "Padding Bottom (px)", target: nil, action: nil)
     private let bottomPadding = NSTextField()
+    private let paragraphPreview = TriggerParagraphPreviewView()
 
     private let playSound = NSButton(checkboxWithTitle: "Play Sound", target: nil, action: nil)
     private let soundFile = NSTextField()
@@ -152,6 +304,7 @@ final class TriggerDetailView: NSView {
         super.init(frame: frameRect)
         build(speechScroll: speechScroll, sendScroll: sendScroll, filterScroll: filterScroll)
         configureMatchTester()
+        configureParagraphPreview()
         reset()
     }
 
@@ -276,6 +429,7 @@ final class TriggerDetailView: NSView {
                 scriptFunction.stringValue = function
             }
         }
+        updateParagraphPreview()
         refreshAccessibilityStateDescriptions()
     }
 
@@ -317,6 +471,7 @@ final class TriggerDetailView: NSView {
         sendTextView.string = ""
         filterTextView.string = ""
         updateMatchTester()
+        updateParagraphPreview()
         refreshAccessibilityStateDescriptions()
     }
 
@@ -349,6 +504,13 @@ final class TriggerDetailView: NSView {
     var testingMatchError: String { testError.stringValue }
     var testingTestStringAttributedString: NSAttributedString {
         testStringView.attributedString()
+    }
+    var testingParagraphPreviewStyle: ParagraphStyle { paragraphPreview.configuration.paragraph }
+
+    func testingConfigureParagraphPreview(_ patch: ParagraphPatch) {
+        reset()
+        loadParagraph(patch)
+        updateParagraphPreview()
     }
 
     func updatedTrigger(preserving trigger: Trigger) -> Trigger {
@@ -487,7 +649,7 @@ final class TriggerDetailView: NSView {
         ])
         top.orientation = .vertical
         top.alignment = .leading
-        top.spacing = 6
+        top.spacing = 4
 
         let tabs = NSTabView()
         tabs.setAccessibilityIdentifier("triggerActionTabs")
@@ -505,7 +667,7 @@ final class TriggerDetailView: NSView {
         let stack = NSStackView(views: [top, tabs])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 10
+        stack.spacing = 8
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         NSLayoutConstraint.activate([
@@ -580,6 +742,7 @@ final class TriggerDetailView: NSView {
             (topPadding, "triggerTopPadding"),
             (bottomPaddingEnabled, "triggerBottomPaddingEnabled"),
             (bottomPadding, "triggerBottomPadding"),
+            (paragraphPreview, "triggerParagraphPreview"),
             (playSound, "triggerPlaySound"),
             (soundFile, "triggerSoundFile"),
             (speak, "triggerSpeak"),
@@ -678,6 +841,54 @@ final class TriggerDetailView: NSView {
     @objc private func matchTesterChanged(_ sender: Any?) {
         guard !isUpdatingTestStringHighlight else { return }
         updateMatchTester()
+    }
+
+    private func configureParagraphPreview() {
+        let controls: [NSControl] = [
+            paragraphBackground,
+            paragraphBackgroundColor,
+            paragraphBackgroundHash,
+            strokeEnabled,
+            strokeColor,
+            strokeHash,
+            strokeStyle,
+            borderEnabled,
+            borderStyle,
+            alignmentEnabled,
+            alignment,
+            leftIndentEnabled,
+            rightIndentEnabled,
+            topPaddingEnabled,
+            bottomPaddingEnabled,
+        ]
+        for control in controls {
+            control.target = self
+            control.action = #selector(paragraphPreviewChanged(_:))
+        }
+        for field in [strokeWidth, borderWidth, leftIndent, rightIndent, topPadding, bottomPadding] {
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(paragraphPreviewChanged(_:)),
+                name: NSControl.textDidChangeNotification,
+                object: field
+            )
+        }
+    }
+
+    @objc private func paragraphPreviewChanged(_ sender: Any?) {
+        updateParagraphPreview()
+        refreshAccessibilityStateDescriptions()
+    }
+
+    private func updateParagraphPreview() {
+        var paragraph = ParagraphStyle()
+        let patch = paragraphPatch()
+        patch.applying(to: &paragraph)
+        paragraphPreview.configuration = .init(
+            paragraph: paragraph,
+            backgroundHash: patch.backgroundHash,
+            strokeHash: patch.strokeHash
+        )
     }
 
     private func currentMatchDefinition() -> MatchDefinition {
@@ -808,14 +1019,20 @@ final class TriggerDetailView: NSView {
 
     private func paragraphPane() -> NSView {
         strokeStyle.addItems(withTitles: ["Outline", "Top", "Bottom"])
-        return padded(stack([
+        paragraphPreview.translatesAutoresizingMaskIntoConstraints = false
+        paragraphPreview.heightAnchor.constraint(equalToConstant: 100).isActive = true
+        paragraphPreview.widthAnchor.constraint(greaterThanOrEqualToConstant: 520).isActive = true
+        let content = stack([
             row([paragraphBackground, paragraphBackgroundColor, paragraphBackgroundHash]),
             row([strokeEnabled, fixed(strokeWidth, width: 64), strokeColor, strokeHash, label("Style:"), strokeStyle]),
             row([borderEnabled, fixed(borderWidth, width: 64), label("Border Style:"), borderStyle]),
             row([alignmentEnabled, alignment]),
             row([leftIndentEnabled, fixed(leftIndent, width: 80), rightIndentEnabled, fixed(rightIndent, width: 80)]),
             row([topPaddingEnabled, fixed(topPadding, width: 80), bottomPaddingEnabled, fixed(bottomPadding, width: 80)]),
-        ]))
+            paragraphPreview,
+        ])
+        content.spacing = 4
+        return padded(content)
     }
 
     private func soundPane(speechScroll: NSScrollView) -> NSView {

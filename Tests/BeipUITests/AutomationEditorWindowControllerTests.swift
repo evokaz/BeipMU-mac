@@ -81,6 +81,51 @@ final class AutomationEditorWindowControllerTests: XCTestCase {
         XCTAssertEqual(error.accessibilityLabel(), "Trigger test error")
     }
 
+    func testTriggerDetailParagraphPreviewReflectsParagraphSettings() throws {
+        let detail = TriggerDetailView()
+        let patch = ParagraphPatch(
+            alignment: .right,
+            leftIndent: 12,
+            rightIndent: 8,
+            topPadding: 5,
+            bottomPadding: 7,
+            background: .black,
+            borderWidth: 3,
+            borderStyle: .round,
+            strokeWidth: 2,
+            strokeColor: .white,
+            strokeStyle: .bottom
+        )
+
+        detail.testingConfigureParagraphPreview(patch)
+
+        let preview = detail.testingParagraphPreviewStyle
+        XCTAssertEqual(preview.alignment, .right)
+        XCTAssertEqual(preview.leftIndent, 12)
+        XCTAssertEqual(preview.rightIndent, 8)
+        XCTAssertEqual(preview.topPadding, 5)
+        XCTAssertEqual(preview.bottomPadding, 7)
+        XCTAssertEqual(preview.background, .black)
+        XCTAssertEqual(preview.borderWidth, 3)
+        XCTAssertEqual(preview.borderStyle, .round)
+        XCTAssertEqual(preview.strokeWidth, 2)
+        XCTAssertEqual(preview.strokeColor, .white)
+        XCTAssertEqual(preview.strokeStyle, .bottom)
+
+        let tabs = try XCTUnwrap(
+            recursiveSubviews(of: detail)
+                .compactMap { $0 as? NSTabView }
+                .first { $0.accessibilityIdentifier() == "triggerActionTabs" }
+        )
+        tabs.selectTabViewItem(withIdentifier: "Paragraph")
+        let previewView = try XCTUnwrap(
+            recursiveSubviews(of: detail)
+                .first { $0.accessibilityIdentifier() == "triggerParagraphPreview" }
+        )
+        XCTAssertEqual(previewView.accessibilityLabel(), "Paragraph preview")
+        XCTAssertTrue((previewView.accessibilityValue() as? String)?.contains("right aligned") == true)
+    }
+
     private static func backgroundColor(in value: NSAttributedString, at location: Int) -> NSColor? {
         value.attribute(.backgroundColor, at: location, effectiveRange: nil) as? NSColor
     }
