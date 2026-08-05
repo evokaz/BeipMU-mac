@@ -3317,20 +3317,18 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     private static func legacyMacroKey(for event: NSEvent) -> String? {
-        let specialKeys: [UInt16: String] = [
-            122: "F1", 120: "F2", 99: "F3", 118: "F4", 96: "F5", 97: "F6",
-            98: "F7", 100: "F8", 101: "F9", 109: "F10", 103: "F11", 111: "F12",
-            82: "NumPad0", 83: "NumPad1", 84: "NumPad2", 85: "NumPad3", 86: "NumPad4",
-            87: "NumPad5", 88: "NumPad6", 89: "NumPad7", 91: "NumPad8", 92: "NumPad9",
-        ]
-        let base = specialKeys[event.keyCode] ?? event.charactersIgnoringModifiers?.uppercased()
-        guard let base, !base.isEmpty else { return nil }
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        var prefix: [String] = []
-        if modifiers.contains(.control) { prefix.append("Control") }
-        if modifiers.contains(.option) { prefix.append("Alt") }
-        if modifiers.contains(.shift) { prefix.append("Shift") }
-        return (prefix + [base]).joined(separator: "+")
+        guard !modifiers.contains(.command) else { return nil }
+        guard let base = KeyboardMacroKey.keyName(
+            forKeyCode: event.keyCode,
+            characters: event.charactersIgnoringModifiers
+        ) else { return nil }
+        return KeyboardMacroKey.pressedKey(
+            key: base,
+            control: modifiers.contains(.control),
+            alt: modifiers.contains(.option),
+            shift: modifiers.contains(.shift)
+        )
     }
 
     private func submitLine(_ line: String) {

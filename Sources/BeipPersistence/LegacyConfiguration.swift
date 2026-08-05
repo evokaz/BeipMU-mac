@@ -187,9 +187,7 @@ public struct LegacyConfigurationDocument: Sendable {
         relativePath: [String],
         quoted: Bool = true
     ) throws {
-        let nestedCollectionPath = collectionPath.last?.caseInsensitiveCompare("Aliases") == .orderedSame
-            ? ["Aliases"]
-            : ["Triggers"]
+        let nestedCollectionPath = Self.nestedCollectionPath(for: collectionPath)
         guard indexPath.count != 1 else {
             try upsertValue(value, inUnnamedBlockAt: indexPath[0], collectionPath: collectionPath, relativePath: relativePath, quoted: quoted)
             return
@@ -271,9 +269,7 @@ public struct LegacyConfigurationDocument: Sendable {
         collectionPath: [String],
         relativePath: [String]
     ) -> String? {
-        let nestedCollectionPath = collectionPath.last?.caseInsensitiveCompare("Aliases") == .orderedSame
-            ? ["Aliases"]
-            : ["Triggers"]
+        let nestedCollectionPath = Self.nestedCollectionPath(for: collectionPath)
         guard indexPath.count != 1 else {
             return value(inUnnamedBlockAt: indexPath[0], collectionPath: collectionPath, relativePath: relativePath)
         }
@@ -569,6 +565,105 @@ public struct LegacyConfigurationDocument: Sendable {
 
     public func serialized() -> String { source }
 
+    /// Returns complete source slices for unnamed entries, including comments
+    /// attached to those entries. This is used for lossless macro import and
+    /// export when the Mac projection does not know every Windows field.
+    public func rawUnnamedBlockSources(at collectionPath: [String]) -> [String] {
+        guard let children = descend(collectionPath, nodes: nodes) else { return [] }
+        return children.compactMap { node in
+            guard case let .block(name: nil, children: _, insertionIndex: _, sourceRange: range) = node else { return nil }
+            return String(source[expandedRemovalRange(range)])
+        }
+    }
+
+    public func rawUnnamedBlockSource(
+        at indexPath: [Int],
+        collectionPath: [String],
+        nestedCollectionPath: [String] = []
+    ) -> String? {
+        guard let range = unnamedBlock(
+            at: indexPath,
+            collectionPath: collectionPath,
+            nestedCollectionPath: nestedCollectionPath.isEmpty
+                ? Self.nestedCollectionPath(for: collectionPath)
+                : nestedCollectionPath
+        )?.sourceRange else { return nil }
+        return String(source[expandedRemovalRange(range)])
+    }
+
+    /// Finds all collections with the supplied name, regardless of scope.
+    /// Config.txt uses the same KeyboardMacros2 block name globally and below
+    /// worlds, characters, and folders.
+    public func rawUnnamedBlockSources(named collectionName: String) -> [String] {
+        func collect(_ nodes: [Node]) -> [String] {
+            nodes.flatMap { node in
+                switch node {
+                    case let .block(name, children, _, _):
+                    if name?.caseInsensitiveCompare(collectionName) == .orderedSame {
+                        // Do not recurse into a matched collection: nested
+                        // KeyboardMacros2 blocks are children of the macro
+                        // subtree we are already copying.
+                        let local: [String] = children.compactMap { child in
+                            guard case let .block(name: nil, children: _, insertionIndex: _, sourceRange: range) = child else { return nil }
+                            return String(source[expandedRemovalRange(range)])
+                        }
+                        return local
+                    }
+                    return collect(children)
+                case .assignment, .bare:
+                    return []
+                }
+            }
+        }
+        return collect(nodes)
+    }
+
+    /// Appends a serialized unnamed block without projecting or rewriting it.
+    /// Unknown fields, comments, nested children, and source ordering inside
+    /// the block are therefore preserved during cross-scope copies/imports.
+    @discardableResult
+    public mutating func appendRawUnnamedBlock(
+        _ rawSource: String,
+        at collectionPath: [String],
+        nestedIn parentIndexPath: [Int] = [],
+        nestedCollectionPath: [String] = [],
+        index requestedIndex: Int? = nil
+    ) throws -> Int {
+        let childCollectionPath = nestedCollectionPath.isEmpty
+            ? Self.nestedCollectionPath(for: collectionPath)
+            : nestedCollectionPath
+        if parentIndexPath.isEmpty {
+            if blockInsertionIndex(at: collectionPath, nodes: nodes) == nil { try ensureBlocks(at: collectionPath) }
+        } else {
+            try ensureBlocks(
+                at: childCollectionPath,
+                inUnnamedBlockAt: parentIndexPath,
+                collectionPath: collectionPath,
+                nestedCollectionPath: childCollectionPath
+            )
+        }
+        let count = unnamedBlockCount(
+            at: collectionPath,
+            nestedIn: parentIndexPath,
+            nestedCollectionPath: childCollectionPath
+        )
+        let index = min(max(0, requestedIndex ?? count), count)
+        guard let insertion = unnamedBlockInsertionIndex(
+            at: index,
+            collectionPath: collectionPath,
+            nestedIn: parentIndexPath,
+            nestedCollectionPath: childCollectionPath
+        ) else {
+            throw LegacyConfigurationError.missingPath(collectionPath.joined(separator: "."))
+        }
+        let prefix = source[..<insertion].last.map { $0.isNewline ? "" : preferredLineEnding } ?? ""
+        let suffix = rawSource.last.map { $0.isNewline ? "" : preferredLineEnding } ?? preferredLineEnding
+        source.insert(contentsOf: prefix + rawSource + suffix, at: insertion)
+        var parser = LegacyParser(source: source)
+        nodes = try parser.parse()
+        return index
+    }
+
     private var preferredLineEnding: String {
         source.contains("\r\n") ? "\r\n" : "\n"
     }
@@ -808,6 +903,16 @@ public struct LegacyConfigurationDocument: Sendable {
     private static func unnamedBlockCount(in nodes: [Node]) -> Int {
         nodes.reduce(into: 0) { count, node in
             if case .block(name: nil, children: _, insertionIndex: _, sourceRange: _) = node { count += 1 }
+        }
+    }
+
+    private static func nestedCollectionPath(for collectionPath: [String]) -> [String] {
+        guard let name = collectionPath.last?.lowercased() else { return ["Triggers"] }
+        switch name {
+        case "aliases": return ["Aliases"]
+        case "triggers": return ["Triggers"]
+        case "keyboardmacros2", "keyboardmacros": return ["KeyboardMacros2"]
+        default: return ["Triggers"]
         }
     }
 

@@ -135,6 +135,31 @@ final class AutomationTests: XCTestCase {
         XCTAssertNil(KeyboardMacroEngine.macro(for: "Control+N", groups: [character, server, global]))
     }
 
+    func testKeyboardMacroKeysCanonicalizeWildcardsAndExtendedVocabulary() {
+        XCTAssertEqual(KeyboardMacroKey.canonical("ctrl+option+f01"), "Control+Alt+F1")
+        XCTAssertEqual(KeyboardMacroKey.canonical("Control+Option+Shift+M"), "Control+Alt+Shift+M")
+        XCTAssertEqual(KeyboardMacroKey.pressedKey(key: "M", control: true, shift: true), "Control+Shift+M")
+        XCTAssertEqual(KeyboardMacroKey.canonical("?Control+Alt+A"), "?Control+Alt+A")
+        XCTAssertEqual(KeyboardMacroKey.displayString("?Control+Alt+NumPad8"), "Control + Option + NumPad8")
+        XCTAssertTrue(KeyboardMacroKey.isSupportedKey("NumPadAdd"))
+        XCTAssertTrue(KeyboardMacroKey.isSupportedKey("PageDown"))
+        XCTAssertFalse(KeyboardMacroKey.isSupportedKey("Command"))
+        XCTAssertFalse(KeyboardMacroKey.matches(configured: "Command+A", pressed: "A"))
+        XCTAssertTrue(KeyboardMacroKey.matches(configured: "?Control+Alt+A", pressed: "Alt+A"))
+        XCTAssertTrue(KeyboardMacroKey.matches(configured: "A", pressed: "A"))
+    }
+
+    func testKeyboardMacroInactiveFolderGroupDoesNotMatchChildren() {
+        let folder = KeyboardMacro(
+            macro: "",
+            key: "",
+            folder: true,
+            children: [.init(macro: "north", key: "N")],
+            childrenActive: false
+        )
+        XCTAssertNil(KeyboardMacroEngine.macro(for: "N", groups: [.init(macros: [folder])]))
+    }
+
     func testAliasHierarchyRunsFoldersAlwaysAndChildrenOnlyAfterParentMatch() throws {
         let nested = Alias(match: .init(text: "north"), replacement: "N")
         let folder = Alias(

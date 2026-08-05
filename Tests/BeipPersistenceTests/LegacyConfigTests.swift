@@ -1440,6 +1440,64 @@ final class LegacyConfigTests: XCTestCase {
         XCTAssertTrue(workspace.globalMacros.isEmpty)
     }
 
+    func testKeyboardMacroNestedCRUDMovesAndRawImportExport() throws {
+        var workspace = try LegacyConfigurationWorkspace(document: .init(source: """
+        Version=331
+        Connections {
+          KeyboardMacros2 { Active=true
+            // retained macro comment
+            { Description="Folder" Folder=true Custom="keep"
+              KeyboardMacros2 { Active=true
+                { Description="Child" Macro="north" key=?Control+Alt+N Type=true Unknown="keep" }
+              }
+            }
+            { Description="Second" Macro="south" key=F1 }
+          }
+        }
+        """))
+
+        XCTAssertEqual(workspace.macro(at: [0, 0], in: .global)?.macro, "north")
+        var copied = try workspace.copyMacro(
+            at: [0, 0],
+            in: .global,
+            to: .global,
+            parentPath: [],
+            index: 2
+        )
+        XCTAssertEqual(copied, [2])
+        copied = try workspace.moveMacro(
+            at: [1],
+            in: .global,
+            to: .global,
+            parentPath: [0],
+            index: 1
+        )
+        XCTAssertEqual(copied, [0, 1])
+        var edited = try XCTUnwrap(workspace.macro(at: [0, 0], in: .global))
+        edited.description = "Edited"
+        edited.macro = "east"
+        edited.key = "Control+E"
+        try workspace.updateMacro(at: [0, 0], in: .global, macro: edited)
+        XCTAssertEqual(workspace.macro(at: [0, 0], in: .global)?.description, "Edited")
+        let rendered = try workspace.renderedDocument().serialized()
+        XCTAssertTrue(rendered.contains("retained macro comment"))
+        XCTAssertTrue(rendered.contains("Custom=\"keep\""))
+        XCTAssertTrue(rendered.contains("Unknown=\"keep\""))
+
+        let imported = try LegacyConfigurationDocument(source: """
+        Version=331
+        Connections {
+          Shortcuts { World { KeyboardMacros2 {
+            { Description="Imported" Macro="west" key=NumPad4 Vendor="preserve" }
+          } } }
+        }
+        """)
+        XCTAssertEqual(try workspace.importMacros(from: imported, into: .global), 1)
+        XCTAssertEqual(workspace.globalMacros.last?.description, "Imported")
+        let exported = try workspace.exportMacros(in: .global, path: [2])
+        XCTAssertTrue(exported.serialized().contains("Vendor=\"preserve\""))
+    }
+
     func testAliasWindowsFieldsAndNestedCRUDPreserveUnknownPayloads() throws {
         let source = """
         Version=331

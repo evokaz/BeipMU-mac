@@ -786,6 +786,83 @@ final class AutomationEditorWindowControllerTests: XCTestCase {
         XCTAssertEqual(library.workspace.alias(at: [0, 1], in: .global)?.example, "bt 5")
     }
 
+    func testMacroEditorUsesWindowsLayoutAndStagesApply() throws {
+        let workspace = try Self.workspace(
+            """
+            Version=331
+            Connections {
+              KeyboardMacros2 { Active=true
+                { Description="Folder" Folder=true Custom="keep"
+                  KeyboardMacros2 { { Description="Child" Macro="north" key=Control+Alt+N Type=true } }
+                }
+              }
+            }
+            """
+        )
+        let library = ProfileLibrary(workspace: workspace)
+        let controller = AutomationEditorWindowController(library: library, kind: .macros)
+        defer { controller.close() }
+        let window = try XCTUnwrap(controller.window)
+        let content = try XCTUnwrap(controller.window?.contentView)
+        content.layoutSubtreeIfNeeded()
+
+        XCTAssertEqual(window.contentRect(forFrameRect: window.frame).width, 760, accuracy: 2)
+        XCTAssertEqual(window.contentRect(forFrameRect: window.frame).height, 525, accuracy: 25)
+        let outline = try XCTUnwrap(
+            recursiveSubviews(of: content)
+                .compactMap { $0 as? NSOutlineView }
+                .first { $0.accessibilityIdentifier() == "macroScopeOutline" }
+        )
+        XCTAssertNotNil(try? button(identifier: "macroApply", in: content))
+        XCTAssertNotNil(try? button(identifier: "macroOK", in: content))
+        XCTAssertNotNil(try? button(identifier: "macroCancel", in: content))
+        XCTAssertNotNil(try? button(identifier: "macroHelp", in: content))
+
+        let childRow = try XCTUnwrap(row(titled: "Child", in: outline))
+        outline.selectRowIndexes(.init(integer: childRow), byExtendingSelection: false)
+        controller.outlineViewSelectionDidChange(.init(
+            name: NSOutlineView.selectionDidChangeNotification,
+            object: outline
+        ))
+        let keyField = try textField(identifier: "macroKeyCapture", in: content)
+        let click = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 1
+        ))
+        keyField.mouseDown(with: click)
+        XCTAssertTrue(controller.window?.firstResponder === keyField)
+        keyField.keyDown(with: try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [.control, .shift],
+            timestamp: 0,
+            windowNumber: window.windowNumber,
+            context: nil,
+            characters: "m",
+            charactersIgnoringModifiers: "m",
+            isARepeat: false,
+            keyCode: 46
+        )))
+        XCTAssertEqual(keyField.stringValue, "Control + Shift + M")
+        XCTAssertEqual(keyField.accessibilityValue(), "Control + Shift + M")
+
+        let description = try textField(identifier: "macroDescription", in: content)
+        description.stringValue = "Edited Child"
+        try button(identifier: "macroApply", in: content).performClick(nil)
+
+        XCTAssertEqual(library.workspace.macro(at: [0, 0], in: .global)?.description, "Edited Child")
+        XCTAssertEqual(library.workspace.macro(at: [0, 0], in: .global)?.key, "Control+Shift+M")
+        XCTAssertTrue(try library.workspace.renderedDocument().serialized().contains("Custom=\"keep\""))
+        XCTAssertTrue(try library.workspace.renderedDocument().serialized().contains("Type=true"))
+    }
+
     func testAutomationDebuggerDisplaysTriggerSkipReasons() throws {
         let controller = AutomationDebugWindowController(kind: .triggers)
         defer { controller.close() }

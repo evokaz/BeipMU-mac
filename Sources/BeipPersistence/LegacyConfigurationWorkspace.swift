@@ -29,6 +29,7 @@ public struct LegacyConfigurationWorkspace: Sendable {
         case automationEntryNotFound
         case emptyName
         case duplicateName(String)
+        case macroTextTooLong
 
         public var errorDescription: String? {
             switch self {
@@ -38,6 +39,7 @@ public struct LegacyConfigurationWorkspace: Sendable {
             case .automationEntryNotFound: "The selected automation entry no longer exists."
             case .emptyName: "Names cannot be empty."
             case let .duplicateName(name): "“\(name)” is already in use at this level."
+            case .macroTextTooLong: "Macro Text cannot exceed 65,536 characters."
             }
         }
     }
@@ -155,6 +157,19 @@ public struct LegacyConfigurationWorkspace: Sendable {
         case let .character(serverID, characterID): character(serverID: serverID, characterID: characterID)?.macros.macros ?? []
         case let .puppet(serverID, characterID, puppetID): puppet(serverID: serverID, characterID: characterID, puppetID: puppetID)?.macros.macros ?? []
         }
+    }
+
+    public func macroGroup(in scope: AutomationScope) -> KeyboardMacroGroup {
+        switch scope {
+        case .global: projection.automation.macros
+        case let .server(id): server(id)?.automation.macros ?? .init()
+        case let .character(serverID, characterID): character(serverID: serverID, characterID: characterID)?.macros ?? .init()
+        case let .puppet(serverID, characterID, puppetID): puppet(serverID: serverID, characterID: characterID, puppetID: puppetID)?.macros ?? .init()
+        }
+    }
+
+    public func macro(at path: [Int], in scope: AutomationScope) -> KeyboardMacro? {
+        Self.macro(at: path, in: macros(in: scope))
     }
 
     public func variables(in scope: AutomationScope) throws -> [String: String] {
@@ -310,7 +325,297 @@ public struct LegacyConfigurationWorkspace: Sendable {
 
     @discardableResult
     public mutating func addMacro(in scope: AutomationScope, description: String = "New Macro", key: String = "Control+Alt+M", macro: String = "", typeIntoInput: Bool = false) throws -> Int {
-        try addAutomationEntry(in: scope, kind: .macros, description: description, key: key, macro: macro, typeIntoInput: typeIntoInput)
+        try addMacro(
+            in: scope,
+            parentPath: [],
+            macro: .init(description: description, macro: macro, key: key, typeIntoInput: typeIntoInput)
+        )[0]
+    }
+
+    /// Adds a complete macro subtree under a folder or at a scope root.
+    @discardableResult
+    public mutating func addMacro(
+        in scope: AutomationScope,
+        parentPath: [Int],
+        macro: KeyboardMacro
+    ) throws -> [Int] {
+        guard parentPath.isEmpty || self.macro(at: parentPath, in: scope)?.folder == true else {
+            throw WorkspaceError.automationEntryNotFound
+        }
+        let collectionPath = try automationCollectionPath(scope, kind: .macros)
+        try document.upsertValue("true", at: collectionPath + ["Active"], quoted: false)
+        let index: Int
+        if parentPath.isEmpty {
+            index = try document.appendUnnamedBlock(at: collectionPath)
+        } else {
+            index = try document.appendUnnamedBlock(
+                at: collectionPath,
+                nestedIn: parentPath,
+                nestedCollectionPath: ["KeyboardMacros2"]
+            )
+        }
+        try writeMacro(macro, at: parentPath + [index], collectionPath: collectionPath)
+        return parentPath + [index]
+    }
+
+    @discardableResult
+    public mutating func addMacro(
+        in scope: AutomationScope,
+        parentPath: [Int],
+        description: String = "New Macro",
+        key: String = "Control+Alt+M",
+        macro: String = "",
+        typeIntoInput: Bool = false,
+        folder: Bool = false
+    ) throws -> [Int] {
+        try addMacro(
+            in: scope,
+            parentPath: parentPath,
+            macro: .init(
+                description: description,
+                macro: macro,
+                key: key,
+                typeIntoInput: typeIntoInput,
+                folder: folder
+            )
+        )
+    }
+
+    public mutating func updateMacro(
+        at path: [Int],
+        in scope: AutomationScope,
+        macro: KeyboardMacro
+    ) throws {
+        guard !path.isEmpty, self.macro(at: path, in: scope) != nil else {
+            throw WorkspaceError.automationEntryNotFound
+        }
+        try writeMacro(macro, at: path, collectionPath: try automationCollectionPath(scope, kind: .macros))
+    }
+
+    public mutating func updateMacro(
+        at path: [Int],
+        in scope: AutomationScope,
+        description: String,
+        key: String,
+        macro: String,
+        typeIntoInput: Bool
+    ) throws {
+        guard var updated = self.macro(at: path, in: scope) else {
+            throw WorkspaceError.automationEntryNotFound
+        }
+        updated.description = description
+        updated.key = key
+        updated.macro = macro
+        updated.typeIntoInput = typeIntoInput
+        try updateMacro(at: path, in: scope, macro: updated)
+    }
+
+    @discardableResult
+    public mutating func removeMacro(at path: [Int], in scope: AutomationScope) throws -> Bool {
+        guard !path.isEmpty, self.macro(at: path, in: scope) != nil else {
+            throw WorkspaceError.automationEntryNotFound
+        }
+        let removed = try document.removeUnnamedBlock(
+            at: path,
+            collectionPath: try automationCollectionPath(scope, kind: .macros),
+            nestedCollectionPath: ["KeyboardMacros2"]
+        )
+        try reloadProjectionAfterAutomationEdit()
+        return removed
+    }
+
+    @discardableResult
+    public mutating func removeMacro(at index: Int, in scope: AutomationScope) throws -> Bool {
+        try removeMacro(at: [index], in: scope)
+    }
+
+    @discardableResult
+    public mutating func copyMacro(
+        at sourcePath: [Int],
+        in sourceScope: AutomationScope,
+        to destinationScope: AutomationScope,
+        parentPath destinationParentPath: [Int] = [],
+        index destinationIndex: Int? = nil
+    ) throws -> [Int] {
+        guard !sourcePath.isEmpty, macro(at: sourcePath, in: sourceScope) != nil,
+              destinationParentPath.isEmpty || macro(at: destinationParentPath, in: destinationScope)?.folder == true else {
+            throw WorkspaceError.automationEntryNotFound
+        }
+        if sourceScope == destinationScope, Self.path(destinationParentPath, hasPrefix: sourcePath) {
+            throw WorkspaceError.automationEntryNotFound
+        }
+        let sourceCollection = try automationCollectionPath(sourceScope, kind: .macros)
+        let destinationCollection = try automationCollectionPath(destinationScope, kind: .macros)
+        let destinationCount = destinationParentPath.isEmpty
+            ? macros(in: destinationScope).count
+            : macro(at: destinationParentPath, in: destinationScope)?.children.count ?? 0
+        let index = destinationIndex ?? destinationCount
+        let copied = try document.copyUnnamedBlock(
+            at: sourcePath,
+            collectionPath: sourceCollection,
+            nestedCollectionPath: ["KeyboardMacros2"],
+            to: index,
+            nestedIn: destinationParentPath,
+            destinationCollectionPath: destinationCollection,
+            destinationNestedCollectionPath: ["KeyboardMacros2"]
+        )
+        try reloadProjectionAfterAutomationEdit()
+        return copied
+    }
+
+    @discardableResult
+    public mutating func copyMacro(
+        at sourcePath: [Int],
+        in scope: AutomationScope,
+        toParentPath destinationParentPath: [Int] = [],
+        index destinationIndex: Int? = nil
+    ) throws -> [Int] {
+        try copyMacro(
+            at: sourcePath,
+            in: scope,
+            to: scope,
+            parentPath: destinationParentPath,
+            index: destinationIndex
+        )
+    }
+
+    @discardableResult
+    public mutating func moveMacro(
+        at sourcePath: [Int],
+        in sourceScope: AutomationScope,
+        to destinationScope: AutomationScope,
+        parentPath destinationParentPath: [Int] = [],
+        index destinationIndex: Int
+    ) throws -> [Int] {
+        guard !sourcePath.isEmpty, macro(at: sourcePath, in: sourceScope) != nil,
+              destinationParentPath.isEmpty || macro(at: destinationParentPath, in: destinationScope)?.folder == true else {
+            throw WorkspaceError.automationEntryNotFound
+        }
+        if sourceScope == destinationScope, Self.path(destinationParentPath, hasPrefix: sourcePath) {
+            throw WorkspaceError.automationEntryNotFound
+        }
+        let moved = try document.moveUnnamedBlock(
+            at: sourcePath,
+            collectionPath: try automationCollectionPath(sourceScope, kind: .macros),
+            nestedCollectionPath: ["KeyboardMacros2"],
+            to: destinationIndex,
+            nestedIn: destinationParentPath,
+            destinationCollectionPath: try automationCollectionPath(destinationScope, kind: .macros),
+            destinationNestedCollectionPath: ["KeyboardMacros2"]
+        )
+        try reloadProjectionAfterAutomationEdit()
+        return moved
+    }
+
+    @discardableResult
+    public mutating func moveMacro(
+        at sourcePath: [Int],
+        in scope: AutomationScope,
+        toParentPath destinationParentPath: [Int],
+        index destinationIndex: Int
+    ) throws -> [Int] {
+        try moveMacro(
+            at: sourcePath,
+            in: scope,
+            to: scope,
+            parentPath: destinationParentPath,
+            index: destinationIndex
+        )
+    }
+
+    @discardableResult
+    public mutating func indentMacro(at path: [Int], in scope: AutomationScope) throws -> [Int] {
+        guard let index = path.last, index > 0 else { throw WorkspaceError.automationEntryNotFound }
+        let parent = Array(path.dropLast()) + [index - 1]
+        let count = macro(at: parent, in: scope)?.children.count ?? 0
+        return try moveMacro(at: path, in: scope, to: scope, parentPath: parent, index: count)
+    }
+
+    @discardableResult
+    public mutating func outdentMacro(at path: [Int], in scope: AutomationScope) throws -> [Int] {
+        guard path.count > 1, let parentIndex = path.dropLast().last else {
+            throw WorkspaceError.automationEntryNotFound
+        }
+        let parent = Array(path.dropLast())
+        return try moveMacro(
+            at: path,
+            in: scope,
+            to: scope,
+            parentPath: Array(parent.dropLast()),
+            index: parentIndex + 1
+        )
+    }
+
+    public mutating func updateMacroGroupSettings(in scope: AutomationScope, active: Bool) throws {
+        let path = try automationCollectionPath(scope, kind: .macros)
+        try document.upsertValue(active ? "true" : "false", at: path + ["Active"], quoted: false)
+        try reloadProjectionAfterAutomationEdit()
+    }
+
+    public mutating func setMacroMasterActive(_ active: Bool) throws {
+        try updateMacroGroupSettings(in: .global, active: active)
+    }
+
+    /// Imports every macro subtree in a valid Config.txt into the selected
+    /// scope/folder. Source slices are appended directly so unknown fields are
+    /// not lost merely because the Mac editor does not expose them.
+    @discardableResult
+    public mutating func importMacros(
+        from imported: LegacyConfigurationDocument,
+        into scope: AutomationScope,
+        parentPath: [Int] = []
+    ) throws -> Int {
+        guard parentPath.isEmpty || macro(at: parentPath, in: scope)?.folder == true else {
+            throw WorkspaceError.automationEntryNotFound
+        }
+        let sources = imported.rawUnnamedBlockSources(named: "KeyboardMacros2")
+        guard !sources.isEmpty else { return 0 }
+        let collectionPath = try automationCollectionPath(scope, kind: .macros)
+        try document.upsertValue("true", at: collectionPath + ["Active"], quoted: false)
+        for raw in sources {
+            _ = try document.appendRawUnnamedBlock(
+                raw,
+                at: collectionPath,
+                nestedIn: parentPath,
+                nestedCollectionPath: ["KeyboardMacros2"]
+            )
+        }
+        try reloadProjectionAfterAutomationEdit()
+        return sources.count
+    }
+
+    @discardableResult
+    public mutating func importMacros(
+        from imported: LegacyConfigurationDocument,
+        in scope: AutomationScope,
+        parentPath: [Int] = []
+    ) throws -> Int {
+        try importMacros(from: imported, into: scope, parentPath: parentPath)
+    }
+
+    /// Exports one macro subtree or all macros below a selected scope/folder.
+    public func exportMacros(in scope: AutomationScope, path: [Int]? = nil) throws -> LegacyConfigurationDocument {
+        let collectionPath = try automationCollectionPath(scope, kind: .macros)
+        let sources: [String]
+        if let path {
+            guard !path.isEmpty, macro(at: path, in: scope) != nil else { throw WorkspaceError.automationEntryNotFound }
+            guard let source = document.rawUnnamedBlockSource(
+                at: path,
+                collectionPath: collectionPath,
+                nestedCollectionPath: ["KeyboardMacros2"]
+            ) else { throw WorkspaceError.automationEntryNotFound }
+            sources = [source]
+        } else {
+            sources = document.rawUnnamedBlockSources(at: collectionPath)
+        }
+        var exported = try LegacyConfigurationWorkspace.empty(isDirty: false)
+        let exportedCollection = ["Connections", "KeyboardMacros2"]
+        try exported.document.upsertValue("true", at: exportedCollection + ["Active"], quoted: false)
+        for source in sources {
+            _ = try exported.document.appendRawUnnamedBlock(source, at: exportedCollection)
+        }
+        try exported.reloadProjectionAfterAutomationEdit()
+        return try exported.renderedDocument()
     }
 
     public mutating func updateAlias(at index: Int, in scope: AutomationScope, description: String, match: MatchDefinition, replacement: String) throws {
@@ -648,6 +953,12 @@ public struct LegacyConfigurationWorkspace: Sendable {
         return alias(at: Array(path.dropFirst()), in: aliases[first].children)
     }
 
+    private static func macro(at path: [Int], in macros: [KeyboardMacro]) -> KeyboardMacro? {
+        guard let first = path.first, macros.indices.contains(first) else { return nil }
+        if path.count == 1 { return macros[first] }
+        return macro(at: Array(path.dropFirst()), in: macros[first].children)
+    }
+
     private func aliasGroup(at parentPath: [Int], in scope: AutomationScope) -> AliasGroup {
         guard let parent = alias(at: parentPath, in: scope) else {
             return aliasGroup(in: scope)
@@ -969,6 +1280,82 @@ public struct LegacyConfigurationWorkspace: Sendable {
         )
         try document.upsertValue(macro, inUnnamedBlockAt: index, collectionPath: collectionPath, relativePath: ["Macro"])
         try document.upsertValue(Self.flag(typeIntoInput), inUnnamedBlockAt: index, collectionPath: collectionPath, relativePath: ["Type"], quoted: false)
+        try reloadProjectionAfterAutomationEdit()
+    }
+
+    private mutating func writeMacro(
+        _ macro: KeyboardMacro,
+        at indexPath: [Int],
+        collectionPath: [String]
+    ) throws {
+        try document.upsertValue(
+            macro.description,
+            inUnnamedBlockAt: indexPath,
+            collectionPath: collectionPath,
+            relativePath: ["Description"]
+        )
+        try document.upsertValue(
+            KeyboardMacroKey.canonical(macro.key),
+            inUnnamedBlockAt: indexPath,
+            collectionPath: collectionPath,
+            relativePath: ["key"],
+            quoted: false
+        )
+        try document.upsertValue(
+            macro.macro,
+            inUnnamedBlockAt: indexPath,
+            collectionPath: collectionPath,
+            relativePath: ["Macro"]
+        )
+        try document.upsertValue(
+            Self.flag(macro.typeIntoInput),
+            inUnnamedBlockAt: indexPath,
+            collectionPath: collectionPath,
+            relativePath: ["Type"],
+            quoted: false
+        )
+        try writeFlag(macro.folder, at: indexPath, collectionPath: collectionPath, path: ["Folder"])
+        let existingChildCount = document.unnamedBlockCount(
+            at: collectionPath,
+            nestedIn: indexPath,
+            nestedCollectionPath: ["KeyboardMacros2"]
+        )
+        let hasChildGroup = !macro.children.isEmpty
+            || existingChildCount > 0
+            || !macro.childrenActive
+            || document.value(
+                inUnnamedBlockAt: indexPath,
+                collectionPath: collectionPath,
+                relativePath: ["KeyboardMacros2", "Active"]
+            ) != nil
+        if hasChildGroup {
+            try document.upsertValue(
+                Self.flag(macro.childrenActive),
+                inUnnamedBlockAt: indexPath,
+                collectionPath: collectionPath,
+                relativePath: ["KeyboardMacros2", "Active"],
+                quoted: false
+            )
+        }
+        if macro.children.count < existingChildCount {
+            for childIndex in stride(from: existingChildCount - 1, through: macro.children.count, by: -1) {
+                _ = try document.removeUnnamedBlock(
+                    at: indexPath + [childIndex],
+                    collectionPath: collectionPath,
+                    nestedCollectionPath: ["KeyboardMacros2"]
+                )
+            }
+        }
+        for (childIndex, child) in macro.children.enumerated() {
+            if childIndex >= existingChildCount {
+                _ = try document.appendUnnamedBlock(
+                    at: collectionPath,
+                    nestedIn: indexPath,
+                    nestedCollectionPath: ["KeyboardMacros2"]
+                )
+            }
+            try writeMacro(child, at: indexPath + [childIndex], collectionPath: collectionPath)
+        }
         try reloadProjectionAfterAutomationEdit()
     }
 

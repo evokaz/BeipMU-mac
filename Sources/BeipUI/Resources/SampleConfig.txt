@@ -1,0 +1,47 @@
+Version=329
+Connections
+{
+  KeyboardMacros2
+  {
+    {
+      Macro="OOC Quick Message: Something's come up in RL. I'll be back momentarily"
+      key=Control+Alt+A
+    }
+    {
+      Macro="SW"
+      key=NumPad1
+    }
+    {
+      Macro="S"
+      key=NumPad2
+    }
+    {
+      Macro="SE"
+      key=NumPad3
+    }
+    {
+      Macro="W"
+      key=NumPad4
+    }
+    {
+      Macro="E"
+      key=NumPad6
+    }
+    {
+      Macro="NW"
+      key=NumPad7
+    }
+    {
+      Macro="N"
+      key=NumPad8
+    }
+    {
+      Macro="NE"
+      key=NumPad9
+    }
+    {
+      Macro="/@window.input.Set(\"@emit \"+window.input.get().replace(/\\n/g, \"\\n@emit \"));"
+      key=Control+T
+    }
+  }
+}

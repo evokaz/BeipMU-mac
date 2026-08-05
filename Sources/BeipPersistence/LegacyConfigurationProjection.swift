@@ -256,7 +256,7 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
     }
 
     public var connectionPolicy: ConnectionPolicy {
-        .init(
+        return .init(
             connectTimeoutMilliseconds: settings.connectTimeoutMilliseconds,
             retryCount: settings.connectRetryCount,
             retryForever: settings.retryForever,
@@ -630,13 +630,22 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
     }
 
     private static func macro(_ nodes: [LegacyConfigurationDocument.Node]) -> KeyboardMacro {
-        .init(
-            description: nodes.value("Description") ?? "",
-            macro: nodes.value("Macro") ?? "",
-            key: nodes.value("key") ?? "",
-            typeIntoInput: nodes.bool("Type") ?? false,
-            folder: nodes.bool("Folder") ?? false,
-            children: macroGroup(from: nodes.firstBlock(named: "KeyboardMacros2")?.children).macros
+        let childGroup = nodes.firstBlock(named: "KeyboardMacros2")
+        let description = nodes.value("Description") ?? ""
+        let text = nodes.value("Macro") ?? ""
+        let key = nodes.value("key") ?? ""
+        let typeIntoInput = nodes.bool("Type") ?? false
+        let folder = nodes.bool("Folder") ?? false
+        let childrenActive = childGroup?.children.bool("Active") ?? true
+        let children = macroGroup(from: childGroup?.children).macros
+        return .init(
+            description: description,
+            macro: text,
+            key: key,
+            typeIntoInput: typeIntoInput,
+            folder: folder,
+            children: children,
+            childrenActive: childrenActive
         )
     }
 

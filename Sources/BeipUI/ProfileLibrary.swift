@@ -5,6 +5,7 @@ import Foundation
 @MainActor
 final class ProfileLibrary {
     private(set) var workspace: LegacyConfigurationWorkspace
+    private(set) var workspaceRevision: UInt64 = 0
     private let persistentConfigURL: URL?
     private let sidecarURL: URL
     private var changeObservers: [UUID: () -> Void] = [:]
@@ -58,6 +59,53 @@ final class ProfileLibrary {
 
     var displayName: String { "BeipMU Configuration" }
 
+    struct WorkspaceEditorSnapshot {
+        let workspace: LegacyConfigurationWorkspace
+        let revision: UInt64
+    }
+
+    enum WorkspaceCommitError: LocalizedError {
+        case staleWorkspace
+
+        var errorDescription: String? {
+            switch self {
+            case .staleWorkspace:
+                "The configuration changed elsewhere. Reload it before applying these edits."
+            }
+        }
+    }
+
+    func beginWorkspaceEditor() -> WorkspaceEditorSnapshot {
+        .init(workspace: workspace, revision: workspaceRevision)
+    }
+
+    /// Commits a staged workspace only if the live library is still the
+    /// revision from which the editor started. This keeps Apply atomic and
+    /// prevents a stale macro window from overwriting another editor/session.
+    func commit(
+        _ candidate: LegacyConfigurationWorkspace,
+        expectedRevision: UInt64
+    ) throws {
+        guard expectedRevision == workspaceRevision else {
+            throw WorkspaceCommitError.staleWorkspace
+        }
+        if let persistentConfigURL,
+           let currentData = try? Data(contentsOf: persistentConfigURL),
+           let currentSource = String(data: currentData, encoding: .utf8),
+           currentSource != workspace.document.serialized() {
+            throw WorkspaceCommitError.staleWorkspace
+        }
+        var saved = candidate
+        if let persistentConfigURL {
+            let rendered = try saved.renderedDocument()
+            try writePersistent(rendered, to: persistentConfigURL)
+            saved.acceptSavedDocument(rendered, at: persistentConfigURL)
+        }
+        workspace = saved
+        workspaceRevision &+= 1
+        notifyChangeObservers()
+    }
+
     var keyEquivalents: [String: String] {
         (try? MacSidecarStore.load(from: sidecarURL).keyEquivalents) ?? [:]
     }
@@ -89,6 +137,7 @@ final class ProfileLibrary {
     func newConfiguration() throws {
         workspace = try .empty(isDirty: persistentConfigURL == nil)
         if persistentConfigURL != nil { try persistCurrentWorkspace() }
+        workspaceRevision &+= 1
         notifyChangeObservers()
     }
 
@@ -112,6 +161,7 @@ final class ProfileLibrary {
         } else {
             workspace = imported
         }
+        workspaceRevision &+= 1
         notifyChangeObservers()
     }
 
@@ -124,6 +174,7 @@ final class ProfileLibrary {
             candidate.acceptSavedDocument(rendered, at: persistentConfigURL)
         }
         workspace = candidate
+        workspaceRevision &+= 1
         notifyChangeObservers()
     }
 
