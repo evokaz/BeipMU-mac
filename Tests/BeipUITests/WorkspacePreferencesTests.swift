@@ -89,6 +89,48 @@ final class WorkspacePreferencesTests: XCTestCase {
     }
 
     @MainActor
+    func testFirstShownTabRestoresInputHeightAfterHiddenLayout() throws {
+        var workspace = try LegacyConfigurationWorkspace.empty(isDirty: false)
+        _ = workspace.addServer(named: "World")
+        let server = try XCTUnwrap(workspace.servers.first).profile
+        let library = ProfileLibrary(workspace: workspace)
+        let preferences = WorkspacePreferences(inputHeight: 137)
+        let first = ClientWindowController(
+            profileLibrary: library,
+            initialPreferences: preferences
+        )
+        let second = ClientWindowController(
+            profileLibrary: library,
+            initialPreferences: preferences
+        )
+        defer {
+            first.close()
+            second.close()
+        }
+
+        first.restoreOpenTab(server: server, character: nil)
+        let firstSplit = try XCTUnwrap(
+            recursiveSubviews(of: try XCTUnwrap(first.window?.contentView))
+                .compactMap { $0 as? NSSplitView }
+                .first { $0.accessibilityIdentifier() == "commandInputSplit" }
+        )
+        firstSplit.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(firstSplit.bounds.height, 0)
+
+        let group = ClientTabGroup(first)
+        group.add(second)
+        group.select(second, sender: nil)
+        firstSplit.setPosition(100, ofDividerAt: 0)
+        XCTAssertNotEqual(firstSplit.subviews[1].frame.height, 137, accuracy: 1)
+
+        group.select(first, sender: nil)
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        first.window?.contentView?.layoutSubtreeIfNeeded()
+
+        XCTAssertEqual(firstSplit.subviews[1].frame.height, 137, accuracy: 1)
+    }
+
+    @MainActor
     func testAIWindowUsesNativeAccessibleSurfaceAndProfileState() throws {
         let controller = AIWindowController(profileKey: "ai-profile")
         controller.updateEndpoint(URL(string: "https://example.invalid/ai")!)

@@ -840,6 +840,17 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
 
     required init?(coder: NSCoder) { nil }
 
+    override func showWindow(_ sender: Any?) {
+        super.showWindow(sender)
+        // Restored tabs can be laid out while hidden. Reapply the saved input
+        // height after AppKit has completed the visible layout.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let window = self.window, window.isVisible else { return }
+            window.contentView?.layoutSubtreeIfNeeded()
+            self.restoreInputHeight()
+        }
+    }
+
     func windowWillClose(_ notification: Notification) {
         profileLibrary.removeChangeObserver(profileLibraryObserverID)
         profileLibraryObserverID = nil
