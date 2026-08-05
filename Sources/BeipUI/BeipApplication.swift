@@ -623,6 +623,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         let appItem = NSMenuItem()
         main.addItem(appItem)
         let appMenu = NSMenu()
+        appMenu.autoenablesItems = false
         appItem.submenu = appMenu
         appMenu.addItem(withTitle: "About BeipMU", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
@@ -679,6 +680,10 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         connectionMenu.addItem(debuggersItem)
         connectionMenu.addItem(.separator())
         connectionMenu.addItem(withTitle: "Worlds & Characters…", action: #selector(manageProfiles(_:)), keyEquivalent: "")
+
+        let toolsItem = NSMenuItem()
+        main.addItem(toolsItem)
+        toolsItem.submenu = ApplicationMenuBuilder.makeToolsMenu()
 
         let editItem = NSMenuItem()
         main.addItem(editItem)
@@ -756,6 +761,12 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
             to: windowMenu,
             action: .toggleInputHistory,
             selector: #selector(toggleInputHistoryWindow(_:))
+        )
+        windowMenu.addItem(.separator())
+        ApplicationMenuBuilder.addWindowItems(
+            to: windowMenu,
+            includeCreationItems: false,
+            includeInputHistory: false
         )
         windowMenu.addItem(.separator())
         windowMenu.addItem(withTitle: "Show Previous Tab", action: #selector(NSWindow.selectPreviousTab(_:)), keyEquivalent: "{")

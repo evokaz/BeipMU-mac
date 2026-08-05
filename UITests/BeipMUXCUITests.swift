@@ -27,6 +27,23 @@ final class BeipMUXCUITests: XCTestCase {
         }
         app.typeKey(.escape, modifierFlags: [])
 
+        app.menuBars.menuBarItems["Tools"].click()
+        for title in [
+            "Triggers…", "Macros…", "Aliases…", "Smart Paste…",
+        ] {
+            XCTAssertTrue(app.menuItems[title].exists, "Missing native application-menu item: \(title)")
+        }
+        app.typeKey(.escape, modifierFlags: [])
+
+        app.menuBars.menuBarItems["Window"].click()
+        for title in [
+            "Toggle Image Window", "Toggle Map Window", "Toggle Character Notes Window",
+            "Copy all window settings", "Paste all window settings", "Show Hidden Captions",
+        ] {
+            XCTAssertTrue(app.menuItems[title].exists, "Missing native window-menu item: \(title)")
+        }
+        app.typeKey(.escape, modifierFlags: [])
+
         XCTAssertTrue(waitUntil { quickConnect.isHittable })
         quickConnect.click()
         XCTAssertTrue(app.menus.firstMatch.waitForExistence(timeout: 2))
