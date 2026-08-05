@@ -1,0 +1,72 @@
+Version=331
+Connections
+{
+  Triggers
+  {
+    Active=true
+    {
+      Description="Activity Sound"
+      FindString.MatchText="activity"
+      Activate
+      {
+        Active=true
+        Activity=true
+      }
+    }
+    {
+      Description="Speak all text"
+      FindString
+      {
+        MatchText=".*"
+        RegularExpression=true
+      }
+      Speech
+      {
+        Active=true
+        Say=""
+        WholeLine=true
+      }
+    }
+    {
+      Description="Highlight words"
+      FindString
+      {
+        MatchText="\\b(?:important|attention|warning)\\b"
+        RegularExpression=true
+      }
+      Color
+      {
+        Active=true
+        UseForeColor=true
+        Fore="#FFFF00"
+      }
+    }
+    {
+      Description="Censor bad words"
+      FindString
+      {
+        MatchText="\\b(?:badword|profanity)\\b"
+        RegularExpression=true
+      }
+      Filter
+      {
+        Active=true
+        Replace="[censored]"
+      }
+    }
+    {
+      Description="Rainbow Text (Hash coloring)"
+      FindString
+      {
+        MatchText=".*"
+        RegularExpression=true
+      }
+      Color
+      {
+        Active=true
+        ForeHash=true
+        WholeLine=true
+      }
+    }
+  }
+}

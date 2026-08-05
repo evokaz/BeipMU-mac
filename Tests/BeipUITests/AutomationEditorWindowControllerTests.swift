@@ -282,6 +282,61 @@ final class AutomationEditorWindowControllerTests: XCTestCase {
         XCTAssertNil(library.workspace.trigger(at: [0, 2], in: .global))
     }
 
+    func testTriggerSamplesRenderAndCopyIntoSelectedScope() throws {
+        let library = ProfileLibrary(workspace: try Self.workspace(
+            """
+            Version=331
+            Connections {
+              Triggers { Active=true }
+            }
+            """
+        ))
+        let controller = AutomationEditorWindowController(library: library, kind: .triggers)
+        defer { controller.close() }
+        let content = try XCTUnwrap(controller.window?.contentView)
+        content.layoutSubtreeIfNeeded()
+
+        let editable = try XCTUnwrap(
+            recursiveSubviews(of: content)
+                .compactMap { $0 as? NSOutlineView }
+                .first { $0.accessibilityIdentifier() == "triggerScopeOutline" }
+        )
+        let samples = try XCTUnwrap(
+            recursiveSubviews(of: content)
+                .compactMap { $0 as? NSOutlineView }
+                .first { $0.accessibilityIdentifier() == "triggerSamplesOutline" }
+        )
+
+        for title in [
+            "Activity Sound",
+            "Speak all text",
+            "Highlight words",
+            "Censor bad words",
+            "Rainbow Text (Hash coloring)",
+        ] {
+            XCTAssertNotNil(row(titled: title, in: samples), "Missing trigger sample: \(title)")
+        }
+
+        let globalRow = try XCTUnwrap(row(titled: "Global", in: editable))
+        editable.selectRowIndexes(.init(integer: globalRow), byExtendingSelection: false)
+        controller.outlineViewSelectionDidChange(.init(
+            name: NSOutlineView.selectionDidChangeNotification,
+            object: editable
+        ))
+        let sampleRow = try XCTUnwrap(row(titled: "Rainbow Text (Hash coloring)", in: samples))
+        samples.selectRowIndexes(.init(integer: sampleRow), byExtendingSelection: false)
+        controller.outlineViewSelectionDidChange(.init(
+            name: NSOutlineView.selectionDidChangeNotification,
+            object: samples
+        ))
+
+        try button(identifier: "triggerCopy", in: content).performClick(nil)
+
+        let copied = try XCTUnwrap(library.workspace.trigger(at: [0], in: .global))
+        XCTAssertEqual(copied.description, "Rainbow Text (Hash coloring)")
+        XCTAssertTrue(copied.actions.contains(.colorHash(foreground: true, background: false, wholeLine: true)))
+    }
+
     func testTriggerOutlineMoveButtonsReorderIndentAndOutdent() throws {
         let library = ProfileLibrary(workspace: try Self.workspace(
             """

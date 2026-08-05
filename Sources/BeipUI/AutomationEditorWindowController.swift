@@ -124,8 +124,10 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
     private let scope: LegacyConfigurationWorkspace.AutomationScope
     private let table = NSTableView()
     private let triggerOutline = NSOutlineView()
+    private let triggerSamplesOutline = NSOutlineView()
     private let aliasSamplesOutline = NSOutlineView()
     private var triggerOutlineNodes: [TriggerOutlineNode] = []
+    private var triggerSampleNodes: [TriggerOutlineNode] = []
     private var aliasOutlineNodes: [AliasOutlineNode] = []
     private var aliasSampleNodes: [AliasOutlineNode] = []
     private var selectedTriggerScope: LegacyConfigurationWorkspace.AutomationScope?
@@ -145,6 +147,7 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
     private var selectedIndex: Int?
     private var selectedTriggerPath: [Int]?
     private var selectedTriggerIdentity: TriggerSelectionIdentity?
+    private var triggerSampleSelected = false
     private var selectedAliasPath: [Int]?
     private var selectedAliasIdentity: AliasSelectionIdentity?
     private let macroOutline = MacroOutlineView()
@@ -177,6 +180,7 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
         enum Kind {
             case scope(LegacyConfigurationWorkspace.AutomationScope)
             case trigger(LegacyConfigurationWorkspace.AutomationScope, [Int], TriggerSelectionIdentity)
+            case sample(Trigger)
         }
 
         let title: String
@@ -849,20 +853,34 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
     }
 
     private func configureTriggerEditor(in window: NSWindow) {
-        triggerOutline.headerView = nil
-        triggerOutline.style = .sourceList
-        triggerOutline.rowHeight = 22
-        triggerOutline.addTableColumn(NSTableColumn(identifier: .init("triggerOutlineEntry")))
-        triggerOutline.outlineTableColumn = triggerOutline.tableColumns[0]
-        triggerOutline.delegate = self
-        triggerOutline.dataSource = self
-        triggerOutline.setAccessibilityIdentifier("triggerScopeOutline")
+        for (outline, identifier, label) in [
+            (triggerOutline, "triggerScopeOutline", "Editable triggers"),
+            (triggerSamplesOutline, "triggerSamplesOutline", "Sample triggers"),
+        ] {
+            outline.headerView = nil
+            outline.style = .sourceList
+            outline.rowHeight = 22
+            outline.addTableColumn(NSTableColumn(identifier: .init(identifier + "Column")))
+            outline.outlineTableColumn = outline.tableColumns[0]
+            outline.delegate = self
+            outline.dataSource = self
+            outline.setAccessibilityIdentifier(identifier)
+            outline.setAccessibilityLabel(label)
+        }
 
         let listScroll = NSScrollView()
         listScroll.documentView = triggerOutline
         listScroll.hasVerticalScroller = true
         listScroll.hasHorizontalScroller = true
         listScroll.borderType = .bezelBorder
+        listScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 170).isActive = true
+        let sampleScroll = NSScrollView()
+        sampleScroll.documentView = triggerSamplesOutline
+        sampleScroll.hasVerticalScroller = true
+        sampleScroll.borderType = .bezelBorder
+        sampleScroll.heightAnchor.constraint(equalToConstant: 150).isActive = true
+        let sampleHeading = NSTextField(labelWithString: "Samples")
+        sampleHeading.font = .systemFont(ofSize: 12, weight: .semibold)
         triggerScopeAfterCount.setAccessibilityIdentifier("triggerScopeAfterCount")
         triggerScopeAfterCount.controlSize = .small
         triggerScopeApply.target = self
@@ -915,7 +933,7 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
         moveButtons.spacing = 4
         moveButtons.distribution = .fillEqually
 
-        let sidebar = NSStackView(views: [listScroll, scopeControls, listButtons, moveButtons])
+        let sidebar = NSStackView(views: [listScroll, sampleHeading, sampleScroll, scopeControls, listButtons, moveButtons])
         sidebar.orientation = NSUserInterfaceLayoutOrientation.vertical
         sidebar.spacing = 8
         sidebar.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 8)
@@ -1131,7 +1149,7 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
             return (node?.children ?? (outlineView === aliasSamplesOutline ? aliasSampleNodes : aliasOutlineNodes)).count
         }
         let node = item as? TriggerOutlineNode
-        return (node?.children ?? triggerOutlineNodes).count
+        return (node?.children ?? (outlineView === triggerSamplesOutline ? triggerSampleNodes : triggerOutlineNodes)).count
     }
 
     func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
@@ -1144,7 +1162,7 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
             return (node?.children ?? (outlineView === aliasSamplesOutline ? aliasSampleNodes : aliasOutlineNodes))[index]
         }
         let node = item as? TriggerOutlineNode
-        return (node?.children ?? triggerOutlineNodes)[index]
+        return (node?.children ?? (outlineView === triggerSamplesOutline ? triggerSampleNodes : triggerOutlineNodes))[index]
     }
 
     func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
@@ -1232,20 +1250,32 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
         let view = outlineView.makeView(withIdentifier: identifier, owner: self) as? NSTableCellView ?? {
             let result = NSTableCellView()
             result.identifier = identifier
+            let image = NSImageView()
+            image.translatesAutoresizingMaskIntoConstraints = false
+            image.imageScaling = .scaleProportionallyDown
             let text = NSTextField(labelWithString: "")
             text.lineBreakMode = .byTruncatingTail
             text.translatesAutoresizingMaskIntoConstraints = false
+            result.addSubview(image)
             result.addSubview(text)
+            result.imageView = image
             result.textField = text
             NSLayoutConstraint.activate([
-                text.leadingAnchor.constraint(equalTo: result.leadingAnchor, constant: 2),
+                image.leadingAnchor.constraint(equalTo: result.leadingAnchor, constant: 2),
+                image.centerYAnchor.constraint(equalTo: result.centerYAnchor),
+                image.widthAnchor.constraint(equalToConstant: 16),
+                image.heightAnchor.constraint(equalToConstant: 16),
+                text.leadingAnchor.constraint(equalTo: image.trailingAnchor, constant: 4),
                 text.trailingAnchor.constraint(equalTo: result.trailingAnchor, constant: -4),
                 text.centerYAnchor.constraint(equalTo: result.centerYAnchor),
             ])
             return result
         }()
         view.textField?.stringValue = node.title
-        view.imageView?.image = nil
+        view.imageView?.image = switch node.kind {
+        case .sample: NSImage(systemSymbolName: "gearshape", accessibilityDescription: "Sample")
+        default: nil
+        }
         return view
     }
 
@@ -1360,9 +1390,14 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
             }
             return
         }
+        if notification.object as? NSOutlineView === triggerSamplesOutline {
+            triggerSampleSelected = triggerSamplesOutline.selectedRow >= 0
+            return
+        }
         guard notification.object as? NSOutlineView === triggerOutline else { return }
         guard triggerOutline.selectedRow >= 0,
               let node = triggerOutline.item(atRow: triggerOutline.selectedRow) as? TriggerOutlineNode else {
+            triggerSampleSelected = false
             selectedIndex = nil
             selectedTriggerScope = nil
             selectedTriggerPath = nil
@@ -1372,6 +1407,7 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
         }
         switch node.kind {
         case let .scope(scope):
+            triggerSampleSelected = false
             selectedTriggerScope = scope
             selectedIndex = nil
             selectedTriggerPath = nil
@@ -1379,12 +1415,15 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
             loadTriggerScopeSettings(scope)
             clearFields()
         case let .trigger(scope, path, identity):
+            triggerSampleSelected = false
             selectedTriggerScope = scope
             selectedTriggerPath = path
             selectedTriggerIdentity = identity
             selectedIndex = path.first
             loadTriggerScopeSettings(scope)
             loadTrigger(at: path, in: scope)
+        case .sample:
+            break
         }
     }
 
@@ -1887,23 +1926,42 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
     }
 
     @objc private func copyTrigger(_ sender: Any?) {
-        guard kind == .triggers,
-              let selectedTriggerPath,
-              let selectedTriggerScope else {
+        guard kind == .triggers else {
             NSSound.beep()
             return
         }
         do {
-            guard let source = library.workspace.trigger(at: selectedTriggerPath, in: selectedTriggerScope) else {
-                throw LegacyConfigurationWorkspace.WorkspaceError.automationEntryNotFound
+            let source: Trigger
+            let targetScope: LegacyConfigurationWorkspace.AutomationScope
+            let parentPath: [Int]
+            if triggerSampleSelected,
+               triggerSamplesOutline.selectedRow >= 0,
+               let node = triggerSamplesOutline.item(atRow: triggerSamplesOutline.selectedRow) as? TriggerOutlineNode,
+               case let .sample(sample) = node.kind {
+                source = sample
+                targetScope = selectedTriggerScope ?? scope
+                parentPath = selectedTriggerPath.flatMap { path in
+                    guard let selected = library.workspace.trigger(at: path, in: targetScope) else { return nil }
+                    return selected.folder ? path : Array(path.dropLast())
+                } ?? []
+            } else {
+                guard let selectedTriggerPath,
+                      let selectedTriggerScope,
+                      let selected = library.workspace.trigger(at: selectedTriggerPath, in: selectedTriggerScope) else {
+                    throw LegacyConfigurationWorkspace.WorkspaceError.automationEntryNotFound
+                }
+                source = selected
+                targetScope = selectedTriggerScope
+                parentPath = Array(selectedTriggerPath.dropLast())
             }
             var copy = source
-            copy.description = source.description.isEmpty ? "Copy of \(source.match.text)" : "Copy of \(source.description)"
-            let parentPath = Array(selectedTriggerPath.dropLast())
-            var selection = triggerSelectionKey(scope: selectedTriggerScope, triggerPath: nil)
+            if !triggerSampleSelected {
+                copy.description = source.description.isEmpty ? "Copy of \(source.match.text)" : "Copy of \(source.description)"
+            }
+            var selection = triggerSelectionKey(scope: targetScope, triggerPath: nil)
             var added: [Int] = []
             try library.mutate {
-                added = try $0.addTrigger(in: selectedTriggerScope, parentPath: parentPath, trigger: copy)
+                added = try $0.addTrigger(in: targetScope, parentPath: parentPath, trigger: copy)
             }
             selection.triggerPath = added
             reloadTriggerOutline(selecting: selection)
@@ -2688,8 +2746,11 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
 
     private func reloadTriggerOutline(selecting selection: TriggerSelectionKey?) {
         triggerOutlineNodes = makeTriggerOutlineNodes()
+        triggerSampleNodes = makeTriggerSampleNodes()
         triggerOutline.reloadData()
+        triggerSamplesOutline.reloadData()
         triggerOutlineNodes.forEach { triggerOutline.expandItem($0, expandChildren: true) }
+        triggerSampleNodes.forEach { triggerSamplesOutline.expandItem($0, expandChildren: true) }
 
         let fallback = selection ?? triggerSelectionKey(
             scope: selectedTriggerScope ?? scope,
@@ -2753,6 +2814,31 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
                 title: trigger.description.isEmpty ? trigger.match.text : trigger.description,
                 kind: .trigger(scope, path, TriggerSelectionIdentity(trigger)),
                 children: triggerNodes(trigger.children, scope: scope, parentPath: path)
+            )
+        }
+    }
+
+    private func makeTriggerSampleNodes() -> [TriggerOutlineNode] {
+        guard let url = Bundle.module.url(forResource: "TriggersSamples", withExtension: "txt"),
+              let source = try? String(contentsOf: url, encoding: .utf8),
+              let workspace = try? LegacyConfigurationWorkspace(document: .init(source: source)) else {
+            return []
+        }
+        return workspace.globalTriggers.map { trigger in
+            TriggerOutlineNode(
+                title: trigger.description.isEmpty ? trigger.match.text : trigger.description,
+                kind: .sample(trigger),
+                children: triggerSampleNodes(for: trigger.children)
+            )
+        }
+    }
+
+    private func triggerSampleNodes(for triggers: [Trigger]) -> [TriggerOutlineNode] {
+        triggers.map { trigger in
+            TriggerOutlineNode(
+                title: trigger.description.isEmpty ? trigger.match.text : trigger.description,
+                kind: .sample(trigger),
+                children: triggerSampleNodes(for: trigger.children)
             )
         }
     }
