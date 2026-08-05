@@ -62,6 +62,30 @@ public struct MatchDefinition: Sendable, Hashable, Codable {
         }
     }
 
+    /// Returns the first Windows-style match whose start is at or after the
+    /// supplied UTF-16 cursor. Re-evaluating against the current string after
+    /// each replacement is important for aliases because replacement lengths
+    /// can change the later search ranges.
+    public func firstMatch(in value: String, startingAtUTF16 offset: Int = 0) throws -> MatchCapture? {
+        let clampedOffset = max(0, min(offset, value.utf16.count))
+        if !isRegularExpression {
+            return try matches(in: value).first { $0.range.location >= clampedOffset }
+        }
+
+        let expression = try NSRegularExpression(
+            pattern: text,
+            options: matchCase ? [] : [.caseInsensitive]
+        )
+        let range = NSRange(location: clampedOffset, length: value.utf16.count - clampedOffset)
+        guard let result = expression.firstMatch(in: value, range: range) else { return nil }
+        let ranges = (0..<result.numberOfRanges).map { result.range(at: $0) }
+        let values = ranges.map { range -> String? in
+            guard range.location != NSNotFound, let swiftRange = Range(range, in: value) else { return nil }
+            return String(value[swiftRange])
+        }
+        return MatchCapture(values: values, ranges: ranges)
+    }
+
     private func literalMatches(in value: String) -> [MatchCapture] {
         let fullRange = value.startIndex..<value.endIndex
         var options: String.CompareOptions = []

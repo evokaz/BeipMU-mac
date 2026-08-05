@@ -628,8 +628,6 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private var aliasGroups: [AliasGroup] = []
     private var triggerGroups: [TriggerGroup] = []
     private var keyboardMacroGroups: [KeyboardMacroGroup] = []
-    private var aliasesEchoResults = true
-    private var aliasesProcessCommands = false
     private var session: SessionActor?
     private var sessionTask: Task<Void, Never>?
     private var currentServer: ServerProfile?
@@ -2907,8 +2905,6 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         aliasGroups = automation.aliases
         triggerGroups = automation.triggers
         keyboardMacroGroups = profileLibrary.workspace.projection.macroGroups(for: server, character: character, puppet: puppet)
-        aliasesEchoResults = profileLibrary.workspace.projection.automation.aliases.echo
-        aliasesProcessCommands = profileLibrary.workspace.projection.automation.aliases.processCommands
         gmcpState.reset()
         mediaState.reset()
         mediaController.flush()
@@ -3635,11 +3631,11 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
                 sendToSession(text)
                 return
             }
-            if aliasesEchoResults {
+            if result.echo {
                 appendClient("Echoing alias result: \(result.text)")
             }
             for line in Self.logicalLines(in: result.text) where !line.isEmpty {
-                if aliasesProcessCommands, line.hasPrefix("/") {
+                if result.processCommands, line.hasPrefix("/") {
                     processInput(line)
                 } else {
                     sendToSession(line)
@@ -3719,8 +3715,6 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             character: currentCharacter,
             puppet: currentPuppet
         )
-        aliasesEchoResults = profileLibrary.workspace.projection.automation.aliases.echo
-        aliasesProcessCommands = profileLibrary.workspace.projection.automation.aliases.processCommands
         if resetRuntimeState { resetTriggerRuntimeState() }
     }
 

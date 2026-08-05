@@ -642,24 +642,40 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
 
     private static func aliasGroup(from nodes: [LegacyConfigurationDocument.Node]?) -> AliasGroup {
         guard let nodes else { return .init() }
+        let echo = nodes.bool("Echo") ?? true
+        let processCommands = nodes.bool("ProcessCommands") ?? false
         return .init(
             active: nodes.bool("Active") ?? false,
-            echo: nodes.bool("Echo") ?? true,
-            processCommands: nodes.bool("ProcessCommands") ?? false,
+            echo: echo,
+            processCommands: processCommands,
             afterCount: nodes.value("AfterCount").flatMap(Int.init) ?? 0,
-            aliases: nodes.unnamedBlocks().map(alias)
+            aliases: nodes.unnamedBlocks().map {
+                alias($0, inheritedEcho: echo, inheritedProcessCommands: processCommands)
+            }
         )
     }
 
-    private static func alias(_ nodes: [LegacyConfigurationDocument.Node]) -> Alias {
-        Alias(
+    private static func alias(
+        _ nodes: [LegacyConfigurationDocument.Node],
+        inheritedEcho: Bool = true,
+        inheritedProcessCommands: Bool = false
+    ) -> Alias {
+        let childNodes = nodes.firstBlock(named: "Aliases")?.children
+        let childGroup = aliasGroup(from: childNodes)
+        return Alias(
             description: nodes.value("Description") ?? "",
             match: matchDefinition(from: nodes),
+            example: nodes.value("Example") ?? "",
             replacement: nodes.value("Replace") ?? "",
             folder: nodes.bool("Folder") ?? false,
+            active: nodes.bool("Active") ?? true,
+            echo: nodes.bool("Echo") ?? inheritedEcho,
+            processCommands: nodes.bool("ProcessCommands") ?? inheritedProcessCommands,
             stopProcessing: nodes.bool("StopProcessing") ?? false,
             expandVariables: nodes.bool("ExpandVariables") ?? false,
-            children: aliasGroup(from: nodes.firstBlock(named: "Aliases")?.children).aliases
+            children: childGroup.aliases,
+            childrenActive: childGroup.active,
+            childrenAfterCount: childGroup.afterCount
         )
     }
 

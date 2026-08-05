@@ -111,8 +111,13 @@ public struct LegacyConfigurationDocument: Sendable {
         guard !parentIndexPath.isEmpty else {
             return try appendUnnamedBlock(at: collectionPath)
         }
-        try ensureBlocks(at: nestedCollectionPath, inUnnamedBlockAt: parentIndexPath, collectionPath: collectionPath)
-        guard let parent = unnamedBlock(at: parentIndexPath, collectionPath: collectionPath),
+        try ensureBlocks(
+            at: nestedCollectionPath,
+            inUnnamedBlockAt: parentIndexPath,
+            collectionPath: collectionPath,
+            nestedCollectionPath: nestedCollectionPath
+        )
+        guard let parent = unnamedBlock(at: parentIndexPath, collectionPath: collectionPath, nestedCollectionPath: nestedCollectionPath),
               let insertion = blockInsertionIndex(at: nestedCollectionPath, nodes: parent.children) else {
             throw LegacyConfigurationError.missingPath(nestedCollectionPath.joined(separator: "."))
         }
@@ -123,7 +128,7 @@ public struct LegacyConfigurationDocument: Sendable {
         source.insert(contentsOf: "\(childIndent){\(newline)\(childIndent)}\(newline)", at: insertion)
         var parser = LegacyParser(source: source)
         nodes = try parser.parse()
-        guard let refreshed = unnamedBlock(at: parentIndexPath, collectionPath: collectionPath),
+        guard let refreshed = unnamedBlock(at: parentIndexPath, collectionPath: collectionPath, nestedCollectionPath: nestedCollectionPath),
               let children = descend(nestedCollectionPath, nodes: refreshed.children) else { return 0 }
         return Self.unnamedBlockCount(in: children) - 1
     }
@@ -182,6 +187,9 @@ public struct LegacyConfigurationDocument: Sendable {
         relativePath: [String],
         quoted: Bool = true
     ) throws {
+        let nestedCollectionPath = collectionPath.last?.caseInsensitiveCompare("Aliases") == .orderedSame
+            ? ["Aliases"]
+            : ["Triggers"]
         guard indexPath.count != 1 else {
             try upsertValue(value, inUnnamedBlockAt: indexPath[0], collectionPath: collectionPath, relativePath: relativePath, quoted: quoted)
             return
@@ -189,7 +197,11 @@ public struct LegacyConfigurationDocument: Sendable {
         guard let field = relativePath.last else {
             throw LegacyConfigurationError.missingPath("")
         }
-        guard let entry = unnamedBlock(at: indexPath, collectionPath: collectionPath) else {
+        guard let entry = unnamedBlock(
+            at: indexPath,
+            collectionPath: collectionPath,
+            nestedCollectionPath: nestedCollectionPath
+        ) else {
             throw LegacyConfigurationError.missingPath("\(collectionPath.joined(separator: "."))\(indexPath)")
         }
         if let range = assignmentRange(at: relativePath, nodes: entry.children) {
@@ -202,9 +214,18 @@ public struct LegacyConfigurationDocument: Sendable {
         let parents = Array(relativePath.dropLast())
         if !parents.isEmpty,
            blockInsertionIndex(at: parents, nodes: entry.children) == nil {
-            try ensureBlocks(at: parents, inUnnamedBlockAt: indexPath, collectionPath: collectionPath)
+            try ensureBlocks(
+                at: parents,
+                inUnnamedBlockAt: indexPath,
+                collectionPath: collectionPath,
+                nestedCollectionPath: nestedCollectionPath
+            )
         }
-        guard let refreshed = unnamedBlock(at: indexPath, collectionPath: collectionPath) else {
+        guard let refreshed = unnamedBlock(
+            at: indexPath,
+            collectionPath: collectionPath,
+            nestedCollectionPath: nestedCollectionPath
+        ) else {
             throw LegacyConfigurationError.missingPath("\(collectionPath.joined(separator: "."))\(indexPath)")
         }
         let insertion = parents.isEmpty
@@ -250,10 +271,17 @@ public struct LegacyConfigurationDocument: Sendable {
         collectionPath: [String],
         relativePath: [String]
     ) -> String? {
+        let nestedCollectionPath = collectionPath.last?.caseInsensitiveCompare("Aliases") == .orderedSame
+            ? ["Aliases"]
+            : ["Triggers"]
         guard indexPath.count != 1 else {
             return value(inUnnamedBlockAt: indexPath[0], collectionPath: collectionPath, relativePath: relativePath)
         }
-        guard let entry = unnamedBlock(at: indexPath, collectionPath: collectionPath),
+        guard let entry = unnamedBlock(
+            at: indexPath,
+            collectionPath: collectionPath,
+            nestedCollectionPath: nestedCollectionPath
+        ),
               let final = relativePath.last else { return nil }
         let parents = Array(relativePath.dropLast())
         for split in stride(from: parents.count, through: 0, by: -1) {
@@ -286,6 +314,24 @@ public struct LegacyConfigurationDocument: Sendable {
             return try removeUnnamedBlock(at: indexPath[0], collectionPath: collectionPath)
         }
         guard let entry = unnamedBlock(at: indexPath, collectionPath: collectionPath) else { return false }
+        source.removeSubrange(expandedRemovalRange(entry.sourceRange))
+        var parser = LegacyParser(source: source)
+        nodes = try parser.parse()
+        return true
+    }
+
+    @discardableResult
+    public mutating func removeUnnamedBlock(
+        at indexPath: [Int],
+        collectionPath: [String],
+        nestedCollectionPath: [String]
+    ) throws -> Bool {
+        guard !indexPath.isEmpty,
+              let entry = unnamedBlock(
+                  at: indexPath,
+                  collectionPath: collectionPath,
+                  nestedCollectionPath: nestedCollectionPath
+              ) else { return false }
         source.removeSubrange(expandedRemovalRange(entry.sourceRange))
         var parser = LegacyParser(source: source)
         nodes = try parser.parse()
@@ -347,6 +393,124 @@ public struct LegacyConfigurationDocument: Sendable {
         return adjustedParent + [clampedIndex]
     }
 
+    /// Moves an unnamed block between two collections while retaining its
+    /// original source subtree verbatim. This is used by nested aliases, whose
+    /// source and destination scopes may be different Config.txt paths.
+    @discardableResult
+    public mutating func moveUnnamedBlock(
+        at sourceIndexPath: [Int],
+        collectionPath: [String],
+        nestedCollectionPath sourceNestedCollectionPath: [String],
+        to destinationIndex: Int,
+        nestedIn destinationParentIndexPath: [Int],
+        destinationCollectionPath: [String],
+        destinationNestedCollectionPath: [String]
+    ) throws -> [Int] {
+        guard !sourceIndexPath.isEmpty,
+              let entry = unnamedBlock(
+                  at: sourceIndexPath,
+                  collectionPath: collectionPath,
+                  nestedCollectionPath: sourceNestedCollectionPath
+              ) else {
+            throw LegacyConfigurationError.missingPath("\(collectionPath.joined(separator: "."))\(sourceIndexPath)")
+        }
+
+        let removalRange = expandedRemovalRange(entry.sourceRange)
+        let movingSource = String(source[removalRange])
+        source.removeSubrange(removalRange)
+        var parser = LegacyParser(source: source)
+        nodes = try parser.parse()
+
+        let sameDestination = collectionPath.map { $0.lowercased() } == destinationCollectionPath.map { $0.lowercased() }
+        let adjustedParent = sameDestination
+            ? Self.adjustedIndexPath(destinationParentIndexPath, afterRemoving: sourceIndexPath)
+            : destinationParentIndexPath
+        if adjustedParent.isEmpty {
+            if blockInsertionIndex(at: destinationCollectionPath, nodes: nodes) == nil {
+                try ensureBlocks(at: destinationCollectionPath)
+            }
+        } else {
+            try ensureBlocks(
+                at: destinationNestedCollectionPath,
+                inUnnamedBlockAt: adjustedParent,
+                collectionPath: destinationCollectionPath,
+                nestedCollectionPath: destinationNestedCollectionPath
+            )
+        }
+
+        let count = unnamedBlockCount(
+            at: destinationCollectionPath,
+            nestedIn: adjustedParent,
+            nestedCollectionPath: destinationNestedCollectionPath
+        )
+        let clampedIndex = min(max(0, destinationIndex), count)
+        guard let insertion = unnamedBlockInsertionIndex(
+            at: clampedIndex,
+            collectionPath: destinationCollectionPath,
+            nestedIn: adjustedParent,
+            nestedCollectionPath: destinationNestedCollectionPath
+        ) else {
+            throw LegacyConfigurationError.missingPath("\(destinationCollectionPath.joined(separator: "."))\(adjustedParent)")
+        }
+        source.insert(contentsOf: movingSource, at: insertion)
+        parser = LegacyParser(source: source)
+        nodes = try parser.parse()
+        return adjustedParent + [clampedIndex]
+    }
+
+    /// Copies an unnamed block, including comments, unknown fields, and all
+    /// nested payloads, into another collection.
+    @discardableResult
+    public mutating func copyUnnamedBlock(
+        at sourceIndexPath: [Int],
+        collectionPath: [String],
+        nestedCollectionPath sourceNestedCollectionPath: [String],
+        to destinationIndex: Int,
+        nestedIn destinationParentIndexPath: [Int],
+        destinationCollectionPath: [String],
+        destinationNestedCollectionPath: [String]
+    ) throws -> [Int] {
+        guard !sourceIndexPath.isEmpty,
+              let entry = unnamedBlock(
+                  at: sourceIndexPath,
+                  collectionPath: collectionPath,
+                  nestedCollectionPath: sourceNestedCollectionPath
+              ) else {
+            throw LegacyConfigurationError.missingPath("\(collectionPath.joined(separator: "."))\(sourceIndexPath)")
+        }
+        let copiedSource = String(source[expandedRemovalRange(entry.sourceRange)])
+        if destinationParentIndexPath.isEmpty {
+            if blockInsertionIndex(at: destinationCollectionPath, nodes: nodes) == nil {
+                try ensureBlocks(at: destinationCollectionPath)
+            }
+        } else {
+            try ensureBlocks(
+                at: destinationNestedCollectionPath,
+                inUnnamedBlockAt: destinationParentIndexPath,
+                collectionPath: destinationCollectionPath,
+                nestedCollectionPath: destinationNestedCollectionPath
+            )
+        }
+        let count = unnamedBlockCount(
+            at: destinationCollectionPath,
+            nestedIn: destinationParentIndexPath,
+            nestedCollectionPath: destinationNestedCollectionPath
+        )
+        let clampedIndex = min(max(0, destinationIndex), count)
+        guard let insertion = unnamedBlockInsertionIndex(
+            at: clampedIndex,
+            collectionPath: destinationCollectionPath,
+            nestedIn: destinationParentIndexPath,
+            nestedCollectionPath: destinationNestedCollectionPath
+        ) else {
+            throw LegacyConfigurationError.missingPath("\(destinationCollectionPath.joined(separator: "."))\(destinationParentIndexPath)")
+        }
+        source.insert(contentsOf: copiedSource, at: insertion)
+        var parser = LegacyParser(source: source)
+        nodes = try parser.parse()
+        return destinationParentIndexPath + [clampedIndex]
+    }
+
     public func unnamedBlockCount(
         at collectionPath: [String],
         nestedIn parentIndexPath: [Int] = [],
@@ -355,7 +519,7 @@ public struct LegacyConfigurationDocument: Sendable {
         if parentIndexPath.isEmpty {
             return Self.unnamedBlockCount(in: descend(collectionPath, nodes: nodes) ?? [])
         }
-        guard let parent = unnamedBlock(at: parentIndexPath, collectionPath: collectionPath),
+        guard let parent = unnamedBlock(at: parentIndexPath, collectionPath: collectionPath, nestedCollectionPath: nestedCollectionPath),
               let children = descend(nestedCollectionPath, nodes: parent.children) else { return 0 }
         return Self.unnamedBlockCount(in: children)
     }
@@ -454,11 +618,15 @@ public struct LegacyConfigurationDocument: Sendable {
         return nil
     }
 
-    private func unnamedBlock(at indexPath: [Int], collectionPath: [String]) -> (children: [Node], insertionIndex: String.Index, sourceRange: Range<String.Index>)? {
+    private func unnamedBlock(
+        at indexPath: [Int],
+        collectionPath: [String],
+        nestedCollectionPath: [String] = ["Triggers"]
+    ) -> (children: [Node], insertionIndex: String.Index, sourceRange: Range<String.Index>)? {
         guard let first = indexPath.first,
               var entry = unnamedBlock(at: first, collectionPath: collectionPath) else { return nil }
         for index in indexPath.dropFirst() {
-            guard let children = descend(["Triggers"], nodes: entry.children) else { return nil }
+            guard let children = descend(nestedCollectionPath, nodes: entry.children) else { return nil }
             var offset = 0
             var next: (children: [Node], insertionIndex: String.Index, sourceRange: Range<String.Index>)?
             for node in children {
@@ -487,7 +655,7 @@ public struct LegacyConfigurationDocument: Sendable {
         if parentIndexPath.isEmpty {
             children = descend(collectionPath, nodes: nodes)
         } else {
-            guard let parent = unnamedBlock(at: parentIndexPath, collectionPath: collectionPath) else {
+            guard let parent = unnamedBlock(at: parentIndexPath, collectionPath: collectionPath, nestedCollectionPath: nestedCollectionPath) else {
                 return nil
             }
             children = descend(nestedCollectionPath, nodes: parent.children)
@@ -504,7 +672,7 @@ public struct LegacyConfigurationDocument: Sendable {
         if parentIndexPath.isEmpty {
             return blockInsertionIndex(at: collectionPath, nodes: nodes)
         }
-        guard let parent = unnamedBlock(at: parentIndexPath, collectionPath: collectionPath) else {
+        guard let parent = unnamedBlock(at: parentIndexPath, collectionPath: collectionPath, nestedCollectionPath: nestedCollectionPath) else {
             return nil
         }
         return blockInsertionIndex(at: nestedCollectionPath, nodes: parent.children)
@@ -555,7 +723,8 @@ public struct LegacyConfigurationDocument: Sendable {
     private mutating func ensureBlocks(
         at path: [String],
         inUnnamedBlockAt index: Int,
-        collectionPath: [String]
+        collectionPath: [String],
+        nestedCollectionPath: [String] = ["Triggers"]
     ) throws {
         for depth in 1...path.count {
             guard let entry = unnamedBlock(at: index, collectionPath: collectionPath) else {
@@ -586,14 +755,15 @@ public struct LegacyConfigurationDocument: Sendable {
     private mutating func ensureBlocks(
         at path: [String],
         inUnnamedBlockAt indexPath: [Int],
-        collectionPath: [String]
+        collectionPath: [String],
+        nestedCollectionPath: [String] = ["Triggers"]
     ) throws {
         guard indexPath.count != 1 else {
-            try ensureBlocks(at: path, inUnnamedBlockAt: indexPath[0], collectionPath: collectionPath)
+            try ensureBlocks(at: path, inUnnamedBlockAt: indexPath[0], collectionPath: collectionPath, nestedCollectionPath: nestedCollectionPath)
             return
         }
         for depth in 1...path.count {
-            guard let entry = unnamedBlock(at: indexPath, collectionPath: collectionPath) else {
+            guard let entry = unnamedBlock(at: indexPath, collectionPath: collectionPath, nestedCollectionPath: nestedCollectionPath) else {
                 throw LegacyConfigurationError.missingPath("\(collectionPath.joined(separator: "."))\(indexPath)")
             }
             let prefix = Array(path.prefix(depth))

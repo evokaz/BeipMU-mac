@@ -1,0 +1,78 @@
+Version=331
+Connections
+{
+  Aliases
+  {
+    Active=true
+    {
+      Description="Repeat 'buy torch' command n times"
+      Example="bt 5"
+      Replace="/script for(i=0;i<\\1;i++) { window.run(\"buy torch\"); }"
+      FindString
+      {
+        MatchText="bt (\\d+)"
+        RegularExpression=true
+      }
+    }
+    {
+      Description="Repeat 'eat food' command n times"
+      Example="eat 5"
+      Replace="/script for(i=0;i<\\1;i++) { window.run(\"eat food\"); }"
+      FindString
+      {
+        MatchText="eat (\\d+)"
+        RegularExpression=true
+      }
+    }
+    {
+      Description="Nicknames for Friends"
+      Folder=true
+      FindString.MatchText=""
+      Aliases
+      {
+        {
+          Description="Mag -> Magdalena"
+          Example="page Mag=Testing"
+          Replace="Magdalena"
+          FindString.MatchText="Mag"
+        }
+        {
+          Description="Gwen -> Gwendolyn"
+          Example="page Gwen=Testing"
+          Replace="Gwendolyn"
+          FindString.MatchText="Gwen"
+        }
+        {
+          Description="Rump -> Rumplestiltskin"
+          Example="page Rump=Testing"
+          Replace="Rumplestiltskinhead"
+          FindString.MatchText="Rump"
+        }
+        {
+          Description="Jac -> Jacqueline"
+          Example="page Jac=Testing"
+          Replace="Jacqueline"
+          FindString.MatchText="Jac"
+        }
+      }
+    }
+    {
+      Description="Smart Quote Fixer “ or ” -> \""
+      Replace="\""
+      FindString
+      {
+        MatchText="“|”"
+        RegularExpression=true
+      }
+    }
+    {
+      Description="Smart Quote Fixer ‘ or ’ -> '"
+      Replace="'"
+      FindString
+      {
+        MatchText="‘|’"
+        RegularExpression=true
+      }
+    }
+  }
+}

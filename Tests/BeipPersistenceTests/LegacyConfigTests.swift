@@ -1440,6 +1440,144 @@ final class LegacyConfigTests: XCTestCase {
         XCTAssertTrue(workspace.globalMacros.isEmpty)
     }
 
+    func testAliasWindowsFieldsAndNestedCRUDPreserveUnknownPayloads() throws {
+        let source = """
+        Version=331
+        Connections {
+          Aliases {
+            Active=true Echo=false ProcessCommands=true AfterCount=1
+            { Description="First" Example="go north" Replace="north" Custom="keep"
+              FindString { MatchText="go" RegularExpression=false }
+            }
+            { Description="Folder" Folder=true FindString.MatchText=""
+              Aliases { Active=true AfterCount=1
+                { Description="Child" Example="x" Replace="y" UnknownChild="keep"
+                  FindString { MatchText="x" } }
+              }
+            }
+          }
+          Shortcuts {
+            World {
+              Host="world.example:8888"
+              Aliases { Active=true { Description="World alias" Replace="world" FindString.MatchText="w" } }
+            }
+          }
+        }
+        """
+        var workspace = try LegacyConfigurationWorkspace(document: .init(source: source))
+        XCTAssertEqual(workspace.aliasGroup(in: .global).afterCount, 1)
+        XCTAssertFalse(workspace.aliasGroup(in: .global).echo)
+        XCTAssertTrue(workspace.alias(at: [1], in: .global)?.folder == true)
+        XCTAssertEqual(workspace.alias(at: [1, 0], in: .global)?.example, "x")
+        let first = try XCTUnwrap(workspace.alias(at: [0], in: .global))
+        var updated = first
+        updated.example = "updated"
+        updated.replacement = "northward"
+        try workspace.updateAlias(at: [0], in: .global, alias: updated)
+        XCTAssertTrue(try workspace.renderedDocument().serialized().contains("Custom=\"keep\""))
+
+        let added = try workspace.addAlias(
+            in: .global,
+            parentPath: [1],
+            alias: .init(description: "Added", match: .init(text: "a"), replacement: "b")
+        )
+        XCTAssertEqual(workspace.alias(at: added, in: .global)?.description, "Added")
+        _ = try workspace.copyAlias(at: [1, 0], in: .global)
+        XCTAssertEqual(workspace.alias(at: [1], in: .global)?.children.count, 3)
+        _ = try workspace.removeAlias(at: added, in: .global)
+        XCTAssertEqual(workspace.alias(at: [1], in: .global)?.children.count, 2)
+        XCTAssertTrue(try workspace.renderedDocument().serialized().contains("UnknownChild=\"keep\""))
+
+        let world = try XCTUnwrap(workspace.servers.first)
+        _ = try workspace.moveAlias(at: [0], in: .global, to: .server(world.profile.id), toParentPath: [], index: 0)
+        XCTAssertEqual(workspace.aliases(in: .global).count, 1)
+        XCTAssertEqual(workspace.aliases(in: .server(world.profile.id)).first?.description, "First")
+        XCTAssertTrue(try workspace.renderedDocument().serialized().contains("Custom=\"keep\""))
+    }
+
+    func testAliasScopeOrderingAndImportExportRoundTrip() throws {
+        let source = """
+        Version=331
+        Connections {
+          Aliases { Active=true AfterCount=1
+            { Description="Global pre" FindString.MatchText="global-pre" }
+            { Description="Global post" FindString.MatchText="global-post" }
+          }
+          Shortcuts {
+            World {
+              Host="world.example:8888"
+              Aliases { Active=true AfterCount=1
+                { Description="World pre" FindString.MatchText="world-pre" }
+                { Description="World post" FindString.MatchText="world-post" }
+              }
+              Characters {
+                Hero {
+                  Aliases { Active=true { Description="Character" FindString.MatchText="character" } }
+                  Puppets {
+                    Scout { Aliases { Active=true { Description="Puppet" FindString.MatchText="puppet" } } }
+                  }
+                }
+              }
+            }
+          }
+        }
+        """
+        let projection = try LegacyConfigurationProjection(document: .init(source: source))
+        let server = try XCTUnwrap(projection.servers.first)
+        let character = try XCTUnwrap(server.characters.first)
+        let puppet = try XCTUnwrap(character.puppets.first)
+        let groups = projection.automationGroups(
+            for: server.profile,
+            character: character,
+            puppet: puppet
+        )
+        XCTAssertEqual(
+            groups.aliases.flatMap(\AliasGroup.aliases).map(\.description),
+            ["Global pre", "World pre", "Character", "Puppet", "World post", "Global post"]
+        )
+
+        let importSource = try LegacyConfigurationDocument(source: """
+        Version=331
+        Connections {
+          Aliases { Active=true
+            { Description="Imported folder" Folder=true FindString.MatchText=""
+              Aliases { { Description="Imported child" Example="test" Replace="done" FindString.MatchText="test" } }
+            }
+          }
+        }
+        """)
+        var target = try LegacyConfigurationWorkspace.empty()
+        XCTAssertEqual(try target.importAliases(from: importSource, into: .global), [[0]])
+        let exported = try target.exportAliases(in: .global, path: [0])
+        let reparsed = try LegacyConfigurationProjection(document: exported)
+        XCTAssertEqual(reparsed.automation.aliases.aliases.first?.description, "Imported folder")
+        XCTAssertEqual(reparsed.automation.aliases.aliases.first?.children.first?.example, "test")
+    }
+
+    func testAliasExampleCodableRemainsBackwardCompatible() throws {
+        let json = """
+        {
+          "id": "00000000-0000-0000-0000-000000000001",
+          "description": "Legacy",
+          "match": {
+            "text": "old",
+            "isRegularExpression": false,
+            "matchCase": false,
+            "startsWith": false,
+            "endsWith": false,
+            "wholeWord": false
+          },
+          "replacement": "new",
+          "folder": false,
+          "stopProcessing": false,
+          "expandVariables": false,
+          "children": []
+        }
+        """
+        let alias = try JSONDecoder().decode(Alias.self, from: Data(json.utf8))
+        XCTAssertEqual(alias.example, "")
+    }
+
     func testStartupConnectionsUseAutoConnectCharactersAndGlobalPolicy() throws {
         let document = try LegacyConfigurationDocument(source: """
         Version=331

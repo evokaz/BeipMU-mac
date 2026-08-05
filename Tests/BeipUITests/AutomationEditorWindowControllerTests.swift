@@ -674,6 +674,118 @@ final class AutomationEditorWindowControllerTests: XCTestCase {
         XCTAssertEqual(library.workspace.trigger(at: [239], in: .global)?.description, "Bulk 239 Edited")
     }
 
+    func testAliasEditorRendersReferenceLayoutAndEditsNestedAlias() throws {
+        let library = ProfileLibrary(workspace: try Self.workspaceWithNestedGlobalAlias())
+        let controller = AutomationEditorWindowController(library: library, kind: .aliases)
+        defer { controller.close() }
+        let content = try XCTUnwrap(controller.window?.contentView)
+        content.layoutSubtreeIfNeeded()
+
+        let outline = try XCTUnwrap(
+            recursiveSubviews(of: content)
+                .compactMap { $0 as? NSOutlineView }
+                .first { $0.accessibilityIdentifier() == "aliasScopeOutline" }
+        )
+        XCTAssertNotNil(try? button(identifier: "aliasApply", in: content))
+        XCTAssertNotNil(try? button(identifier: "aliasHelp", in: content))
+
+        let childRow = try XCTUnwrap(row(titled: "Child", in: outline))
+        outline.selectRowIndexes(.init(integer: childRow), byExtendingSelection: false)
+        controller.outlineViewSelectionDidChange(.init(
+            name: NSOutlineView.selectionDidChangeNotification,
+            object: outline
+        ))
+
+        let description = try textField(identifier: "aliasDescription", in: content)
+        description.stringValue = "Edited Child"
+        let example = try textView(identifier: "aliasTestString", in: content)
+        example.string = "x"
+        let replacement = try textView(identifier: "aliasReplacement", in: content)
+        replacement.string = "edited"
+        try button(identifier: "aliasApply", in: content).performClick(nil)
+
+        let edited = try XCTUnwrap(library.workspace.alias(at: [0, 0], in: .global))
+        XCTAssertEqual(edited.description, "Edited Child")
+        XCTAssertEqual(edited.example, "x")
+        XCTAssertEqual(edited.replacement, "edited")
+    }
+
+    func testAliasProcessingOptionsBelongToSelectedAliasAndPersist() throws {
+        let library = ProfileLibrary(workspace: try Self.workspaceWithNestedGlobalAlias())
+        let controller = AutomationEditorWindowController(library: library, kind: .aliases)
+        defer { controller.close() }
+        let content = try XCTUnwrap(controller.window?.contentView)
+        content.layoutSubtreeIfNeeded()
+        let outline = try XCTUnwrap(
+            recursiveSubviews(of: content)
+                .compactMap { $0 as? NSOutlineView }
+                .first { $0.accessibilityIdentifier() == "aliasScopeOutline" }
+        )
+        let childRow = try XCTUnwrap(row(titled: "Child", in: outline))
+        outline.selectRowIndexes(.init(integer: childRow), byExtendingSelection: false)
+        controller.outlineViewSelectionDidChange(.init(
+            name: NSOutlineView.selectionDidChangeNotification,
+            object: outline
+        ))
+
+        let process = try button(identifier: "aliasProcessAliases", in: content)
+        let echo = try button(identifier: "aliasEcho", in: content)
+        let commands = try button(identifier: "aliasProcessCommands", in: content)
+        XCTAssertEqual(process.state, .on)
+        XCTAssertEqual(echo.state, .on)
+        XCTAssertEqual(commands.state, .off)
+
+        process.performClick(nil)
+        echo.performClick(nil)
+        commands.performClick(nil)
+        XCTAssertEqual(process.state, .off)
+        XCTAssertEqual(echo.state, .off)
+        XCTAssertEqual(commands.state, .on)
+        try button(identifier: "aliasApply", in: content).performClick(nil)
+
+        let edited = try XCTUnwrap(library.workspace.alias(at: [0, 0], in: .global))
+        XCTAssertFalse(edited.active)
+        XCTAssertFalse(edited.echo)
+        XCTAssertTrue(edited.processCommands)
+        XCTAssertTrue(try library.workspace.renderedDocument().serialized().contains("ProcessCommands=true"))
+    }
+
+    func testAliasFolderDisablesProcessingControlsAndSamplesCopyIndependently() throws {
+        let library = ProfileLibrary(workspace: try Self.workspaceWithNestedGlobalAlias())
+        let controller = AutomationEditorWindowController(library: library, kind: .aliases)
+        defer { controller.close() }
+        let content = try XCTUnwrap(controller.window?.contentView)
+        content.layoutSubtreeIfNeeded()
+        let outline = try XCTUnwrap(
+            recursiveSubviews(of: content)
+                .compactMap { $0 as? NSOutlineView }
+                .first { $0.accessibilityIdentifier() == "aliasScopeOutline" }
+        )
+        let folderRow = try XCTUnwrap(row(titled: "Folder", in: outline))
+        outline.selectRowIndexes(.init(integer: folderRow), byExtendingSelection: false)
+        controller.outlineViewSelectionDidChange(.init(
+            name: NSOutlineView.selectionDidChangeNotification,
+            object: outline
+        ))
+
+        XCTAssertEqual(try button(identifier: "aliasFolder", in: content).state, .on)
+        XCTAssertFalse(try button(identifier: "aliasRegularExpression", in: content).isEnabled)
+        XCTAssertFalse(try textView(identifier: "aliasTestString", in: content).isEditable)
+        XCTAssertFalse(try textView(identifier: "aliasReplacement", in: content).isEditable)
+
+        let samples = try XCTUnwrap(
+            recursiveSubviews(of: content)
+                .compactMap { $0 as? NSOutlineView }
+                .first { $0.accessibilityIdentifier() == "aliasSamplesOutline" }
+        )
+        let sampleRow = try XCTUnwrap(row(titled: "Repeat 'buy torch' command n times", in: samples))
+        samples.selectRowIndexes(.init(integer: sampleRow), byExtendingSelection: false)
+        try button(identifier: "aliasCopy", in: content).performClick(nil)
+
+        XCTAssertEqual(library.workspace.alias(at: [0, 1], in: .global)?.description, "Repeat 'buy torch' command n times")
+        XCTAssertEqual(library.workspace.alias(at: [0, 1], in: .global)?.example, "bt 5")
+    }
+
     func testAutomationDebuggerDisplaysTriggerSkipReasons() throws {
         let controller = AutomationDebugWindowController(kind: .triggers)
         defer { controller.close() }
@@ -728,6 +840,14 @@ final class AutomationEditorWindowControllerTests: XCTestCase {
         )
     }
 
+    private func textView(identifier: String, in content: NSView) throws -> NSTextView {
+        try XCTUnwrap(
+            recursiveSubviews(of: content)
+                .compactMap { $0 as? NSTextView }
+                .first { $0.accessibilityIdentifier() == identifier }
+        )
+    }
+
     private func button(titled title: String, in content: NSView) throws -> NSButton {
         try XCTUnwrap(
             recursiveSubviews(of: content)
@@ -755,6 +875,24 @@ final class AutomationEditorWindowControllerTests: XCTestCase {
                   Triggers {
                     Active=true
                     { Description="Child" FindString { MatchText="child" } }
+                  }
+                }
+              }
+            }
+            """
+        )
+    }
+
+    private static func workspaceWithNestedGlobalAlias() throws -> LegacyConfigurationWorkspace {
+        try workspace(
+            """
+            Version=331
+            Connections {
+              Aliases {
+                Active=true Echo=true ProcessCommands=false
+                { Description="Folder" Folder=true FindString.MatchText=""
+                  Aliases { Active=true AfterCount=0
+                    { Description="Child" Example="old" Replace="old" FindString.MatchText="x" }
                   }
                 }
               }

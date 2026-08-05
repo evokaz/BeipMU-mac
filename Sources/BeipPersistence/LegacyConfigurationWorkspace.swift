@@ -48,17 +48,29 @@ public struct LegacyConfigurationWorkspace: Sendable {
     public private(set) var recoveredFrom: URL?
     public private(set) var isDirty: Bool
 
+    // Config.txt has no persisted UUID for scopes. Keep the projection's
+    // generated identities stable while lossless edits reparse the document;
+    // editor selections and AutomationScope values can therefore survive an
+    // alias/trigger write.
+    private var stableServerIDs: [String: UUID]
+    private var stableCharacterIDs: [String: UUID]
+    private var stablePuppetIDs: [String: UUID]
+
     public init(
         document: LegacyConfigurationDocument,
         sourceURL: URL? = nil,
         recoveredFrom: URL? = nil,
         isDirty: Bool = false
     ) throws {
+        let projected = try LegacyConfigurationProjection(document: document)
         self.document = document
-        self.projection = try LegacyConfigurationProjection(document: document)
+        self.projection = projected
         self.sourceURL = sourceURL
         self.recoveredFrom = recoveredFrom
         self.isDirty = isDirty
+        self.stableServerIDs = Self.serverIDs(in: projected)
+        self.stableCharacterIDs = Self.characterIDs(in: projected)
+        self.stablePuppetIDs = Self.puppetIDs(in: projected)
     }
 
     public static func empty(isDirty: Bool = true) throws -> Self {
@@ -97,6 +109,21 @@ public struct LegacyConfigurationWorkspace: Sendable {
         case let .character(serverID, characterID): character(serverID: serverID, characterID: characterID)?.aliases.aliases ?? []
         case let .puppet(serverID, characterID, puppetID): puppet(serverID: serverID, characterID: characterID, puppetID: puppetID)?.aliases.aliases ?? []
         }
+    }
+
+    /// Returns the complete alias collection for a scope, including its
+    /// Windows Active/Echo/ProcessCommands and pre/post ordering settings.
+    public func aliasGroup(in scope: AutomationScope) -> AliasGroup {
+        switch scope {
+        case .global: projection.automation.aliases
+        case let .server(id): server(id)?.automation.aliases ?? .init()
+        case let .character(serverID, characterID): character(serverID: serverID, characterID: characterID)?.aliases ?? .init()
+        case let .puppet(serverID, characterID, puppetID): puppet(serverID: serverID, characterID: characterID, puppetID: puppetID)?.aliases ?? .init()
+        }
+    }
+
+    public func alias(at path: [Int], in scope: AutomationScope) -> Alias? {
+        Self.alias(at: path, in: aliases(in: scope))
     }
 
     public func triggers(in scope: AutomationScope) -> [Trigger] {
@@ -181,6 +208,55 @@ public struct LegacyConfigurationWorkspace: Sendable {
     }
 
     @discardableResult
+    public mutating func addAlias(in scope: AutomationScope, alias: Alias) throws -> Int {
+        let path = try addAlias(in: scope, parentPath: [], alias: alias)
+        return path[0]
+    }
+
+    /// Adds a complete alias tree at any depth. The returned path is relative
+    /// to the selected scope and remains useful after the projection reload.
+    @discardableResult
+    public mutating func addAlias(
+        in scope: AutomationScope,
+        parentPath: [Int],
+        alias: Alias
+    ) throws -> [Int] {
+        guard parentPath.isEmpty || self.alias(at: parentPath, in: scope) != nil else {
+            throw WorkspaceError.automationEntryNotFound
+        }
+        let collectionPath = try automationCollectionPath(scope, kind: .aliases)
+        try document.upsertValue("true", at: collectionPath + ["Active"], quoted: false)
+        let index: Int
+        if parentPath.isEmpty {
+            index = try document.appendUnnamedBlock(at: collectionPath)
+        } else {
+            index = try document.appendUnnamedBlock(
+                at: collectionPath,
+                nestedIn: parentPath,
+                nestedCollectionPath: ["Aliases"]
+            )
+        }
+        let path = parentPath + [index]
+        try writeAlias(alias, at: path, collectionPath: collectionPath)
+        return path
+    }
+
+    @discardableResult
+    public mutating func addAlias(
+        in scope: AutomationScope,
+        parentPath: [Int],
+        description: String = "New Alias",
+        match: MatchDefinition = .init(text: ""),
+        replacement: String = ""
+    ) throws -> [Int] {
+        try addAlias(
+            in: scope,
+            parentPath: parentPath,
+            alias: Alias(description: description, match: match, replacement: replacement)
+        )
+    }
+
+    @discardableResult
     public mutating func addTrigger(in scope: AutomationScope, description: String = "New Trigger", match: MatchDefinition = .init(text: ""), action: EditableTriggerAction = .gag(display: true, log: false)) throws -> Int {
         try addAutomationEntry(in: scope, kind: .triggers, description: description, match: match, action: action)
     }
@@ -239,6 +315,229 @@ public struct LegacyConfigurationWorkspace: Sendable {
 
     public mutating func updateAlias(at index: Int, in scope: AutomationScope, description: String, match: MatchDefinition, replacement: String) throws {
         try updateAutomationEntry(at: index, in: scope, kind: .aliases, description: description, match: match, replacement: replacement)
+    }
+
+    public mutating func updateAlias(at index: Int, in scope: AutomationScope, alias: Alias) throws {
+        try updateAlias(at: [index], in: scope, alias: alias)
+    }
+
+    public mutating func updateAlias(at path: [Int], in scope: AutomationScope, alias: Alias) throws {
+        guard !path.isEmpty, self.alias(at: path, in: scope) != nil else {
+            throw WorkspaceError.automationEntryNotFound
+        }
+        try writeAlias(alias, at: path, collectionPath: try automationCollectionPath(scope, kind: .aliases))
+    }
+
+    @discardableResult
+    public mutating func removeAlias(at path: [Int], in scope: AutomationScope) throws -> Bool {
+        guard !path.isEmpty, self.alias(at: path, in: scope) != nil else {
+            throw WorkspaceError.automationEntryNotFound
+        }
+        let removed = try document.removeUnnamedBlock(
+            at: path,
+            collectionPath: try automationCollectionPath(scope, kind: .aliases),
+            nestedCollectionPath: ["Aliases"]
+        )
+        try reloadProjectionAfterAutomationEdit()
+        return removed
+    }
+
+    @discardableResult
+    public mutating func removeAlias(at index: Int, in scope: AutomationScope) throws -> Bool {
+        try removeAlias(at: [index], in: scope)
+    }
+
+    /// Copies a complete alias subtree, retaining fields that are not modeled
+    /// by the Mac projection.
+    @discardableResult
+    public mutating func copyAlias(
+        at sourcePath: [Int],
+        in scope: AutomationScope,
+        toParentPath destinationParentPath: [Int]? = nil,
+        index destinationIndex: Int? = nil
+    ) throws -> [Int] {
+        guard !sourcePath.isEmpty, self.alias(at: sourcePath, in: scope) != nil else {
+            throw WorkspaceError.automationEntryNotFound
+        }
+        let parent = destinationParentPath ?? Array(sourcePath.dropLast())
+        guard parent.isEmpty || self.alias(at: parent, in: scope) != nil else {
+            throw WorkspaceError.automationEntryNotFound
+        }
+        let collectionPath = try automationCollectionPath(scope, kind: .aliases)
+        let count = parent.isEmpty
+            ? aliases(in: scope).count
+            : self.alias(at: parent, in: scope)?.children.count ?? 0
+        let index = destinationIndex ?? count
+        let copied = try document.copyUnnamedBlock(
+            at: sourcePath,
+            collectionPath: collectionPath,
+            nestedCollectionPath: ["Aliases"],
+            to: index,
+            nestedIn: parent,
+            destinationCollectionPath: collectionPath,
+            destinationNestedCollectionPath: ["Aliases"]
+        )
+        try reloadProjectionAfterAutomationEdit()
+        return copied
+    }
+
+    @discardableResult
+    public mutating func moveAlias(
+        at sourcePath: [Int],
+        in scope: AutomationScope,
+        toParentPath destinationParentPath: [Int],
+        index destinationIndex: Int
+    ) throws -> [Int] {
+        try moveAlias(
+            at: sourcePath,
+            in: scope,
+            to: scope,
+            toParentPath: destinationParentPath,
+            index: destinationIndex
+        )
+    }
+
+    /// Moves an alias across scopes or folders without flattening or
+    /// reserializing its raw Config.txt subtree.
+    @discardableResult
+    public mutating func moveAlias(
+        at sourcePath: [Int],
+        in sourceScope: AutomationScope,
+        to destinationScope: AutomationScope,
+        toParentPath destinationParentPath: [Int],
+        index destinationIndex: Int
+    ) throws -> [Int] {
+        guard !sourcePath.isEmpty, self.alias(at: sourcePath, in: sourceScope) != nil,
+              destinationParentPath.isEmpty || self.alias(at: destinationParentPath, in: destinationScope) != nil,
+              !(sourceScope == destinationScope && Self.path(destinationParentPath, hasPrefix: sourcePath)) else {
+            throw WorkspaceError.automationEntryNotFound
+        }
+        let sourceCollection = try automationCollectionPath(sourceScope, kind: .aliases)
+        let destinationCollection = try automationCollectionPath(destinationScope, kind: .aliases)
+        let sourceParent = Array(sourcePath.dropLast())
+        let sourceGroup = aliasGroup(at: sourceParent, in: sourceScope)
+        let destinationGroup = aliasGroup(at: destinationParentPath, in: destinationScope)
+        let sourceCount = sourceGroup.aliases.count
+        let sourceWasPost = (sourcePath.last ?? 0) >= max(0, sourceCount - sourceGroup.afterCount)
+        let sameGroup = sourceScope == destinationScope && sourceParent == destinationParentPath
+        let sourceAfter = max(0, sourceGroup.afterCount - (sourceWasPost ? 1 : 0))
+        let destinationCount = destinationGroup.aliases.count - (sameGroup ? 1 : 0)
+        let destinationAfterBeforeInsert = sameGroup ? sourceAfter : destinationGroup.afterCount
+        let clampedIndex = min(max(0, destinationIndex), max(0, destinationCount))
+        let destinationIsPost = clampedIndex >= max(0, destinationCount - destinationAfterBeforeInsert)
+        let destinationAfter = min(
+            destinationCount + 1,
+            destinationAfterBeforeInsert + (destinationIsPost ? 1 : 0)
+        )
+
+        let moved = try document.moveUnnamedBlock(
+            at: sourcePath,
+            collectionPath: sourceCollection,
+            nestedCollectionPath: ["Aliases"],
+            to: clampedIndex,
+            nestedIn: destinationParentPath,
+            destinationCollectionPath: destinationCollection,
+            destinationNestedCollectionPath: ["Aliases"]
+        )
+        try setAliasAfterCount(sourceAfter, at: sourceParent, in: sourceScope, reload: false)
+        if !sameGroup {
+            try setAliasAfterCount(destinationAfter, at: destinationParentPath, in: destinationScope, reload: false)
+        } else {
+            try setAliasAfterCount(destinationAfter, at: destinationParentPath, in: destinationScope, reload: false)
+        }
+        try reloadProjectionAfterAutomationEdit()
+        return moved
+    }
+
+    public mutating func updateAliasGroupSettings(
+        in scope: AutomationScope,
+        active: Bool,
+        echo: Bool,
+        processCommands: Bool,
+        afterCount: Int
+    ) throws {
+        let path = try automationCollectionPath(scope, kind: .aliases)
+        try document.upsertValue(Self.flag(active), at: path + ["Active"], quoted: false)
+        try document.upsertValue(Self.flag(echo), at: path + ["Echo"], quoted: false)
+        try document.upsertValue(Self.flag(processCommands), at: path + ["ProcessCommands"], quoted: false)
+        try document.upsertValue(String(max(0, afterCount)), at: path + ["AfterCount"], quoted: false)
+        try reloadProjectionAfterAutomationEdit()
+    }
+
+    public mutating func updateAliasGroupSettings(
+        at parentPath: [Int],
+        in scope: AutomationScope,
+        active: Bool,
+        afterCount: Int
+    ) throws {
+        guard parentPath.isEmpty || self.alias(at: parentPath, in: scope) != nil else {
+            throw WorkspaceError.automationEntryNotFound
+        }
+        if parentPath.isEmpty {
+            let group = aliasGroup(in: scope)
+            try updateAliasGroupSettings(
+                in: scope,
+                active: active,
+                echo: group.echo,
+                processCommands: group.processCommands,
+                afterCount: afterCount
+            )
+            return
+        }
+        let collectionPath = try automationCollectionPath(scope, kind: .aliases)
+        try document.upsertValue(
+            Self.flag(active),
+            inUnnamedBlockAt: parentPath,
+            collectionPath: collectionPath,
+            relativePath: ["Aliases", "Active"],
+            quoted: false
+        )
+        try document.upsertValue(
+            String(max(0, afterCount)),
+            inUnnamedBlockAt: parentPath,
+            collectionPath: collectionPath,
+            relativePath: ["Aliases", "AfterCount"],
+            quoted: false
+        )
+        try reloadProjectionAfterAutomationEdit()
+    }
+
+    /// Imports every top-level alias tree in a Windows v331
+    /// Connections.Aliases document into the selected destination.
+    @discardableResult
+    public mutating func importAliases(
+        from source: LegacyConfigurationDocument,
+        into scope: AutomationScope,
+        parentPath: [Int] = []
+    ) throws -> [[Int]] {
+        let imported = try LegacyConfigurationWorkspace(document: source)
+        var paths: [[Int]] = []
+        for alias in imported.globalAliases {
+            paths.append(try addAlias(in: scope, parentPath: parentPath, alias: alias))
+        }
+        return paths
+    }
+
+    /// Exports either one alias subtree or every alias in a selected scope as
+    /// a portable Windows v331 configuration.
+    public func exportAliases(
+        in scope: AutomationScope,
+        path: [Int]? = nil
+    ) throws -> LegacyConfigurationDocument {
+        let selected: [Alias]
+        if let path {
+            guard let alias = alias(at: path, in: scope) else {
+                throw WorkspaceError.automationEntryNotFound
+            }
+            selected = [alias]
+        } else {
+            selected = aliases(in: scope)
+        }
+        var exported = try LegacyConfigurationWorkspace.empty(isDirty: false)
+        for alias in selected {
+            _ = try exported.addAlias(in: .global, parentPath: [], alias: alias)
+        }
+        return try exported.renderedDocument()
     }
 
     public mutating func updateTrigger(at index: Int, in scope: AutomationScope, description: String, match: MatchDefinition, action: EditableTriggerAction) throws {
@@ -341,6 +640,45 @@ public struct LegacyConfigurationWorkspace: Sendable {
         guard let first = path.first, triggers.indices.contains(first) else { return nil }
         if path.count == 1 { return triggers[first] }
         return trigger(at: Array(path.dropFirst()), in: triggers[first].children)
+    }
+
+    private static func alias(at path: [Int], in aliases: [Alias]) -> Alias? {
+        guard let first = path.first, aliases.indices.contains(first) else { return nil }
+        if path.count == 1 { return aliases[first] }
+        return alias(at: Array(path.dropFirst()), in: aliases[first].children)
+    }
+
+    private func aliasGroup(at parentPath: [Int], in scope: AutomationScope) -> AliasGroup {
+        guard let parent = alias(at: parentPath, in: scope) else {
+            return aliasGroup(in: scope)
+        }
+        return .init(
+            active: parent.childrenActive,
+            afterCount: parent.childrenAfterCount,
+            aliases: parent.children
+        )
+    }
+
+    private mutating func setAliasAfterCount(
+        _ afterCount: Int,
+        at parentPath: [Int],
+        in scope: AutomationScope,
+        reload: Bool
+    ) throws {
+        let clamped = max(0, afterCount)
+        let collectionPath = try automationCollectionPath(scope, kind: .aliases)
+        if parentPath.isEmpty {
+            try document.upsertValue(String(clamped), at: collectionPath + ["AfterCount"], quoted: false)
+        } else {
+            try document.upsertValue(
+                String(clamped),
+                inUnnamedBlockAt: parentPath,
+                collectionPath: collectionPath,
+                relativePath: ["Aliases", "AfterCount"],
+                quoted: false
+            )
+        }
+        if reload { try reloadProjectionAfterAutomationEdit() }
     }
 
     private static func path(_ path: [Int], hasPrefix prefix: [Int]) -> Bool {
@@ -500,6 +838,90 @@ public struct LegacyConfigurationWorkspace: Sendable {
         try document.upsertValue(description, inUnnamedBlockAt: index, collectionPath: collectionPath, relativePath: ["Description"])
         try writeMatch(match, at: index, collectionPath: collectionPath)
         try document.upsertValue(replacement, inUnnamedBlockAt: index, collectionPath: collectionPath, relativePath: ["Replace"])
+        try reloadProjectionAfterAutomationEdit()
+    }
+
+    private mutating func writeAlias(
+        _ alias: Alias,
+        at indexPath: [Int],
+        collectionPath: [String]
+    ) throws {
+        try document.upsertValue(
+            alias.description,
+            inUnnamedBlockAt: indexPath,
+            collectionPath: collectionPath,
+            relativePath: ["Description"]
+        )
+        try writeMatch(alias.match, at: indexPath, collectionPath: collectionPath)
+        try document.upsertValue(
+            alias.replacement,
+            inUnnamedBlockAt: indexPath,
+            collectionPath: collectionPath,
+            relativePath: ["Replace"]
+        )
+        try writeFlag(alias.folder, at: indexPath, collectionPath: collectionPath, path: ["Folder"])
+        // These are alias-level settings. Persist false explicitly as well as
+        // true so a selected alias can override the legacy group defaults.
+        try writeFlagWhenActive(alias.active, at: indexPath, collectionPath: collectionPath, path: ["Active"], when: true)
+        try writeFlagWhenActive(alias.echo, at: indexPath, collectionPath: collectionPath, path: ["Echo"], when: true)
+        try writeFlagWhenActive(alias.processCommands, at: indexPath, collectionPath: collectionPath, path: ["ProcessCommands"], when: true)
+        try writeFlag(alias.stopProcessing, at: indexPath, collectionPath: collectionPath, path: ["StopProcessing"])
+        try writeFlag(alias.expandVariables, at: indexPath, collectionPath: collectionPath, path: ["ExpandVariables"])
+        try writeValueIfNeeded(
+            alias.example,
+            at: indexPath,
+            collectionPath: collectionPath,
+            path: ["Example"],
+            when: !alias.example.isEmpty
+                || aliasValueExists(at: indexPath, collectionPath: collectionPath, path: ["Example"])
+        )
+
+        let existingChildCount = document.unnamedBlockCount(
+            at: collectionPath,
+            nestedIn: indexPath,
+            nestedCollectionPath: ["Aliases"]
+        )
+        let hasChildGroup = !alias.children.isEmpty
+            || existingChildCount > 0
+            || !alias.childrenActive
+            || alias.childrenAfterCount > 0
+            || aliasValueExists(at: indexPath, collectionPath: collectionPath, path: ["Aliases", "Active"])
+            || aliasValueExists(at: indexPath, collectionPath: collectionPath, path: ["Aliases", "AfterCount"])
+        if hasChildGroup {
+            try document.upsertValue(
+                Self.flag(alias.childrenActive),
+                inUnnamedBlockAt: indexPath,
+                collectionPath: collectionPath,
+                relativePath: ["Aliases", "Active"],
+                quoted: false
+            )
+            try document.upsertValue(
+                String(max(0, min(alias.childrenAfterCount, alias.children.count))),
+                inUnnamedBlockAt: indexPath,
+                collectionPath: collectionPath,
+                relativePath: ["Aliases", "AfterCount"],
+                quoted: false
+            )
+        }
+        if alias.children.count < existingChildCount {
+            for index in stride(from: existingChildCount - 1, through: alias.children.count, by: -1) {
+                _ = try document.removeUnnamedBlock(
+                    at: indexPath + [index],
+                    collectionPath: collectionPath,
+                    nestedCollectionPath: ["Aliases"]
+                )
+            }
+        }
+        for (childIndex, child) in alias.children.enumerated() {
+            if childIndex >= existingChildCount {
+                _ = try document.appendUnnamedBlock(
+                    at: collectionPath,
+                    nestedIn: indexPath,
+                    nestedCollectionPath: ["Aliases"]
+                )
+            }
+            try writeAlias(child, at: indexPath + [childIndex], collectionPath: collectionPath)
+        }
         try reloadProjectionAfterAutomationEdit()
     }
 
@@ -1089,8 +1511,76 @@ public struct LegacyConfigurationWorkspace: Sendable {
     }
 
     private mutating func reloadProjectionAfterAutomationEdit() throws {
-        projection = try LegacyConfigurationProjection(document: document)
+        var projected = try LegacyConfigurationProjection(document: document)
+        Self.applyStableIDs(
+            to: &projected,
+            serverIDs: &stableServerIDs,
+            characterIDs: &stableCharacterIDs,
+            puppetIDs: &stablePuppetIDs
+        )
+        projection = projected
         isDirty = true
+    }
+
+    private static func identityKey(_ components: String...) -> String {
+        components
+            .map { $0.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current) }
+            .joined(separator: "\u{1F}")
+    }
+
+    private static func serverIDs(in projection: LegacyConfigurationProjection) -> [String: UUID] {
+        Dictionary(uniqueKeysWithValues: projection.servers.map { server in
+            (identityKey(server.profile.name), server.profile.id)
+        })
+    }
+
+    private static func characterIDs(in projection: LegacyConfigurationProjection) -> [String: UUID] {
+        Dictionary(uniqueKeysWithValues: projection.servers.flatMap { server in
+            server.characters.map { character in
+                (identityKey(server.profile.name, character.name), character.id)
+            }
+        })
+    }
+
+    private static func puppetIDs(in projection: LegacyConfigurationProjection) -> [String: UUID] {
+        Dictionary(uniqueKeysWithValues: projection.servers.flatMap { server in
+            server.characters.flatMap { character in
+                character.puppets.map { puppet in
+                    (identityKey(server.profile.name, character.name, puppet.name), puppet.id)
+                }
+            }
+        })
+    }
+
+    private static func applyStableIDs(
+        to projection: inout LegacyConfigurationProjection,
+        serverIDs: inout [String: UUID],
+        characterIDs: inout [String: UUID],
+        puppetIDs: inout [String: UUID]
+    ) {
+        for serverIndex in projection.servers.indices {
+            let serverName = projection.servers[serverIndex].profile.name
+            let serverKey = identityKey(serverName)
+            let serverID = serverIDs[serverKey] ?? projection.servers[serverIndex].profile.id
+            serverIDs[serverKey] = serverID
+            projection.servers[serverIndex].profile.id = serverID
+
+            for characterIndex in projection.servers[serverIndex].characters.indices {
+                let characterName = projection.servers[serverIndex].characters[characterIndex].name
+                let characterKey = identityKey(serverName, characterName)
+                let characterID = characterIDs[characterKey] ?? projection.servers[serverIndex].characters[characterIndex].id
+                characterIDs[characterKey] = characterID
+                projection.servers[serverIndex].characters[characterIndex].id = characterID
+
+                for puppetIndex in projection.servers[serverIndex].characters[characterIndex].puppets.indices {
+                    let puppetName = projection.servers[serverIndex].characters[characterIndex].puppets[puppetIndex].name
+                    let puppetKey = identityKey(serverName, characterName, puppetName)
+                    let puppetID = puppetIDs[puppetKey] ?? projection.servers[serverIndex].characters[characterIndex].puppets[puppetIndex].id
+                    puppetIDs[puppetKey] = puppetID
+                    projection.servers[serverIndex].characters[characterIndex].puppets[puppetIndex].id = puppetID
+                }
+            }
+        }
     }
 
     private static func flag(_ value: Bool) -> String { value ? "true" : "false" }
@@ -1182,6 +1672,10 @@ public struct LegacyConfigurationWorkspace: Sendable {
     }
 
     private func triggerValueExists(at index: [Int], collectionPath: [String], path: [String]) -> Bool {
+        document.value(inUnnamedBlockAt: index, collectionPath: collectionPath, relativePath: path) != nil
+    }
+
+    private func aliasValueExists(at index: [Int], collectionPath: [String], path: [String]) -> Bool {
         document.value(inUnnamedBlockAt: index, collectionPath: collectionPath, relativePath: path) != nil
     }
 
