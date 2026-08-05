@@ -103,6 +103,7 @@ public actor SessionActor {
     private var statisticsValue = ConnectionStatistics()
     private var idleTask: Task<Void, Never>?
     private var idleConfiguration: (interval: TimeInterval, text: String)?
+    private var lastActivityAt: ContinuousClock.Instant?
     private var pingStartedAt: ContinuousClock.Instant?
     private var localEchoEnabled: Bool
     private var localEchoColor = RGBColor(red: 0, green: 205, blue: 205)
@@ -208,7 +209,8 @@ public actor SessionActor {
         await send(text, echo: true)
     }
 
-    private func send(_ text: String, echo: Bool) async {
+    private func send(_ text: String, echo: Bool, countsAsActivity: Bool = true) async {
+        if countsAsActivity { recordActivity() }
         if echo, localEchoEnabled {
             let style = TextStyle(foreground: localEchoColor)
             eventContinuation?.yield(.renderedLine(.init(
@@ -264,6 +266,7 @@ public actor SessionActor {
             case .connected:
                 isConnected = true
                 connectedAt = .now
+                lastActivityAt = .now
                 statisticsValue.connectionCount += 1
                 startIdleActionIfNeeded()
             case .disconnected, .failed:
@@ -338,9 +341,21 @@ public actor SessionActor {
                 do { try await Task.sleep(for: .seconds(configured.interval)) }
                 catch { return }
                 guard !Task.isCancelled else { return }
-                await self?.send(configured.text)
+                await self?.sendIdleTextIfNeeded(configured.text, after: configured.interval)
             }
         }
+    }
+
+    private func recordActivity() {
+        lastActivityAt = .now
+        if isConnected { startIdleActionIfNeeded() }
+    }
+
+    private func sendIdleTextIfNeeded(_ text: String, after interval: TimeInterval) async {
+        guard isConnected,
+              let lastActivityAt,
+              Self.seconds(from: lastActivityAt.duration(to: .now)) >= interval else { return }
+        await send(text, echo: true, countsAsActivity: false)
     }
 
     private func recordConnectedDuration() {

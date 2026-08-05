@@ -434,12 +434,12 @@ final class NetworkTransportTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(statistics.bytesSent, UInt64(27))
     }
 
-    func testCharacterIdleActionRepeatsWhileConnected() async throws {
+    func testCharacterIdleActionWaitsForIdlePeriodAfterActivity() async throws {
         let server = try FakeTCPServer()
         let port = try await server.start()
         defer { server.stop() }
         let session = SessionActor(transport: NetworkTransport(), processor: MUDProtocolPipeline())
-        let character = CharacterProfile(name: "Idle", idleTimeout: 0.02, idleText: "IDLE")
+        let character = CharacterProfile(name: "Idle", idleTimeout: 0.25, idleText: "IDLE")
 
         await session.connect(.init(
             server: .init(name: "idle", host: "127.0.0.1", port: port),
@@ -447,8 +447,21 @@ final class NetworkTransportTests: XCTestCase {
             policy: .init(connectTimeoutMilliseconds: 1_000, retryCount: 1, keepAlive: false, noDelay: false)
         ))
         let peer = try await server.nextConnection()
-        let payload = try await peer.receive(atLeast: 6)
-        XCTAssertEqual(payload, Data("IDLE\r\n".utf8))
+        try await Task.sleep(for: .milliseconds(150))
+        await session.send("look")
+        let command = try await peer.receive(atLeast: 6)
+        XCTAssertEqual(command, Data("look\r\n".utf8))
+
+        try await Task.sleep(for: .milliseconds(150))
+        var receivedIdleTooEarly = false
+        do {
+            _ = try await peer.receive(atLeast: 6, timeout: 0.05)
+            receivedIdleTooEarly = true
+        } catch { }
+        XCTAssertFalse(receivedIdleTooEarly)
+
+        let idle = try await peer.receive(atLeast: 6)
+        XCTAssertEqual(idle, Data("IDLE\r\n".utf8))
         await session.disconnect()
     }
 
@@ -696,10 +709,10 @@ private final class FakeServerConnection: @unchecked Sendable {
         }
     }
 
-    func receive(atLeast minimumLength: Int) async throws -> Data {
+    func receive(atLeast minimumLength: Int, timeout: TimeInterval = 3) async throws -> Data {
         var result = Data()
         while result.count < minimumLength {
-            result.append(try await receiveOnce())
+            result.append(try await receiveOnce(timeout: timeout))
         }
         return result
     }
@@ -724,7 +737,7 @@ private final class FakeServerConnection: @unchecked Sendable {
 
     func cancel() { connection.cancel() }
 
-    private func receiveOnce() async throws -> Data {
+    private func receiveOnce(timeout: TimeInterval) async throws -> Data {
         try await withCheckedThrowingContinuation { continuation in
             let gate = ContinuationGate(continuation)
             connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { data, _, complete, error in
@@ -733,7 +746,7 @@ private final class FakeServerConnection: @unchecked Sendable {
                 else if complete { gate.resume(.failure(FakeServerError.closed)) }
                 else { gate.resume(.failure(FakeServerError.emptyRead)) }
             }
-            queue.asyncAfter(deadline: .now() + 3) {
+            queue.asyncAfter(deadline: .now() + timeout) {
                 gate.resume(.failure(FakeServerError.timeout("server receive")))
             }
         }

@@ -16,7 +16,9 @@ xcodebuild -project BeipMU.xcodeproj -scheme BeipMU \
 ```
 
 Run `Scripts/package-release.sh` after a Release build to create the direct
-download ZIP and SHA-256 checksum. Releases are intentionally not notarized.
+download ZIP and SHA-256 checksum. Pass `--format dmg` for a DMG instead, or
+`--format both` to create both formats. The default format is ZIP. Releases
+are intentionally not notarized.
 
 ## Included functionality
 
