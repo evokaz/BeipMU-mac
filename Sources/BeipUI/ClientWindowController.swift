@@ -377,6 +377,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private var imageViewerWindow: ImageViewerWindowController?
     private var atlasWindow: AtlasWindowController?
     private var suppressAtlasPersistence = false
+    private var preservingAtlasPlacement = false
     private var automationEditors: [AutomationEditorWindowController] = []
     private var automationDebugWindows: [CommandOutcome.DebugAutomationKind: AutomationDebugWindowController] = [:]
     private var networkDebugWindow: NetworkDebugWindowController?
@@ -1304,11 +1305,18 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     func setDockPlacement(_ placement: WorkspaceDockPlacement) {
+        if atlasWindow?.isDocked == true { atlasWindow?.showFloating(self) }
         dockController.setPlacement(placement)
     }
 
     func setWorkspaceLayout(_ layout: WorkspaceLayoutNode) {
+        if atlasWindow?.isDocked == true, !layout.panes.contains(.atlas) {
+            atlasWindow?.showFloating(self)
+        }
         dockController.setLayout(layout)
+        if let atlasWindow, layout.panes.contains(.atlas), !atlasWindow.isDocked {
+            presentAtlas(atlasWindow)
+        }
     }
 
     func prepareForApplicationTermination() {
@@ -1485,7 +1493,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     func toggleMapWindow() {
-        if atlasWindow?.window?.isVisible == true {
+        if atlasWindow?.isDocked == true || atlasWindow?.window?.isVisible == true {
             closeAtlasSurface()
         } else {
             showAtlas()
@@ -2300,8 +2308,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
 
     func showAtlas() {
         let controller = ensureAtlasWindow()
-        controller.showWindow(self)
-        controller.window?.makeKeyAndOrderFront(self)
+        presentAtlas(controller)
     }
 
     func applyInputConversion(_ conversion: InputConversion) {
@@ -2581,7 +2588,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         saveSpawnSurfacePreferences()
         closeSpawnSurfaces()
         saveAtlasSurfacePreferences()
-        closeAtlasSurface()
+        closeAtlasSurface(preservingDockPlacement: true)
         closeWebViews()
         closeAIWindow(preservingDockPlacement: true)
         sessionTask?.cancel()
@@ -5463,11 +5470,18 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         let controller = AtlasWindowController()
         controller.onClose = { [weak self, weak controller] in
             guard let self, let controller, self.atlasWindow === controller else { return }
+            if !self.preservingAtlasPlacement {
+                self.dockController.undockPane(.atlas)
+            }
             self.atlasWindow = nil
             if !self.suppressAtlasPersistence {
                 self.preferences.atlasSurfaces.removeValue(forKey: self.notesKey)
                 self.savePreferences()
             }
+        }
+        controller.onDockRequest = { [weak self, weak controller] side in
+            guard let self, let controller else { return }
+            self.dockAtlas(controller, side: side)
         }
         controller.onSendCommands = { [weak self] commands in
             commands.forEach { self?.processInput($0) }
@@ -5482,6 +5496,47 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         return controller
     }
 
+    private func presentAtlas(_ controller: AtlasWindowController) {
+        guard !controller.isDocked else {
+            controller.focusSurface()
+            return
+        }
+        let pane = WorkspacePaneKind.atlas
+        if dockController.containsPane(pane) {
+            let view = controller.contentViewForDocking()
+            if dockController.restorePane(
+                pane,
+                view: view,
+                title: "Atlas",
+                onUndock: { [weak self, weak controller] in
+                    guard let self, let controller else { return }
+                    self.dockController.undockPane(pane)
+                    controller.showFloating(self)
+                }
+            ) {
+                return
+            }
+            controller.showFloating(self)
+            return
+        }
+        controller.showFloating(self)
+    }
+
+    private func dockAtlas(_ controller: AtlasWindowController, side: WebViewDockSide) {
+        let pane = WorkspacePaneKind.atlas
+        dockController.dockPane(
+            pane,
+            view: controller.contentViewForDocking(),
+            title: "Atlas",
+            side: side,
+            onUndock: { [weak self, weak controller] in
+                guard let self, let controller else { return }
+                self.dockController.undockPane(pane)
+                controller.showFloating(self)
+            }
+        )
+    }
+
     private func saveAtlasSurfacePreferences() {
         guard let atlasWindow else { return }
         preferences.atlasSurfaces[notesKey] = atlasWindow.surfacePreferences
@@ -5493,7 +5548,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         let controller = ensureAtlasWindow()
         do {
             try controller.restore(state)
-            controller.showWindow(self)
+            presentAtlas(controller)
         } catch {
             preferences.atlasSurfaces.removeValue(forKey: notesKey)
             savePreferences()
@@ -5501,10 +5556,16 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         }
     }
 
-    private func closeAtlasSurface() {
+    private func closeAtlasSurface(preservingDockPlacement: Bool = false) {
+        guard let controller = atlasWindow else { return }
         suppressAtlasPersistence = true
-        atlasWindow?.close()
+        preservingAtlasPlacement = preservingDockPlacement
+        if preservingDockPlacement, controller.isDocked {
+            dockController.releasePane(.atlas)
+        }
+        controller.closeSurface()
         atlasWindow = nil
+        preservingAtlasPlacement = false
         suppressAtlasPersistence = false
     }
 

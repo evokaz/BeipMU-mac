@@ -6,6 +6,8 @@ import UniformTypeIdentifiers
 @MainActor
 final class AtlasWindowController: NSWindowController, NSWindowDelegate, NSSearchFieldDelegate {
     private let canvas: AtlasCanvasView
+    private let content = NSView()
+    private let dockingAccessory = DockSurfaceAccessoryViewController()
     private let mapPopup = NSPopUpButton()
     private let exitsPopup = NSPopUpButton()
     private let search = NSSearchField()
@@ -14,19 +16,34 @@ final class AtlasWindowController: NSWindowController, NSWindowDelegate, NSSearc
     private let zoomStatus = NSTextField(labelWithString: "100%")
     private var toolButtons: [NSButton] = []
     private var filterButtons: [NSButton] = []
+    private var toolbarCategories: [(title: String, buttons: [NSButton], view: NSView, separator: NSView?, naturalWidth: CGFloat)] = []
+    private weak var toolbarOverflowButton: NSButton?
+    private weak var toolbarView: NSStackView?
+    private var updatingToolbarOverflow = false
+    private weak var filterOverflowButton: NSButton?
+    private weak var filterView: NSStackView?
+    private weak var filterLabel: NSTextField?
+    private var filterControlWidths: [CGFloat] = []
+    private var updatingFilterOverflow = false
     private var resources: [String: Data] = [:]
     private var sourceURL: URL?
     private var searchResults: [AtlasSearchResult] = []
     private var searchIndex = -1
     private var suppressStateChange = false
+    private(set) var isDocked = false
     var onClose: (() -> Void)?
     var onSendCommands: (([String]) -> Void)?
     var onStateChange: ((AtlasSurfacePreferences) -> Void)?
+    var onDockRequest: ((WebViewDockSide) -> Void)? {
+        didSet { dockingAccessory.onDockRequest = onDockRequest }
+    }
 
     var editor: AtlasEditor {
         get { canvas.editor }
         set { canvas.editor = newValue }
     }
+    var toolbarOverflowMenuForTesting: NSMenu { makeToolbarOverflowMenu() }
+    var filterOverflowMenuForTesting: NSMenu { makeFilterOverflowMenu() }
     var surfacePreferences: AtlasSurfacePreferences {
         .init(
             filePath: sourceURL?.path,
@@ -56,6 +73,7 @@ final class AtlasWindowController: NSWindowController, NSWindowDelegate, NSSearc
         window.setAccessibilityIdentifier("atlasWindow")
         super.init(window: window)
         window.delegate = self
+        window.addTitlebarAccessoryViewController(dockingAccessory)
         configureUI()
         wireCanvas()
         refresh()
@@ -65,6 +83,43 @@ final class AtlasWindowController: NSWindowController, NSWindowDelegate, NSSearc
     required init?(coder: NSCoder) { nil }
 
     func windowWillClose(_ notification: Notification) { onClose?() }
+
+    func contentViewForDocking() -> NSView {
+        window?.orderOut(nil)
+        if window?.contentView === content { window?.contentView = nil }
+        content.removeFromSuperview()
+        isDocked = true
+        return content
+    }
+
+    func showFloating(_ sender: Any?) {
+        if isDocked {
+            content.removeFromSuperview()
+            window?.contentView = content
+            isDocked = false
+        }
+        showWindow(sender)
+        window?.makeKeyAndOrderFront(sender)
+        window?.makeFirstResponder(canvas)
+    }
+
+    func focusSurface() {
+        if isDocked {
+            canvas.window?.makeKeyAndOrderFront(nil)
+            canvas.window?.makeFirstResponder(canvas)
+        } else {
+            showFloating(nil)
+        }
+    }
+
+    func closeSurface() {
+        if isDocked {
+            content.removeFromSuperview()
+            window?.contentView = content
+            isDocked = false
+        }
+        close()
+    }
 
     override func showWindow(_ sender: Any?) {
         super.showWindow(sender)
@@ -150,75 +205,89 @@ final class AtlasWindowController: NSWindowController, NSWindowDelegate, NSSearc
 
     private func configureUI() {
         guard let window else { return }
-        let root = NSStackView()
+        let root = AtlasRootStackView()
         root.orientation = .vertical
+        root.alignment = .width
         root.spacing = 0
         root.wantsLayer = true
         root.translatesAutoresizingMaskIntoConstraints = false
+        root.onLayout = { [weak self] in
+            self?.updateToolbarOverflow()
+            self?.updateFilterOverflow()
+        }
 
-        let fileButtons = buttonStrip([
-            imageButton("Open", symbol: "folder", action: #selector(openDocument)),
-            imageButton("Save", symbol: "square.and.arrow.down", action: #selector(saveDocument)),
-            imageButton("Save As", symbol: "doc.badge.plus", action: #selector(saveDocumentAs)),
-        ])
-        let navigationButtons = buttonStrip([
-            toolButton("Locate", symbol: "location.fill", tool: .locate),
-            toolButton("Path", symbol: "point.topleft.down.to.point.bottomright.curvepath", tool: .path),
-            toolButton("Run", symbol: "figure.run", tool: .speedRun),
-            imageButton("Center current room", symbol: "scope", action: #selector(centerCurrentRoom)),
-        ])
-        let createButtons = buttonStrip([
-            toolButton("Create room", symbol: "circle", tool: .room),
-            toolButton("Create exit", symbol: "arrow.right", tool: .exit),
-            toolButton("Create rectangle", symbol: "rectangle", tool: .rectangle),
-            toolButton("Create image", symbol: "photo", tool: .image),
-            toolButton("Create label", symbol: "tag", tool: .label),
-        ])
-        let selectButtons = buttonStrip([
-            toolButton("Select", symbol: "cursorarrow", tool: .select, accessibilityLabel: "Atlas editing tool"),
-            toolButton("Pan", symbol: "hand.draw", tool: .pan),
-            imageButton("Copy", symbol: "doc.on.doc", action: #selector(copySelection)),
-            imageButton("Paste", symbol: "clipboard", action: #selector(pasteSelection)),
-            imageButton("Undo", symbol: "arrow.uturn.backward", action: #selector(undo)),
-            imageButton("Redo", symbol: "arrow.uturn.forward", action: #selector(redo)),
-        ])
-        let viewButtons = buttonStrip([
-            imageButton("Zoom out", symbol: "minus.magnifyingglass", action: #selector(zoomOut)),
-            imageButton("Actual size", symbol: "1.magnifyingglass", action: #selector(actualSize)),
-            imageButton("Zoom in", symbol: "plus.magnifyingglass", action: #selector(zoomIn)),
-            imageButton("Fit map", symbol: "arrow.up.left.and.arrow.down.right", action: #selector(fitMap)),
-            imageButton("Palette", symbol: "paintpalette", action: #selector(editPalette)),
-            imageButton("Export", symbol: "square.and.arrow.up", action: #selector(exportImage)),
-        ])
+        let toolbarGroups: [(String, [NSButton])] = [
+            ("File", [
+                imageButton("Open", symbol: "folder", action: #selector(openDocument)),
+                imageButton("Save", symbol: "square.and.arrow.down", action: #selector(saveDocument)),
+                imageButton("Save As", symbol: "doc.badge.plus", action: #selector(saveDocumentAs)),
+            ]),
+            ("Navigation", [
+                toolButton("Locate", symbol: "location.fill", tool: .locate),
+                toolButton("Path", symbol: "point.topleft.down.to.point.bottomright.curvepath", tool: .path),
+                toolButton("Run", symbol: "figure.run", tool: .speedRun),
+                imageButton("Center current room", symbol: "scope", action: #selector(centerCurrentRoom)),
+            ]),
+            ("Create", [
+                toolButton("Create room", symbol: "circle", tool: .room),
+                toolButton("Create exit", symbol: "arrow.right", tool: .exit),
+                toolButton("Create rectangle", symbol: "rectangle", tool: .rectangle),
+                toolButton("Create image", symbol: "photo", tool: .image),
+                toolButton("Create label", symbol: "tag", tool: .label),
+            ]),
+            ("Select", [
+                toolButton("Select", symbol: "cursorarrow", tool: .select, accessibilityLabel: "Atlas editing tool"),
+                toolButton("Pan", symbol: "hand.draw", tool: .pan),
+                imageButton("Copy", symbol: "doc.on.doc", action: #selector(copySelection)),
+                imageButton("Paste", symbol: "clipboard", action: #selector(pasteSelection)),
+                imageButton("Undo", symbol: "arrow.uturn.backward", action: #selector(undo)),
+                imageButton("Redo", symbol: "arrow.uturn.forward", action: #selector(redo)),
+            ]),
+            ("View", [
+                imageButton("Zoom out", symbol: "minus.magnifyingglass", action: #selector(zoomOut)),
+                imageButton("Actual size", symbol: "1.magnifyingglass", action: #selector(actualSize)),
+                imageButton("Zoom in", symbol: "plus.magnifyingglass", action: #selector(zoomIn)),
+                imageButton("Fit map", symbol: "arrow.up.left.and.arrow.down.right", action: #selector(fitMap)),
+                imageButton("Palette", symbol: "paintpalette", action: #selector(editPalette)),
+                imageButton("Export", symbol: "square.and.arrow.up", action: #selector(exportImage)),
+            ]),
+        ]
 
-        let toolbar = NSStackView()
+        let toolbar = AtlasToolbarStackView()
         toolbar.orientation = .horizontal
         toolbar.alignment = .top
         toolbar.spacing = 0
         toolbar.edgeInsets = .init(top: 5, left: 6, bottom: 4, right: 6)
-        for (title, controls) in [
-            ("File", fileButtons),
-            ("Navigation", navigationButtons),
-            ("Create", createButtons),
-            ("Select", selectButtons),
-            ("View", viewButtons),
-        ] {
-            if !toolbar.arrangedSubviews.isEmpty { toolbar.addArrangedSubview(NSBox.separator()) }
-            toolbar.addArrangedSubview(toolbarGroup(title, controls: controls))
+        toolbar.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        for (title, buttons) in toolbarGroups {
+            let separator: NSView?
+            if toolbar.arrangedSubviews.isEmpty {
+                separator = nil
+            } else {
+                let value = NSBox.separator()
+                toolbar.addArrangedSubview(value)
+                separator = value
+            }
+            let group = toolbarGroup(title, controls: buttonStrip(buttons))
+            toolbar.addArrangedSubview(group)
+            toolbarCategories.append((
+                title: title,
+                buttons: buttons,
+                view: group,
+                separator: separator,
+                naturalWidth: group.fittingSize.width
+            ))
         }
-
-        let toolbarScroller = NSScrollView()
-        toolbarScroller.drawsBackground = true
-        toolbarScroller.backgroundColor = .windowBackgroundColor
-        toolbarScroller.hasHorizontalScroller = true
-        toolbarScroller.hasVerticalScroller = false
-        toolbarScroller.autohidesScrollers = true
-        toolbarScroller.borderType = .noBorder
-        toolbarScroller.documentView = toolbar
-        toolbar.translatesAutoresizingMaskIntoConstraints = false
-        toolbar.topAnchor.constraint(equalTo: toolbarScroller.contentView.topAnchor).isActive = true
-        toolbar.leadingAnchor.constraint(equalTo: toolbarScroller.contentView.leadingAnchor).isActive = true
-        toolbar.heightAnchor.constraint(equalToConstant: 58).isActive = true
+        let toolbarOverflowButton = imageButton(
+            "More Atlas tools",
+            symbol: "ellipsis.circle",
+            action: #selector(showToolbarOverflow(_:))
+        )
+        toolbarOverflowButton.isHidden = true
+        toolbar.addArrangedSubview(toolbarOverflowButton)
+        self.toolbarOverflowButton = toolbarOverflowButton
+        toolbarView = toolbar
+        toolbar.onLayout = { [weak self] in self?.updateToolbarOverflow() }
 
         let mapBar = NSStackView()
         mapBar.orientation = .horizontal
@@ -238,20 +307,27 @@ final class AtlasWindowController: NSWindowController, NSWindowDelegate, NSSearc
         exitsPopup.action = #selector(takeExit)
         exitsPopup.setAccessibilityLabel("Known exits")
         exitsPopup.toolTip = "Send a command for an exit from the current room"
-        exitsPopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 130).isActive = true
+        let exitsWidth = exitsPopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 130)
+        exitsWidth.priority = .defaultHigh
+        exitsWidth.isActive = true
         mapBar.addArrangedSubview(exitsPopup)
         mapBar.addArrangedSubview(NSBox.separator())
         zoomStatus.alignment = .right
         zoomStatus.setAccessibilityLabel("Map zoom")
-        zoomStatus.widthAnchor.constraint(equalToConstant: 44).isActive = true
+        let zoomWidth = zoomStatus.widthAnchor.constraint(equalToConstant: 44)
+        zoomWidth.priority = .defaultHigh
+        zoomWidth.isActive = true
         mapBar.addArrangedSubview(zoomStatus)
 
-        let filters = NSStackView()
+        let filters = AtlasFilterStackView()
         filters.orientation = .horizontal
         filters.alignment = .centerY
         filters.spacing = 8
         filters.edgeInsets = .init(top: 5, left: 10, bottom: 5, right: 10)
-        filters.addArrangedSubview(NSTextField(labelWithString: "Select:"))
+        filters.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let filterLabel = NSTextField(labelWithString: "Select:")
+        filters.addArrangedSubview(filterLabel)
+        self.filterLabel = filterLabel
         for (title, value) in [
             ("Rooms", AtlasSelectionFilter.rooms), ("Exits", .exits), ("Rectangles", .rectangles),
             ("Images", .images), ("Labels", .labels),
@@ -268,38 +344,61 @@ final class AtlasWindowController: NSWindowController, NSWindowDelegate, NSSearc
         liveTracking.toolTip = "Create and connect rooms from game output while you move"
         liveTracking.setAccessibilityLabel("Automatic mapping")
         filters.addArrangedSubview(liveTracking)
-        search.placeholderString = "Find rooms"
+        filterControlWidths = (filterButtons + [liveTracking]).map { $0.fittingSize.width }
+        let filterOverflowButton = imageButton(
+            "More selection filters",
+            symbol: "ellipsis.circle",
+            action: #selector(showFilterOverflow(_:))
+        )
+        filterOverflowButton.isHidden = true
+        filters.addArrangedSubview(filterOverflowButton)
+        self.filterOverflowButton = filterOverflowButton
+        filterView = filters
+        filters.onLayout = { [weak self] in self?.updateFilterOverflow() }
+        search.placeholderString = "Find Rooms"
         search.delegate = self
         search.target = self
         search.action = #selector(findNext)
-        search.widthAnchor.constraint(equalToConstant: 190).isActive = true
+        let minimumSearchWidth = search.widthAnchor.constraint(greaterThanOrEqualToConstant: 120)
+        minimumSearchWidth.priority = .required
+        minimumSearchWidth.isActive = true
+        let searchWidth = search.widthAnchor.constraint(equalToConstant: 190)
+        searchWidth.priority = .defaultHigh
+        searchWidth.isActive = true
+        search.setContentCompressionResistancePriority(.required, for: .horizontal)
         filters.addArrangedSubview(search)
         filters.addArrangedSubview(status)
         status.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        root.addArrangedSubview(toolbarScroller)
+        mapBar.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        filters.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        root.addArrangedSubview(toolbar)
         root.addArrangedSubview(mapBar)
         root.addArrangedSubview(filters)
         root.addArrangedSubview(canvas)
         canvas.translatesAutoresizingMaskIntoConstraints = false
-        window.contentView = NSView()
-        window.contentView?.wantsLayer = true
-        window.contentView?.addSubview(root)
+        content.wantsLayer = true
+        content.addSubview(root)
         NSLayoutConstraint.activate([
-            root.leadingAnchor.constraint(equalTo: window.contentView!.leadingAnchor),
-            root.trailingAnchor.constraint(equalTo: window.contentView!.trailingAnchor),
-            root.topAnchor.constraint(equalTo: window.contentView!.topAnchor),
-            root.bottomAnchor.constraint(equalTo: window.contentView!.bottomAnchor),
-            toolbarScroller.heightAnchor.constraint(equalToConstant: 58),
-            mapBar.heightAnchor.constraint(greaterThanOrEqualToConstant: 34),
-            filters.heightAnchor.constraint(greaterThanOrEqualToConstant: 36),
-            canvas.heightAnchor.constraint(greaterThanOrEqualToConstant: 300),
+            root.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            root.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            root.topAnchor.constraint(equalTo: content.topAnchor),
+            root.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            toolbar.heightAnchor.constraint(equalToConstant: 58),
+            toolbar.widthAnchor.constraint(equalTo: root.widthAnchor),
+            mapBar.heightAnchor.constraint(equalToConstant: 34),
+            filters.heightAnchor.constraint(equalToConstant: 36),
+            filters.widthAnchor.constraint(equalTo: root.widthAnchor),
+            canvas.heightAnchor.constraint(greaterThanOrEqualToConstant: 180),
         ])
+        window.contentView = content
         prepareForLayerBackedDrawing(root)
-        toolbarScroller.layer?.zPosition = 2
+        toolbar.layer?.zPosition = 2
         mapBar.layer?.zPosition = 2
         filters.layer?.zPosition = 2
         canvas.layer?.zPosition = 1
+        DispatchQueue.main.async { [weak self] in self?.updateToolbarOverflow() }
+        DispatchQueue.main.async { [weak self] in self?.updateFilterOverflow() }
     }
 
     private func wireCanvas() {
@@ -358,10 +457,15 @@ final class AtlasWindowController: NSWindowController, NSWindowDelegate, NSSearc
         value.title = title
         value.bezelStyle = .texturedRounded
         value.imagePosition = .imageOnly
+        value.imageScaling = .scaleProportionallyDown
+        value.contentTintColor = .labelColor
         value.toolTip = title
         value.setAccessibilityLabel(title)
-        value.widthAnchor.constraint(equalToConstant: 31).isActive = true
+        let width = value.widthAnchor.constraint(equalToConstant: 31)
+        width.priority = .defaultHigh
+        width.isActive = true
         value.heightAnchor.constraint(equalToConstant: 26).isActive = true
+        value.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         return value
     }
 
@@ -394,6 +498,160 @@ final class AtlasWindowController: NSWindowController, NSWindowDelegate, NSSearc
         value.spacing = 2
         value.edgeInsets = .init(top: 0, left: 6, bottom: 0, right: 6)
         return value
+    }
+
+    private func updateToolbarOverflow() {
+        guard !updatingToolbarOverflow,
+              let toolbarView,
+              let toolbarOverflowButton,
+              toolbarView.bounds.width > 0 else { return }
+
+        let edgeWidth = toolbarView.edgeInsets.left + toolbarView.edgeInsets.right
+        let separatorWidth = toolbarCategories.compactMap(\.separator).first?.fittingSize.width ?? 1
+        let categoryWidths = toolbarCategories.map(\.naturalWidth)
+        let naturalWidth = edgeWidth + categoryWidths.reduce(0, +)
+            + separatorWidth * CGFloat(max(0, toolbarCategories.count - 1))
+        let hasOverflow = naturalWidth > toolbarView.bounds.width + 1
+        var visibleCount = toolbarCategories.count
+        if hasOverflow {
+            let availableWidth = max(0, toolbarView.bounds.width - edgeWidth - toolbarOverflowButton.fittingSize.width)
+            var usedWidth: CGFloat = 0
+            visibleCount = 0
+            for width in categoryWidths {
+                let addition = width + (visibleCount == 0 ? 0 : separatorWidth)
+                guard usedWidth + addition <= availableWidth else { break }
+                usedWidth += addition
+                visibleCount += 1
+            }
+        }
+
+        updatingToolbarOverflow = true
+        toolbarOverflowButton.isHidden = !hasOverflow
+        for (index, category) in toolbarCategories.enumerated() {
+            let isVisible = index < visibleCount
+            category.view.isHidden = !isVisible
+            category.separator?.isHidden = !isVisible
+        }
+        updatingToolbarOverflow = false
+    }
+
+    private func makeToolbarOverflowMenu() -> NSMenu {
+        let menu = NSMenu(title: "Atlas Tools")
+        menu.autoenablesItems = false
+        for category in toolbarCategories where category.view.isHidden {
+            let categoryItem = NSMenuItem(title: category.title, action: nil, keyEquivalent: "")
+            let submenu = NSMenu(title: category.title)
+            submenu.autoenablesItems = false
+            for button in category.buttons {
+                let item = NSMenuItem(
+                    title: button.title,
+                    action: #selector(invokeToolbarCommand(_:)),
+                    keyEquivalent: ""
+                )
+                item.target = self
+                item.representedObject = button
+                item.image = button.image
+                item.state = button.state
+                item.isEnabled = button.isEnabled
+                submenu.addItem(item)
+            }
+            categoryItem.submenu = submenu
+            menu.addItem(categoryItem)
+        }
+        return menu
+    }
+
+    @objc private func showToolbarOverflow(_ sender: NSButton) {
+        let menu = makeToolbarOverflowMenu()
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.maxY + 4), in: sender)
+    }
+
+    @objc private func invokeToolbarCommand(_ sender: NSMenuItem) {
+        guard let button = sender.representedObject as? NSButton,
+              let action = button.action else { return }
+        _ = NSApp.sendAction(action, to: button.target, from: button)
+    }
+
+    private func updateFilterOverflow() {
+        guard !updatingFilterOverflow,
+              let filterView,
+              let filterOverflowButton,
+              let filterLabel,
+              filterView.bounds.width > 0 else { return }
+
+        let controls = filterButtons + [liveTracking]
+        let controlWidths = filterControlWidths
+        let edgeWidth = filterView.edgeInsets.left + filterView.edgeInsets.right
+        let spacing = filterView.spacing
+        let labelWidth = filterLabel.fittingSize.width
+        let overflowWidth = filterOverflowButton.fittingSize.width
+        let statusWidth = status.fittingSize.width
+
+        func requiredWidth(visibleCount: Int, showsOverflow: Bool, showsStatus: Bool, searchWidth: CGFloat) -> CGFloat {
+            var widths = [labelWidth]
+            widths.append(contentsOf: controlWidths.prefix(visibleCount))
+            if showsOverflow { widths.append(overflowWidth) }
+            widths.append(searchWidth)
+            if showsStatus { widths.append(statusWidth) }
+            return edgeWidth + widths.reduce(0, +) + spacing * CGFloat(max(0, widths.count - 1))
+        }
+
+        let availableWidth = filterView.bounds.width
+        var visibleCount = controls.count
+        var showsStatus = requiredWidth(
+            visibleCount: controls.count,
+            showsOverflow: false,
+            showsStatus: true,
+            searchWidth: 190
+        ) <= availableWidth
+
+        if !showsStatus {
+            while visibleCount > 0,
+                  requiredWidth(
+                    visibleCount: visibleCount,
+                    showsOverflow: visibleCount < controls.count,
+                    showsStatus: false,
+                    searchWidth: 120
+                  ) > availableWidth {
+                visibleCount -= 1
+            }
+            showsStatus = false
+        }
+
+        let hasOverflow = visibleCount < controls.count
+        updatingFilterOverflow = true
+        for (index, control) in controls.enumerated() { control.isHidden = index >= visibleCount }
+        filterOverflowButton.isHidden = !hasOverflow
+        status.isHidden = !showsStatus
+        updatingFilterOverflow = false
+    }
+
+    private func makeFilterOverflowMenu() -> NSMenu {
+        let menu = NSMenu(title: "Selection Filters")
+        menu.autoenablesItems = false
+        for button in filterButtons + [liveTracking] where button.isHidden {
+            let item = NSMenuItem(
+                title: button.title,
+                action: #selector(invokeFilterCommand(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = button
+            item.state = button.state
+            item.isEnabled = button.isEnabled
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    @objc private func showFilterOverflow(_ sender: NSButton) {
+        let menu = makeFilterOverflowMenu()
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.maxY + 4), in: sender)
+    }
+
+    @objc private func invokeFilterCommand(_ sender: NSMenuItem) {
+        guard let button = sender.representedObject as? NSButton else { return }
+        button.performClick(nil)
     }
 
     private func prepareForLayerBackedDrawing(_ view: NSView) {
@@ -726,7 +984,33 @@ final class AtlasWindowController: NSWindowController, NSWindowDelegate, NSSearc
     }
 }
 
-@MainActor
+private final class AtlasToolbarStackView: NSStackView {
+    var onLayout: (() -> Void)?
+
+    override func layout() {
+        super.layout()
+        onLayout?()
+    }
+}
+
+private final class AtlasRootStackView: NSStackView {
+    var onLayout: (() -> Void)?
+
+    override func layout() {
+        super.layout()
+        onLayout?()
+    }
+}
+
+private final class AtlasFilterStackView: NSStackView {
+    var onLayout: (() -> Void)?
+
+    override func layout() {
+        super.layout()
+        onLayout?()
+    }
+}
+
 final class AtlasCanvasView: NSView {
     enum Tool: Int { case select, pan, room, exit, rectangle, image, label, locate, path, speedRun }
 

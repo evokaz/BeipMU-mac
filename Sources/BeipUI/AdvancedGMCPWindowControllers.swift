@@ -199,6 +199,7 @@ final class TileMapWindowController: NSWindowController, NSWindowDelegate {
         panel.setAccessibilityIdentifier("tileMapWindow")
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = false
+        panel.minSize = NSSize(width: 320, height: 220)
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = true

@@ -5,6 +5,7 @@ enum WorkspacePaneKind: Hashable, Sendable, CaseIterable {
     case main
     case notes
     case diagnostics
+    case atlas
     case ai
     case webView(String)
     case spawn(String)
@@ -17,6 +18,7 @@ enum WorkspacePaneKind: Hashable, Sendable, CaseIterable {
         case .main: "Session"
         case .notes: "Notes"
         case .diagnostics: "Diagnostics"
+        case .atlas: "Atlas"
         case .ai: "AI"
         case let .webView(identifier): identifier.isEmpty ? "Web View" : identifier
         case let .spawn(title): title
@@ -29,6 +31,7 @@ enum WorkspacePaneKind: Hashable, Sendable, CaseIterable {
         case .main: "main"
         case .notes: "notes"
         case .diagnostics: "diagnostics"
+        case .atlas: "atlas"
         case .ai: "ai"
         case let .webView(value): "webView:\(Self.encoded(value))"
         case let .spawn(value): "spawn:\(Self.encoded(value))"
@@ -50,6 +53,7 @@ extension WorkspacePaneKind: Codable {
         case "main": self = .main
         case "notes": self = .notes
         case "diagnostics": self = .diagnostics
+        case "atlas": self = .atlas
         case "ai": self = .ai
         default:
             guard let separator = value.firstIndex(of: ":"),

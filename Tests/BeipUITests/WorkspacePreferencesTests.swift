@@ -548,20 +548,152 @@ final class WorkspacePreferencesTests: XCTestCase {
     func testDynamicPaneKindsRoundTripAndRecursiveInsertionRemovesCleanly() throws {
         let web = WorkspacePaneKind.webView("status:α")
         let spawn = WorkspacePaneKind.spawnTabs("Chat / Public")
-        var layout = WorkspaceLayoutNode.tabbedRight.inserting(web, side: .left)
+        let atlas = WorkspacePaneKind.atlas
+        var layout = WorkspaceLayoutNode.tabbedRight.inserting(atlas, side: .top)
+        layout = layout.inserting(web, side: .left)
         layout = layout.inserting(spawn, side: .bottom)
 
         XCTAssertTrue(layout.isValid)
         XCTAssertEqual(layout.panes.filter { $0 == .main }.count, 1)
         XCTAssertTrue(layout.panes.contains(web))
         XCTAssertTrue(layout.panes.contains(spawn))
+        XCTAssertEqual(layout.dockSide(of: atlas), .top)
 
         let decoded = try JSONDecoder().decode(
             WorkspaceLayoutNode.self,
             from: JSONEncoder().encode(layout)
         )
         XCTAssertEqual(decoded, layout)
-        XCTAssertEqual(decoded.removing(web)?.removing(spawn), .tabbedRight)
+        XCTAssertEqual(decoded.removing(atlas)?.removing(web)?.removing(spawn), .tabbedRight)
+    }
+
+    @MainActor
+    func testAtlasSurfaceCanDockOnEveryWorkspaceEdge() {
+        for side in WebViewDockSide.allCases {
+            let owner = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+                styleMask: [.titled], backing: .buffered, defer: false
+            )
+            let dock = WorkspaceDockController(mainView: NSView(), ownerWindow: owner)
+            owner.contentView = dock.hostView
+            let atlas = AtlasWindowController(atlas: Atlas(maps: []))
+            let pane = WorkspacePaneKind.atlas
+
+            dock.dockPane(
+                pane,
+                view: atlas.contentViewForDocking(),
+                title: "Atlas",
+                side: side
+            )
+
+            XCTAssertTrue(atlas.isDocked)
+            XCTAssertEqual(dock.currentLayout.dockSide(of: pane), side)
+            XCTAssertTrue(dock.currentLayout.panes.contains(pane))
+            dock.hostView.layoutSubtreeIfNeeded()
+            guard let split = recursiveSubviews(of: dock.hostView)
+                .compactMap({ $0 as? NSSplitView }).first else {
+                XCTFail("Expected a split view for the docked Atlas")
+                continue
+            }
+            let originalPosition = split.isVertical
+                ? split.subviews[0].frame.width
+                : split.subviews[0].frame.height
+            let total = split.isVertical ? split.bounds.width : split.bounds.height
+            let offset: CGFloat = originalPosition < total / 2 ? -40 : 40
+            let targetPosition = min(total - 1, max(1, originalPosition + offset))
+            split.setPosition(targetPosition, ofDividerAt: 0)
+            dock.hostView.layoutSubtreeIfNeeded()
+            let resizedPosition = split.isVertical
+                ? split.subviews[0].frame.width
+                : split.subviews[0].frame.height
+            XCTAssertNotEqual(resizedPosition, originalPosition, accuracy: 1)
+
+            dock.undockPane(pane)
+            atlas.showFloating(nil)
+            XCTAssertFalse(atlas.isDocked)
+            atlas.closeSurface()
+        }
+    }
+
+    @MainActor
+    func testDockedAtlasCanShrinkBelowToolbarWidth() throws {
+        let owner = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
+        let dock = WorkspaceDockController(mainView: NSView(), ownerWindow: owner)
+        owner.contentView = dock.hostView
+        let atlas = AtlasWindowController(atlas: Atlas(maps: []))
+        let atlasContent = atlas.contentViewForDocking()
+        dock.dockPane(.atlas, view: atlasContent, title: "Atlas", side: .right)
+        dock.hostView.layoutSubtreeIfNeeded()
+
+        let split = try XCTUnwrap(
+            recursiveSubviews(of: dock.hostView).compactMap { $0 as? NSSplitView }.first
+        )
+        XCTAssertTrue(split.isVertical)
+        split.setPosition(split.bounds.width - 240, ofDividerAt: 0)
+        dock.hostView.layoutSubtreeIfNeeded()
+
+        XCTAssertEqual(atlasContent.frame.width, 240, accuracy: 2)
+        XCTAssertLessThan(atlasContent.frame.width, 680)
+        XCTAssertNotNil(
+            recursiveSubviews(of: atlasContent).compactMap { $0 as? NSButton }.first { $0.title == "Open" }
+        )
+        let overflow = try XCTUnwrap(
+            recursiveSubviews(of: atlasContent).compactMap { $0 as? NSButton }.first {
+                $0.accessibilityLabel() == "More Atlas tools"
+            }
+        )
+        XCTAssertFalse(overflow.isHidden)
+        XCTAssertEqual(overflow.superview?.frame.width ?? 0, atlasContent.frame.width, accuracy: 1)
+        let overflowMenu = atlas.toolbarOverflowMenuForTesting
+        XCTAssertEqual(overflowMenu.items.map(\.title), ["Navigation", "Create", "Select", "View"])
+        XCTAssertEqual(
+            overflowMenu.item(withTitle: "View")?.submenu?.items.map(\.title),
+            ["Zoom out", "Actual size", "Zoom in", "Fit map", "Palette", "Export"]
+        )
+        let findRooms = try XCTUnwrap(
+            recursiveSubviews(of: atlasContent).compactMap { $0 as? NSSearchField }.first
+        )
+        XCTAssertFalse(findRooms.isHidden)
+        XCTAssertGreaterThanOrEqual(findRooms.frame.width, 120)
+        XCTAssertEqual(findRooms.placeholderString, "Find Rooms")
+        let filterOverflow = try XCTUnwrap(
+            recursiveSubviews(of: atlasContent).compactMap { $0 as? NSButton }.first {
+                $0.accessibilityLabel() == "More selection filters"
+            }
+        )
+        XCTAssertFalse(filterOverflow.isHidden)
+        let filterMenu = atlas.filterOverflowMenuForTesting
+        XCTAssertEqual(
+            filterMenu.items.map(\.title),
+            ["Rooms", "Exits", "Rectangles", "Images", "Labels", "Auto-map"]
+        )
+        XCTAssertTrue(filterMenu.items.prefix(5).allSatisfy { $0.state == .on })
+
+        split.setPosition(split.bounds.width - 500, ofDividerAt: 0)
+        dock.hostView.layoutSubtreeIfNeeded()
+        XCTAssertEqual(overflow.superview?.frame.width ?? 0, atlasContent.frame.width, accuracy: 1)
+        XCTAssertLessThan(atlas.toolbarOverflowMenuForTesting.items.count, overflowMenu.items.count)
+
+        split.setPosition(50, ofDividerAt: 0)
+        dock.hostView.layoutSubtreeIfNeeded()
+
+        XCTAssertGreaterThan(atlasContent.frame.width, 800)
+        XCTAssertTrue(overflow.isHidden)
+        XCTAssertTrue(filterOverflow.isHidden)
+        XCTAssertTrue(
+            recursiveSubviews(of: atlasContent).compactMap { $0 as? NSButton }.filter {
+                ["Open", "Save", "Save As", "Locate", "Create room", "Select", "Zoom in", "Export"].contains($0.title)
+            }.allSatisfy { !$0.isHidden }
+        )
+        XCTAssertTrue(
+            recursiveSubviews(of: atlasContent).compactMap { $0 as? NSButton }.filter {
+                ["Rooms", "Exits", "Rectangles", "Images", "Labels", "Auto-map"].contains($0.title)
+            }.allSatisfy { !$0.isHidden }
+        )
+        atlas.closeSurface()
     }
 
     func testSavedWebViewPaneKeepsSafeURLFieldsOnly() throws {
@@ -1004,6 +1136,8 @@ final class WorkspacePreferencesTests: XCTestCase {
         XCTAssertTrue(statsViews.contains { $0.accessibilityLabel() == "Progress" })
 
         let tileMap = TileMapWindowController(title: "Castle")
+        let tileMapWindow = try XCTUnwrap(tileMap.window)
+        XCTAssertEqual(tileMapWindow.minSize, NSSize(width: 320, height: 220))
         tileMap.update(.init(
             name: "Castle",
             tileWidth: 16,
@@ -1226,6 +1360,17 @@ final class WorkspacePreferencesTests: XCTestCase {
         XCTAssertTrue(content.wantsLayer)
         let openButton = try XCTUnwrap(views.compactMap { $0 as? NSButton }.first { $0.title == "Open" })
         XCTAssertTrue(openButton.wantsLayer)
+        let openButtonParent = try XCTUnwrap(openButton.superview)
+        XCTAssertFalse(sequence(first: openButtonParent, next: \.superview).contains { $0 is NSClipView })
+        for title in ["Open", "Save", "Save As", "Locate", "Create room", "Select", "Add map", "Remove map", "Zoom in", "Fit map", "Palette", "Export"] {
+            let button = try XCTUnwrap(
+                views.compactMap { $0 as? NSButton }.first { $0.title == title },
+                "Missing Atlas toolbar button: \(title)"
+            )
+            XCTAssertGreaterThan(button.image?.size.width ?? 0, 0, "Missing icon for Atlas toolbar button: \(title)")
+            XCTAssertGreaterThan(button.frame.width, 0, "Atlas toolbar button has no width: \(title)")
+            XCTAssertGreaterThan(button.frame.height, 0, "Atlas toolbar button has no height: \(title)")
+        }
         let canvas = try XCTUnwrap(views.first { $0.accessibilityLabel() == "Atlas map canvas" })
         let mapBarLabel = try XCTUnwrap(views.first { $0.accessibilityLabel() == "Map zoom" })
         XCTAssertGreaterThan(mapBarLabel.superview?.layer?.zPosition ?? 0, canvas.layer?.zPosition ?? 0)
