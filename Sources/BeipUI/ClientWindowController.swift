@@ -622,6 +622,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private var scriptSounds: [NSSound] = []
     private var scriptWindows: [String: ScriptWindowController] = [:]
     private var suppressNextSessionActivity = false
+    private var suppressSessionData = false
     private var frameBeforeMaximize: NSRect?
     private var dockController: WorkspaceDockController!
     private var variables: [String: String] = [:]
@@ -3049,12 +3050,15 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
                 puppetChildren.values.forEach { $0.masterConnectionStateChanged(connected: connected) }
             }
         case let .renderedLine(line):
+            guard !suppressSessionData else { return }
             if routeMasterLineToPuppet(line, isPrompt: false) { return }
             await presentIncoming(line, isPrompt: false)
         case let .prompt(line):
+            guard !suppressSessionData else { return }
             if routeMasterLineToPuppet(line, isPrompt: true) { return }
             await presentIncoming(line, isPrompt: true)
         case let .gmcp(message):
+            guard !suppressSessionData else { return }
             webViewWindows.values.forEach { $0.observeGMCP(message) }
             let raw = message.payload.isEmpty ? message.package : "\(message.package) \(message.payload)"
             applyScriptEvaluation(
@@ -3062,12 +3066,17 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
                 showValue: false
             )
             handleAdvancedGMCP(message)
-        case let .mcp(message): handleMCP(message)
-        case let .encoding(encoding): appendClient("Charset negotiated: \(encoding.rawValue)")
+        case let .mcp(message):
+            guard !suppressSessionData else { return }
+            handleMCP(message)
+        case let .encoding(encoding):
+            guard !suppressSessionData else { return }
+            appendClient("Charset negotiated: \(encoding.rawValue)")
         case let .error(message): appendError(message)
         case let .log(message): appendClient(message)
         case let .connectionNotice(notice): appendConnectionNotice(notice)
         case let .activity(important):
+            guard !suppressSessionData else { return }
             if suppressNextSessionActivity { suppressNextSessionActivity = false; break }
             guard window?.isKeyWindow != true else { break }
             unreadCount += 1
@@ -3077,14 +3086,17 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             Self.updateDockBadge()
         case let .received(data):
             networkDebugWindow?.append(data, received: true)
-            applyScriptEvaluation(
-                await scriptService.dispatchConnectionEvent(
-                    "receive",
-                    arguments: [String(decoding: data, as: UTF8.self)],
-                    host: scriptHostSnapshot
-                ),
-                showValue: false
+            let result = await scriptService.dispatchConnectionEvent(
+                "receive",
+                arguments: [String(decoding: data, as: UTF8.self)],
+                host: scriptHostSnapshot
             )
+            applyScriptEvaluation(result, showValue: false)
+            // SessionActor emits .received before the parsed line/GMCP
+            // events for the same network chunk. Preserve Windows'
+            // stoppable OnReceive hook by dropping those following events
+            // when the callback returns true.
+            suppressSessionData = Self.scriptWasHandled(result)
         case let .sent(data):
             networkDebugWindow?.append(data, received: false)
         }
@@ -3231,8 +3243,18 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private func presentIncoming(_ line: RenderedLine, isPrompt: Bool) async {
         if consumeGrabResponse(line.text) { return }
         webViewWindows.values.forEach { $0.observeReceived(line.text) }
-        let hookedLine = await applyScriptDisplayHook(to: gmcpState.decorate(line))
-        let presentation = await applyTriggers(to: hookedLine)
+        var presentation = await applyTriggers(to: gmcpState.decorate(line))
+        // Windows runs triggers and logging before the Connection display
+        // hook. The hook can then mutate the display copy or stop rendering,
+        // without changing what was already written to the session log.
+        if !presentation.gagLog,
+           (isPrompt || presentation.line.source != .localEcho) {
+            appendToLogs(presentation.line)
+        }
+        if !presentation.gagDisplay {
+            guard let hookedLine = await applyScriptDisplayHook(to: presentation.line) else { return }
+            presentation.line = hookedLine
+        }
         let webViewGag = webViewWindows.values.reduce(false) { $1.observeDisplay(presentation.line) || $0 }
         if presentation.line.source == .server {
             _ = atlasWindow?.observeOutput(presentation.line.text)
@@ -3244,9 +3266,6 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
                 output.append(presentation.line)
                 offerImages(in: presentation.line)
             }
-            if presentation.line.source != .localEcho, !presentation.gagLog {
-                appendToLogs(presentation.line)
-            }
             return
         }
         if hasPendingPrompt { output.removeLastLine() }
@@ -3257,7 +3276,6 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         } else {
             hasPendingPrompt = false
         }
-        if !presentation.gagLog { appendToLogs(presentation.line) }
     }
 
     private func consumeGrabResponse(_ text: String) -> Bool {
@@ -3271,9 +3289,16 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     private func submitInput(_ value: String) {
-        let lines = value.replacingOccurrences(of: "\r\n", with: "\n")
+        let normalized = value.replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
-            .split(separator: "\n", omittingEmptySubsequences: false)
+        // Windows handles /@ before its normal line splitter, so an
+        // immediate script may contain newlines. Keep the complete source
+        // together and let the scripting runtime evaluate it as one unit.
+        if normalized.hasPrefix("/@") {
+            submitLine(normalized)
+            return
+        }
+        let lines = normalized.split(separator: "\n", omittingEmptySubsequences: false)
         for line in lines where !line.isEmpty { submitLine(String(line)) }
     }
 
@@ -3313,21 +3338,25 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         refreshTitlebarStatistics()
         appendTypedToLogs(line)
         guard line.hasPrefix("/") else { processInput(line); return }
+        // /@ is an immediate script escape in Windows SendLines, not a
+        // command that participates in Window_Main's OnCommand hook.
+        if line.hasPrefix("/@") {
+            processInput(line)
+            return
+        }
         let body = String(line.dropFirst())
         let split = body.firstIndex(where: { $0.isWhitespace })
         let command = split.map { String(body[..<$0]) } ?? body
         let parameters = split.map { body[$0...].trimmingCharacters(in: .whitespacesAndNewlines) } ?? ""
         Task { [weak self, scriptService] in
             guard let self else { return }
-            applyScriptEvaluation(
-                await scriptService.dispatchConnectionEvent(
-                    "window:command",
-                    arguments: [command, parameters],
-                    host: scriptHostSnapshot
-                ),
-                showValue: false
+            let result = await scriptService.dispatchConnectionEvent(
+                "window:command",
+                arguments: [command, parameters],
+                host: scriptHostSnapshot
             )
-            processInput(line)
+            applyScriptEvaluation(result, showValue: false)
+            if !Self.scriptWasHandled(result) { processInput(line) }
         }
     }
 
@@ -3337,7 +3366,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             guard let self else { return }
             let result = await scriptService.dispatchConnectionEvent("send", arguments: [text], host: scriptHostSnapshot)
             applyScriptEvaluation(result, showValue: false)
-            transmitToSession(text)
+            if !Self.scriptWasHandled(result) { transmitToSession(text) }
         }
     }
 
@@ -3364,18 +3393,19 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             guard let self else { return }
             let result = await scriptService.dispatchConnectionEvent("receive", arguments: [text], host: scriptHostSnapshot)
             applyScriptEvaluation(result, showValue: false)
-            await session.receive(text)
+            if !Self.scriptWasHandled(result) { await session.receive(text) }
         }
     }
 
-    private func applyScriptDisplayHook(to line: RenderedLine) async -> RenderedLine {
+    private func applyScriptDisplayHook(to line: RenderedLine) async -> RenderedLine? {
         guard runsScriptServices else { return line }
         let result = await scriptService.dispatchConnectionEvent("display", line: line, host: scriptHostSnapshot)
         applyScriptEvaluation(.init(error: result.error, outputs: result.outputs), showValue: false)
-        struct ChangedLine: Decodable { var text: String; var html: String }
+        struct ChangedLine: Decodable { var text: String; var html: String; var handled: Bool? }
         guard let value = result.value,
               let data = value.data(using: .utf8),
               let changed = try? JSONDecoder().decode(ChangedLine.self, from: data) else { return line }
+        if changed.handled == true { return nil }
         if changed.text == line.text, !changed.html.contains("<span") { return line }
         var parser = MUDProtocolPipeline(encoding: .utf8, pueblo: true, puebloActive: true)
         for event in parser.consume(Data((changed.html + "\n").utf8)) {
@@ -4334,7 +4364,10 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         case let .script(source):
             Task {
                 let result = await scriptService.evaluate(source, host: scriptHostSnapshot)
-                applyScriptEvaluation(result, showValue: true)
+                // Windows' Scripter::Run does not display the JavaScript
+                // expression result; scripts communicate through host output
+                // methods and errors instead.
+                applyScriptEvaluation(result, showValue: false)
             }
         case let .scriptHelp(type):
             Task {
@@ -5005,6 +5038,13 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             case .setTitlePrefix:
                 scriptTitlePrefix = output.value
                 updateWindowTitle()
+            case .runCommand:
+                // Window_Main::Run uses SendLines on Windows: normalize the
+                // command text and feed each logical line through the same
+                // slash-command/alias pipeline as typed input.
+                for line in Self.logicalLines(in: output.value) where !line.isEmpty {
+                    processInput(line)
+                }
             case .openConnectDialog:
                 showConnectDialog()
             case .scriptWindow:
@@ -5060,6 +5100,12 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             appendError(error)
         }
         else if showValue, let value = result.value { appendClient(value) }
+    }
+
+    private static func scriptWasHandled(_ result: ScriptEvaluation) -> Bool {
+        guard result.error == nil else { return false }
+        return result.value?.trimmingCharacters(in: .whitespacesAndNewlines)
+            .caseInsensitiveCompare("true") == .orderedSame
     }
 
     private func recordScriptDebug(

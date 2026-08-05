@@ -40,6 +40,7 @@ public enum ScriptOutputKind: String, Codable, Sendable, Equatable {
     case setInputPrefix
     case setInputTitle
     case setTitlePrefix
+    case runCommand
     case openConnectDialog
     case scriptWindow
     case newMainWindow
@@ -318,7 +319,13 @@ public actor ScriptRuntime {
     }
 
     public func helpTypes() -> [String] {
-        ["Alias", "Aliases", "App", "Character", "Connection", "FindString", "Log", "Puppet", "Socket", "SocketServer", "TextWindowLine", "Timer", "Trigger", "Window_Main", "Window_Text", "World"]
+        [
+            "Alias", "Aliases", "App", "ArrayUInt", "Character", "Characters", "Connection",
+            "FindString", "Log", "Puppet", "Puppets", "Socket", "SocketServer", "TextWindowLine",
+            "Timer", "Trigger", "Triggers", "Window_Control_Edit", "Window_Events", "Window_FixedText",
+            "Window_Graphics", "Window_Input", "Window_Main", "Window_Properties", "Window_SpawnTabs",
+            "Window_Text", "Windows", "World", "Worlds"
+        ]
     }
 
     public func help(for type: String) -> String? {
@@ -828,6 +835,8 @@ public actor ScriptRuntime {
             __beipOnConnect: null,
             __beipOnDisconnect: null,
             __beipOnReceive: null,
+            __beipLineMode: false,
+            __beipReceiveBuffer: '',
             Connect: function(hostname, port) {
               var numericPort = port === undefined ? 1234 : Number(port);
               if (!Number.isInteger(numericPort) || numericPort < 1 || numericPort > 65535) throw new RangeError('Socket port must be between 1 and 65535.');
@@ -839,7 +848,10 @@ public actor ScriptRuntime {
             SetOnConnect: function(callback) { this.__beipOnConnect = callback == null ? null : callback; },
             SetOnDisconnect: function(callback) { this.__beipOnDisconnect = callback == null ? null : callback; },
             SetOnReceive: function(callback) { this.__beipOnReceive = callback == null ? null : callback; },
-            SetFlag: function(flag, enabled) { return undefined; }
+            SetFlag: function(flag, enabled) {
+              // Windows flag 1 asks Socket to deliver complete lines only.
+              if (Number(flag) === 1) this.__beipLineMode = !!enabled;
+            }
           };
           socket.connect = socket.Connect;
           socket.close = socket.Close;
@@ -859,7 +871,17 @@ public actor ScriptRuntime {
             socket.__beipConnected = true;
             if (typeof socket.__beipOnConnect === 'function') socket.__beipOnConnect(socket);
           } else if (event === 'receive') {
-            if (typeof socket.__beipOnReceive === 'function') socket.__beipOnReceive(socket, String(value || ''));
+            if (typeof socket.__beipOnReceive === 'function') {
+              var text = String(value || '');
+              if (!socket.__beipLineMode) {
+                socket.__beipOnReceive(socket, text);
+              } else {
+                socket.__beipReceiveBuffer += text;
+                var lines = socket.__beipReceiveBuffer.split(/\\r?\\n|\\r/);
+                socket.__beipReceiveBuffer = lines.pop() || '';
+                lines.forEach(function(line) { socket.__beipOnReceive(socket, line); });
+              }
+            }
           } else if (event === 'disconnect') {
             socket.__beipConnected = false;
             if (typeof socket.__beipOnDisconnect === 'function') socket.__beipOnDisconnect(socket, String(value || ''));
@@ -1083,8 +1105,12 @@ public actor ScriptRuntime {
         globalThis.window.Close = function() { return globalThis.__beipRecordOutput('closeWindow', ''); };
         globalThis.window.Activity = function() { return globalThis.__beipRecordOutput('activity', ''); };
         globalThis.window.AddImportantActivity = function() { return globalThis.__beipRecordOutput('importantActivity', ''); };
-        globalThis.window.Run = function(source) { return globalThis.eval(String(source)); };
-        globalThis.window.RunFile = function(path) { return globalThis.__beipRecordOutput('runFile', path); };
+        // Windows' Window_Main::Run submits the supplied text through the
+        // normal BeipMU command/input pipeline. It is deliberately not an
+        // eval: the bundled Windows aliases use window.run("buy torch") to
+        // issue a client/server command.
+        globalThis.window.Run = function(source) { globalThis.__beipRecordOutput('runCommand', source); };
+        globalThis.window.RunFile = function(path) { globalThis.__beipRecordOutput('runFile', path); };
         globalThis.window.CreateDialogConnect = function() {
           if (globalThis.__beipState.window.connected) return false;
           globalThis.__beipRecordOutput('openConnectDialog', '');
@@ -1209,8 +1235,8 @@ public actor ScriptRuntime {
           if (event === 'connect' || event === 'disconnect') callbackArguments = [hook.userdata];
           else if (event === 'display') {
             var line = globalThis.__beipLine(lineValue || { text: '' });
-            hook.callback(line, hook.userdata);
-            return JSON.stringify({ text: line.String, html: line.HTMLString });
+            var handled = hook.callback(line, hook.userdata) === true;
+            return JSON.stringify({ text: line.String, html: line.HTMLString, handled: handled });
           } else callbackArguments = [String((arguments || [])[0] || ''), hook.userdata];
           return hook.callback.apply(null, callbackArguments);
         };
@@ -1399,11 +1425,22 @@ public actor ScriptRuntime {
 
     private static let help: [String: String] = [
         "app": "App: BuildNumber, BuildDate, Version, ConfigPath, Worlds, Windows, Triggers, Aliases, timers, DNS, sockets, output, sound, and window factories",
+        "arrayuint": "ArrayUInt: Item(index), Count",
         "window_main": "Window_Main: Output, History, Input, Connection, Run, RunFile, Close, Activity, AddImportantActivity, GetVariable, SetVariable, DeleteVariable",
+        "window_control_edit": "Window_Control_Edit: SetSel, GetSelStart, GetSelEnd, Length, Set, Get, Prefix, Title",
+        "window_events": "Window_Events: OnCommand, OnDisplay, OnSend, OnReceive, OnConnect, OnDisconnect",
+        "window_fixedtext": "Window_FixedText: Text, Color, Font, Set, Get",
+        "window_graphics": "Window_Graphics: Draw, Clear, Width, Height",
+        "window_input": "Window_Input: SetSel, GetSelStart, GetSelEnd, Length, Set, Get, Prefix, Title",
+        "window_properties": "Window_Properties: Name, Type, Parent, Visible, Enabled",
+        "window_spawntabs": "Window_SpawnTabs: Windows, Add, Remove, Select",
         "window_text": "Window_Text: Write, WriteHTML, Create, Add, Paused",
+        "windows": "Windows: Item(index-or-title), Count",
         "connection": "Connection: Send, Transmit, Receive, Display, IsConnected, Reconnect, IsLogging, Log, World, Character, Puppet, Window_Main",
         "world": "World: Name, Info, Host, Characters",
+        "worlds": "Worlds: Item(index-or-name), Count",
         "character": "Character: Name, Description",
+        "characters": "Characters: Item(index-or-name), Count",
         "findstring": "FindString: MatchText, RegularExpression, MatchCase, StartsWith, EndsWith, WholeWord",
         "alias": "Alias: FindString, StopProcessing, Folder",
         "aliases": "Aliases: Item(index-or-name), Count",
@@ -1413,6 +1450,8 @@ public actor ScriptRuntime {
         "socketserver": "SocketServer: Shutdown; create with App.New_SocketServer(port, callback, userdata)",
         "log": "Log: FileName, Write, WriteLine",
         "puppet": "Puppet: Name, Description (connection routing is exposed by the native client)",
+        "puppets": "Puppets: Item(index-or-name), Count",
+        "triggers": "Triggers: Item(index-or-name), Count",
         "textwindowline": "TextWindowLine: String, HTMLString, Length, Insert, Delete, Color, BgColor, Bold, Italic, Underline, Strikeout, Flash, FlashMode, Blink",
     ]
 }

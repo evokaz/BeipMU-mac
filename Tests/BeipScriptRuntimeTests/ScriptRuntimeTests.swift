@@ -103,6 +103,25 @@ final class ScriptRuntimeTests: XCTestCase {
         ])
     }
 
+    func testWindowRunQueuesClientCommandInsteadOfEvaluatingJavaScript() async {
+        let runtime = ScriptRuntime()
+
+        let result = await runtime.evaluate(
+            "window.run('buy torch'); app.OutputDebugText('after')"
+        )
+
+        XCTAssertNil(result.error)
+        XCTAssertEqual(result.outputs, [
+            .init(kind: .runCommand, value: "buy torch"),
+            .init(kind: .debugText, value: "after"),
+        ])
+
+        let returnValue = await runtime.evaluate("window.Run('look')")
+        XCTAssertNil(returnValue.error)
+        XCTAssertNil(returnValue.value)
+        XCTAssertEqual(returnValue.outputs, [.init(kind: .runCommand, value: "look")])
+    }
+
     func testHostProxyLowerCamelCaseAliasesMatchDocumentedDispatchBehavior() async {
         let runtime = ScriptRuntime()
 
@@ -120,9 +139,14 @@ final class ScriptRuntimeTests: XCTestCase {
         let runtime = ScriptRuntime()
         let result = await runtime.evaluate("window.Properties.HWND")
         let help = await runtime.help(for: "Connection")
+        let types = await runtime.helpTypes()
 
         XCTAssertTrue(result.error?.contains("HWND is not supported on macOS") == true)
         XCTAssertTrue(help?.contains("IsConnected") == true)
+        XCTAssertTrue(types.contains("ArrayUInt"))
+        XCTAssertTrue(types.contains("Window_Events"))
+        XCTAssertTrue(types.contains("Window_Graphics"))
+        XCTAssertTrue(types.contains("Worlds"))
     }
 
     func testTimeoutRunsAsynchronouslyAndPreservesUserData() async throws {
@@ -303,6 +327,21 @@ final class ScriptRuntimeTests: XCTestCase {
             .flatMap { try? JSONDecoder().decode(ChangedLine.self, from: $0) }
         XCTAssertEqual(changed?.text, "ello")
         XCTAssertTrue(changed?.html.contains("font-weight:bold") == true)
+    }
+
+    func testConnectionAndCommandHooksReturnHandledState() async {
+        let runtime = ScriptRuntime()
+        _ = await runtime.evaluate(
+            "window.connection.SetOnSend(function() { return true; }); window.SetOnCommand(function() { return true; }); window.connection.SetOnDisplay(function(line) { return true; });"
+        )
+
+        let send = await runtime.dispatchConnectionEvent("send", arguments: ["north"])
+        let command = await runtime.dispatchConnectionEvent("window:command", arguments: ["help", ""])
+        let display = await runtime.dispatchConnectionEvent("display", line: .init(text: "hidden"))
+
+        XCTAssertEqual(send.value, "true")
+        XCTAssertEqual(command.value, "true")
+        XCTAssertTrue(display.value?.contains("\"handled\":true") == true)
     }
 
     func testInputAndMainWindowMutablePropertiesReplayToNativeHost() async {
