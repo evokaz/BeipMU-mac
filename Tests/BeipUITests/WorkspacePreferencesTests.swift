@@ -1185,6 +1185,7 @@ final class WorkspacePreferencesTests: XCTestCase {
     @MainActor
     func testAtlasEditorIntegratesRoomInfoAndExposesNativeAccessibleControls() throws {
         let controller = AtlasWindowController(atlas: Atlas(maps: []))
+        controller.editor.liveTracking = true
         controller.integrate(.init(
             id: "dock",
             area: "Harbor",
@@ -1211,8 +1212,23 @@ final class WorkspacePreferencesTests: XCTestCase {
         XCTAssertTrue(views.contains { $0.accessibilityLabel() == "Atlas map canvas" })
         XCTAssertTrue(views.contains { $0.accessibilityLabel() == "Atlas editing tool" })
         XCTAssertTrue(views.contains { $0.accessibilityLabel() == "Atlas map" })
+        XCTAssertTrue(views.contains { $0.accessibilityLabel() == "Known exits" })
+        XCTAssertTrue(views.contains { $0.accessibilityLabel() == "Map zoom" })
+        XCTAssertTrue(views.contains { $0.accessibilityLabel() == "Automatic mapping" })
         XCTAssertTrue(views.compactMap { $0 as? NSButton }.contains { $0.title == "Palette" })
         XCTAssertTrue(views.compactMap { $0 as? NSButton }.contains { $0.title == "Export" })
+        XCTAssertTrue(views.compactMap { $0 as? NSButton }.contains { $0.title == "Zoom in" })
+        XCTAssertTrue(views.compactMap { $0 as? NSButton }.contains { $0.title == "Fit map" })
+        XCTAssertTrue(views.compactMap { $0 as? NSButton }.contains { $0.title == "Create room" })
+        for group in ["File", "Navigation", "Create", "Select", "View"] {
+            XCTAssertTrue(views.compactMap { $0 as? NSTextField }.contains { $0.stringValue == group })
+        }
+        XCTAssertTrue(content.wantsLayer)
+        let openButton = try XCTUnwrap(views.compactMap { $0 as? NSButton }.first { $0.title == "Open" })
+        XCTAssertTrue(openButton.wantsLayer)
+        let canvas = try XCTUnwrap(views.first { $0.accessibilityLabel() == "Atlas map canvas" })
+        let mapBarLabel = try XCTUnwrap(views.first { $0.accessibilityLabel() == "Map zoom" })
+        XCTAssertGreaterThan(mapBarLabel.superview?.layer?.zPosition ?? 0, canvas.layer?.zPosition ?? 0)
 
         let location = try XCTUnwrap(controller.editor.currentLocation)
         let roomID = try XCTUnwrap(controller.editor.objectID(for: location))
@@ -1220,6 +1236,18 @@ final class WorkspacePreferencesTests: XCTestCase {
         XCTAssertTrue(controller.copySelection())
         XCTAssertTrue(controller.pasteSelection())
         XCTAssertEqual(controller.editor.atlas.maps[0].rooms.count, 2)
+
+        XCTAssertTrue(controller.addRoomAndExit(name: "Harbor Road", outward: "east", returnCommand: "west"))
+        var sentCommands: [String] = []
+        controller.onSendCommands = { sentCommands += $0 }
+        let exits = try XCTUnwrap(views.compactMap { $0 as? NSPopUpButton }.first {
+            $0.accessibilityLabel() == "Known exits"
+        })
+        XCTAssertTrue(exits.isEnabled)
+        XCTAssertEqual(exits.numberOfItems, 2)
+        exits.selectItem(at: 1)
+        XCTAssertTrue(NSApplication.shared.sendAction(try XCTUnwrap(exits.action), to: exits.target, from: exits))
+        XCTAssertEqual(sentCommands, ["east"])
     }
 
     private func pageKeyEvent(keyCode: UInt16) -> NSEvent? {

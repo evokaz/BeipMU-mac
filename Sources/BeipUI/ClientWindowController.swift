@@ -2929,7 +2929,9 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         let hookedLine = await applyScriptDisplayHook(to: gmcpState.decorate(line))
         let presentation = await applyTriggers(to: hookedLine)
         let webViewGag = webViewWindows.values.reduce(false) { $1.observeDisplay(presentation.line) || $0 }
-        _ = atlasWindow?.observeOutput(presentation.line.text)
+        if presentation.line.source == .server {
+            _ = atlasWindow?.observeOutput(presentation.line.text)
+        }
         if !isPrompt {
             suppressNextSessionActivity = presentation.suppressActivity
             if hasPendingPrompt { output.removeLastLine(); hasPendingPrompt = false }
@@ -5160,9 +5162,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
                     controller.showWindow(self)
                 case let .roomInfo(room):
                     activityLabel.stringValue = room.area.isEmpty ? "Room: \(room.name)" : "Room: \(room.name) — \(room.area)"
-                    let atlas = ensureAtlasWindow()
-                    atlas.integrate(room)
-                    atlas.showWindow(self)
+                    atlasWindow?.integrate(room)
                 case let .transmit(outgoing):
                     guard let session else { continue }
                     Task { await session.sendRaw(Self.gmcpFrame(outgoing)) }

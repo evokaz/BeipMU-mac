@@ -7,10 +7,13 @@ import UniformTypeIdentifiers
 final class AtlasWindowController: NSWindowController, NSWindowDelegate, NSSearchFieldDelegate {
     private let canvas: AtlasCanvasView
     private let mapPopup = NSPopUpButton()
-    private let toolControl = NSSegmentedControl(labels: ["Select", "Pan", "Room", "Exit", "Rect", "Image", "Label", "Locate", "Path", "Run"], trackingMode: .selectOne, target: nil, action: nil)
+    private let exitsPopup = NSPopUpButton()
     private let search = NSSearchField()
-    private let liveTracking = NSButton(checkboxWithTitle: "Live track", target: nil, action: nil)
+    private let liveTracking = NSButton(checkboxWithTitle: "Auto-map", target: nil, action: nil)
     private let status = NSTextField(labelWithString: "No current room")
+    private let zoomStatus = NSTextField(labelWithString: "100%")
+    private var toolButtons: [NSButton] = []
+    private var filterButtons: [NSButton] = []
     private var resources: [String: Data] = [:]
     private var sourceURL: URL?
     private var searchResults: [AtlasSearchResult] = []
@@ -41,12 +44,13 @@ final class AtlasWindowController: NSWindowController, NSWindowDelegate, NSSearc
     init(atlas: Atlas = .init()) {
         canvas = AtlasCanvasView(editor: .init(atlas: atlas))
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 980, height: 680),
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 650),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = "Atlas"
+        window.minSize = NSSize(width: 680, height: 440)
         window.isReleasedWhenClosed = false
         window.setFrameAutosaveName("BeipMU.Atlas")
         window.setAccessibilityIdentifier("atlasWindow")
@@ -95,6 +99,7 @@ final class AtlasWindowController: NSWindowController, NSWindowDelegate, NSSearc
     }
 
     func integrate(_ room: GMCPRoomInfo) {
+        guard canvas.editor.liveTracking else { return }
         let location = canvas.editor.integrate(room)
         canvas.center(on: location)
         refresh()
@@ -148,36 +153,98 @@ final class AtlasWindowController: NSWindowController, NSWindowDelegate, NSSearc
         let root = NSStackView()
         root.orientation = .vertical
         root.spacing = 0
+        root.wantsLayer = true
         root.translatesAutoresizingMaskIntoConstraints = false
+
+        let fileButtons = buttonStrip([
+            imageButton("Open", symbol: "folder", action: #selector(openDocument)),
+            imageButton("Save", symbol: "square.and.arrow.down", action: #selector(saveDocument)),
+            imageButton("Save As", symbol: "doc.badge.plus", action: #selector(saveDocumentAs)),
+        ])
+        let navigationButtons = buttonStrip([
+            toolButton("Locate", symbol: "location.fill", tool: .locate),
+            toolButton("Path", symbol: "point.topleft.down.to.point.bottomright.curvepath", tool: .path),
+            toolButton("Run", symbol: "figure.run", tool: .speedRun),
+            imageButton("Center current room", symbol: "scope", action: #selector(centerCurrentRoom)),
+        ])
+        let createButtons = buttonStrip([
+            toolButton("Create room", symbol: "circle", tool: .room),
+            toolButton("Create exit", symbol: "arrow.right", tool: .exit),
+            toolButton("Create rectangle", symbol: "rectangle", tool: .rectangle),
+            toolButton("Create image", symbol: "photo", tool: .image),
+            toolButton("Create label", symbol: "tag", tool: .label),
+        ])
+        let selectButtons = buttonStrip([
+            toolButton("Select", symbol: "cursorarrow", tool: .select, accessibilityLabel: "Atlas editing tool"),
+            toolButton("Pan", symbol: "hand.draw", tool: .pan),
+            imageButton("Copy", symbol: "doc.on.doc", action: #selector(copySelection)),
+            imageButton("Paste", symbol: "clipboard", action: #selector(pasteSelection)),
+            imageButton("Undo", symbol: "arrow.uturn.backward", action: #selector(undo)),
+            imageButton("Redo", symbol: "arrow.uturn.forward", action: #selector(redo)),
+        ])
+        let viewButtons = buttonStrip([
+            imageButton("Zoom out", symbol: "minus.magnifyingglass", action: #selector(zoomOut)),
+            imageButton("Actual size", symbol: "1.magnifyingglass", action: #selector(actualSize)),
+            imageButton("Zoom in", symbol: "plus.magnifyingglass", action: #selector(zoomIn)),
+            imageButton("Fit map", symbol: "arrow.up.left.and.arrow.down.right", action: #selector(fitMap)),
+            imageButton("Palette", symbol: "paintpalette", action: #selector(editPalette)),
+            imageButton("Export", symbol: "square.and.arrow.up", action: #selector(exportImage)),
+        ])
 
         let toolbar = NSStackView()
         toolbar.orientation = .horizontal
-        toolbar.alignment = .centerY
-        toolbar.spacing = 7
-        toolbar.edgeInsets = .init(top: 7, left: 8, bottom: 7, right: 8)
-        toolbar.addArrangedSubview(button("Open", #selector(openDocument)))
-        toolbar.addArrangedSubview(button("Save", #selector(saveDocument)))
-        toolbar.addArrangedSubview(button("Save As", #selector(saveDocumentAs)))
-        toolbar.addArrangedSubview(NSBox.separator())
+        toolbar.alignment = .top
+        toolbar.spacing = 0
+        toolbar.edgeInsets = .init(top: 5, left: 6, bottom: 4, right: 6)
+        for (title, controls) in [
+            ("File", fileButtons),
+            ("Navigation", navigationButtons),
+            ("Create", createButtons),
+            ("Select", selectButtons),
+            ("View", viewButtons),
+        ] {
+            if !toolbar.arrangedSubviews.isEmpty { toolbar.addArrangedSubview(NSBox.separator()) }
+            toolbar.addArrangedSubview(toolbarGroup(title, controls: controls))
+        }
+
+        let toolbarScroller = NSScrollView()
+        toolbarScroller.drawsBackground = true
+        toolbarScroller.backgroundColor = .windowBackgroundColor
+        toolbarScroller.hasHorizontalScroller = true
+        toolbarScroller.hasVerticalScroller = false
+        toolbarScroller.autohidesScrollers = true
+        toolbarScroller.borderType = .noBorder
+        toolbarScroller.documentView = toolbar
+        toolbar.translatesAutoresizingMaskIntoConstraints = false
+        toolbar.topAnchor.constraint(equalTo: toolbarScroller.contentView.topAnchor).isActive = true
+        toolbar.leadingAnchor.constraint(equalTo: toolbarScroller.contentView.leadingAnchor).isActive = true
+        toolbar.heightAnchor.constraint(equalToConstant: 58).isActive = true
+
+        let mapBar = NSStackView()
+        mapBar.orientation = .horizontal
+        mapBar.alignment = .centerY
+        mapBar.spacing = 7
+        mapBar.edgeInsets = .init(top: 5, left: 8, bottom: 5, right: 8)
+        mapBar.addArrangedSubview(NSTextField(labelWithString: "Map:"))
         mapPopup.target = self
         mapPopup.action = #selector(changeMap)
         mapPopup.setAccessibilityLabel("Atlas map")
-        toolbar.addArrangedSubview(mapPopup)
-        toolbar.addArrangedSubview(button("+", #selector(addMap)))
-        toolbar.addArrangedSubview(button("−", #selector(removeMap)))
-        toolbar.addArrangedSubview(NSBox.separator())
-        toolControl.target = self
-        toolControl.action = #selector(changeTool)
-        toolControl.selectedSegment = 0
-        toolControl.setAccessibilityLabel("Atlas editing tool")
-        toolbar.addArrangedSubview(toolControl)
-        toolbar.addArrangedSubview(button("Center", #selector(centerCurrentRoom)))
-        toolbar.addArrangedSubview(button("Palette", #selector(editPalette)))
-        toolbar.addArrangedSubview(button("Copy", #selector(copySelection)))
-        toolbar.addArrangedSubview(button("Paste", #selector(pasteSelection)))
-        toolbar.addArrangedSubview(button("Export", #selector(exportImage)))
-        toolbar.addArrangedSubview(button("Undo", #selector(undo)))
-        toolbar.addArrangedSubview(button("Redo", #selector(redo)))
+        mapPopup.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        mapBar.addArrangedSubview(mapPopup)
+        mapBar.addArrangedSubview(imageButton("Add map", symbol: "plus", action: #selector(addMap)))
+        mapBar.addArrangedSubview(imageButton("Remove map", symbol: "minus", action: #selector(removeMap)))
+        mapBar.addArrangedSubview(NSBox.separator())
+        exitsPopup.target = self
+        exitsPopup.action = #selector(takeExit)
+        exitsPopup.setAccessibilityLabel("Known exits")
+        exitsPopup.toolTip = "Send a command for an exit from the current room"
+        exitsPopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 130).isActive = true
+        mapBar.addArrangedSubview(exitsPopup)
+        mapBar.addArrangedSubview(NSBox.separator())
+        zoomStatus.alignment = .right
+        zoomStatus.setAccessibilityLabel("Map zoom")
+        zoomStatus.widthAnchor.constraint(equalToConstant: 44).isActive = true
+        mapBar.addArrangedSubview(zoomStatus)
 
         let filters = NSStackView()
         filters.orientation = .horizontal
@@ -192,12 +259,14 @@ final class AtlasWindowController: NSWindowController, NSWindowDelegate, NSSearc
             let control = NSButton(checkboxWithTitle: title, target: self, action: #selector(changeFilter(_:)))
             control.state = .on
             control.tag = Int(value.rawValue)
+            filterButtons.append(control)
             filters.addArrangedSubview(control)
         }
         liveTracking.target = self
         liveTracking.action = #selector(changeLiveTracking(_:))
         liveTracking.state = canvas.editor.liveTracking ? .on : .off
-        liveTracking.setAccessibilityLabel("Live map tracking")
+        liveTracking.toolTip = "Create and connect rooms from game output while you move"
+        liveTracking.setAccessibilityLabel("Automatic mapping")
         filters.addArrangedSubview(liveTracking)
         search.placeholderString = "Find rooms"
         search.delegate = self
@@ -208,21 +277,29 @@ final class AtlasWindowController: NSWindowController, NSWindowDelegate, NSSearc
         filters.addArrangedSubview(status)
         status.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        root.addArrangedSubview(toolbar)
+        root.addArrangedSubview(toolbarScroller)
+        root.addArrangedSubview(mapBar)
         root.addArrangedSubview(filters)
         root.addArrangedSubview(canvas)
         canvas.translatesAutoresizingMaskIntoConstraints = false
         window.contentView = NSView()
+        window.contentView?.wantsLayer = true
         window.contentView?.addSubview(root)
         NSLayoutConstraint.activate([
             root.leadingAnchor.constraint(equalTo: window.contentView!.leadingAnchor),
             root.trailingAnchor.constraint(equalTo: window.contentView!.trailingAnchor),
             root.topAnchor.constraint(equalTo: window.contentView!.topAnchor),
             root.bottomAnchor.constraint(equalTo: window.contentView!.bottomAnchor),
-            toolbar.heightAnchor.constraint(greaterThanOrEqualToConstant: 42),
+            toolbarScroller.heightAnchor.constraint(equalToConstant: 58),
+            mapBar.heightAnchor.constraint(greaterThanOrEqualToConstant: 34),
             filters.heightAnchor.constraint(greaterThanOrEqualToConstant: 36),
             canvas.heightAnchor.constraint(greaterThanOrEqualToConstant: 300),
         ])
+        prepareForLayerBackedDrawing(root)
+        toolbarScroller.layer?.zPosition = 2
+        mapBar.layer?.zPosition = 2
+        filters.layer?.zPosition = 2
+        canvas.layer?.zPosition = 1
     }
 
     private func wireCanvas() {
@@ -249,15 +326,85 @@ final class AtlasWindowController: NSWindowController, NSWindowDelegate, NSSearc
         } else {
             status.stringValue = "No current room"
         }
+        exitsPopup.removeAllItems()
+        let exits = canvas.editor.exitsFromCurrentRoom()
+        if exits.isEmpty {
+            exitsPopup.addItem(withTitle: "No known exits")
+            exitsPopup.isEnabled = false
+        } else {
+            exitsPopup.addItem(withTitle: "Take exit…")
+            for value in exits {
+                exitsPopup.addItem(withTitle: "\(value.command) → \(value.destinationName)")
+                exitsPopup.lastItem?.representedObject = value.command
+            }
+            exitsPopup.isEnabled = true
+            exitsPopup.selectItem(at: 0)
+        }
         liveTracking.state = canvas.editor.liveTracking ? .on : .off
+        zoomStatus.stringValue = "\(Int((canvas.editor.viewport.scale * 100).rounded()))%"
+        for button in toolButtons {
+            button.state = button.tag == canvas.tool.rawValue ? .on : .off
+        }
+        for button in filterButtons {
+            let filter = AtlasSelectionFilter(rawValue: UInt8(button.tag))
+            button.state = canvas.editor.selectionFilter.contains(filter) ? .on : .off
+        }
         canvas.needsDisplay = true
         if !suppressStateChange { onStateChange?(surfacePreferences) }
     }
 
-    private func button(_ title: String, _ action: Selector) -> NSButton {
-        let value = NSButton(title: title, target: self, action: action)
-        value.bezelStyle = .rounded
+    private func imageButton(_ title: String, symbol: String, action: Selector) -> NSButton {
+        let value = NSButton(image: NSImage(systemSymbolName: symbol, accessibilityDescription: title) ?? NSImage(), target: self, action: action)
+        value.title = title
+        value.bezelStyle = .texturedRounded
+        value.imagePosition = .imageOnly
+        value.toolTip = title
+        value.setAccessibilityLabel(title)
+        value.widthAnchor.constraint(equalToConstant: 31).isActive = true
+        value.heightAnchor.constraint(equalToConstant: 26).isActive = true
         return value
+    }
+
+    private func toolButton(_ title: String, symbol: String, tool: AtlasCanvasView.Tool, accessibilityLabel: String? = nil) -> NSButton {
+        let value = imageButton(title, symbol: symbol, action: #selector(selectTool(_:)))
+        value.setButtonType(.toggle)
+        value.tag = tool.rawValue
+        value.setAccessibilityLabel(accessibilityLabel ?? title)
+        value.state = tool == .select ? .on : .off
+        toolButtons.append(value)
+        return value
+    }
+
+    private func buttonStrip(_ buttons: [NSButton]) -> NSStackView {
+        let value = NSStackView(views: buttons)
+        value.orientation = .horizontal
+        value.alignment = .centerY
+        value.spacing = 3
+        return value
+    }
+
+    private func toolbarGroup(_ title: String, controls: NSView) -> NSStackView {
+        let label = NSTextField(labelWithString: title)
+        label.alignment = .center
+        label.font = .systemFont(ofSize: 11)
+        label.textColor = .secondaryLabelColor
+        let value = NSStackView(views: [controls, label])
+        value.orientation = .vertical
+        value.alignment = .centerX
+        value.spacing = 2
+        value.edgeInsets = .init(top: 0, left: 6, bottom: 0, right: 6)
+        return value
+    }
+
+    private func prepareForLayerBackedDrawing(_ view: NSView) {
+        view.wantsLayer = true
+        if let button = view as? NSButton {
+            button.contentTintColor = .labelColor
+        } else if let label = view as? NSTextField, !label.isEditable {
+            label.textColor = label.textColor ?? .labelColor
+        }
+        for child in view.subviews { prepareForLayerBackedDrawing(child) }
+        view.needsDisplay = true
     }
 
     @objc private func openDocument() {
@@ -311,13 +458,37 @@ final class AtlasWindowController: NSWindowController, NSWindowDelegate, NSSearc
         refresh()
     }
 
-    @objc private func changeTool() {
-        canvas.tool = AtlasCanvasView.Tool(rawValue: toolControl.selectedSegment) ?? .select
+    @objc private func selectTool(_ sender: NSButton) {
+        canvas.tool = AtlasCanvasView.Tool(rawValue: sender.tag) ?? .select
+        for button in toolButtons { button.state = button === sender ? .on : .off }
+        window?.makeFirstResponder(canvas)
     }
 
     @objc private func centerCurrentRoom() {
         guard let location = canvas.editor.currentLocation else { NSSound.beep(); return }
         canvas.center(on: location)
+        refresh()
+    }
+
+    @objc private func takeExit() {
+        guard let command = exitsPopup.selectedItem?.representedObject as? String else { return }
+        onSendCommands?([command])
+    }
+
+    @objc private func zoomIn() { zoom(by: 1.25) }
+    @objc private func zoomOut() { zoom(by: 0.8) }
+    @objc private func actualSize() {
+        let factor = 1 / canvas.editor.viewport.scale
+        zoom(by: factor)
+    }
+    @objc private func fitMap() {
+        canvas.centerAll()
+        refresh()
+    }
+
+    private func zoom(by factor: Double) {
+        canvas.editor.viewport.zoom(by: factor, around: .init(x: canvas.bounds.midX, y: canvas.bounds.midY))
+        refresh()
     }
 
     @objc private func changeLiveTracking(_ sender: NSButton) {
@@ -329,7 +500,7 @@ final class AtlasWindowController: NSWindowController, NSWindowDelegate, NSSearc
         let value = AtlasSelectionFilter(rawValue: UInt8(sender.tag))
         if sender.state == .on { canvas.editor.selectionFilter.insert(value) }
         else { canvas.editor.selectionFilter.remove(value) }
-        canvas.needsDisplay = true
+        refresh()
     }
 
     @objc private func undo() { canvas.editor.undo(); refresh() }
@@ -409,51 +580,96 @@ final class AtlasWindowController: NSWindowController, NSWindowDelegate, NSSearc
         alert.messageText = "Map Object Properties"
         alert.addButton(withTitle: "Apply")
         alert.addButton(withTitle: "Cancel")
+        func geometryFields(_ rect: Atlas.Rect) -> [(String, NSTextField)] {
+            let value = rect.standardized
+            return [
+                ("X", NSTextField(string: Self.number(value.x1))),
+                ("Y", NSTextField(string: Self.number(value.y1))),
+                ("Width", NSTextField(string: Self.number(value.width))),
+                ("Height", NSTextField(string: Self.number(value.height))),
+            ]
+        }
         let fields: [(String, NSTextField)]
         switch element {
         case let .room(value):
-            fields = [("Name", NSTextField(string: value.name)), ("Fill color", NSTextField(string: value.color ?? "")), ("Outline color", NSTextField(string: value.outlineColor ?? ""))]
+            fields = [
+                ("Name", NSTextField(string: value.name)),
+                ("Fill color", NSTextField(string: value.color ?? "")),
+                ("Outline color", NSTextField(string: value.outlineColor ?? "")),
+            ] + geometryFields(value.rect)
         case let .exit(value):
             fields = [("Command there", NSTextField(string: value.nameFrom ?? "")), ("Command back", NSTextField(string: value.nameTo ?? ""))]
-        case let .rectangle(value): fields = [("Fill color", NSTextField(string: value.color ?? ""))]
-        case let .image(value): fields = [("Image source", NSTextField(string: value.source))]
-        case let .label(value): fields = [("Text", NSTextField(string: value.text)), ("Color", NSTextField(string: value.color ?? ""))]
+        case let .rectangle(value): fields = [("Fill color", NSTextField(string: value.color ?? ""))] + geometryFields(value.rect)
+        case let .image(value): fields = [("Image source", NSTextField(string: value.source))] + geometryFields(value.rect)
+        case let .label(value): fields = [("Text", NSTextField(string: value.text)), ("Color", NSTextField(string: value.color ?? ""))] + geometryFields(value.rect)
         case .unknown: return
         }
         let grid = NSGridView(views: fields.map { [NSTextField(labelWithString: "\($0.0):"), $0.1] })
         grid.frame = NSRect(x: 0, y: 0, width: 390, height: CGFloat(max(1, fields.count) * 30))
         alert.accessoryView = grid
         guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let fieldValues = Dictionary(uniqueKeysWithValues: fields.map { ($0.0, $0.1.stringValue) })
+        func updatedRect(_ original: Atlas.Rect) -> Atlas.Rect? {
+            guard let x = fieldValues["X"].flatMap(Double.init),
+                  let y = fieldValues["Y"].flatMap(Double.init),
+                  let width = fieldValues["Width"].flatMap(Double.init),
+                  let height = fieldValues["Height"].flatMap(Double.init),
+                  width >= 10, height >= 10 else { return nil }
+            return .init(x1: x, y1: y, x2: x + width, y2: y + height)
+        }
         let updated: Atlas.MapElement
         switch element {
         case var .room(value):
-            value.name = fields[0].1.stringValue
-            value.color = fields[1].1.stringValue.nilIfEmpty
-            value.outlineColor = fields[2].1.stringValue.nilIfEmpty
+            guard let rect = updatedRect(value.rect) else { NSSound.beep(); return }
+            value.name = fieldValues["Name"] ?? value.name
+            value.color = fieldValues["Fill color"]?.nilIfEmpty
+            value.outlineColor = fieldValues["Outline color"]?.nilIfEmpty
+            value.rect = rect
             updated = .room(value)
         case var .exit(value):
-            value.nameFrom = fields[0].1.stringValue.nilIfEmpty
-            value.nameTo = fields[1].1.stringValue.nilIfEmpty
+            value.nameFrom = fieldValues["Command there"]?.nilIfEmpty
+            value.nameTo = fieldValues["Command back"]?.nilIfEmpty
             updated = .exit(value)
-        case var .rectangle(value): value.color = fields[0].1.stringValue.nilIfEmpty; updated = .rectangle(value)
-        case var .image(value): value.source = fields[0].1.stringValue; updated = .image(value)
-        case var .label(value): value.text = fields[0].1.stringValue; value.color = fields[1].1.stringValue.nilIfEmpty; updated = .label(value)
+        case var .rectangle(value):
+            guard let rect = updatedRect(value.rect) else { NSSound.beep(); return }
+            value.color = fieldValues["Fill color"]?.nilIfEmpty
+            value.rect = rect
+            updated = .rectangle(value)
+        case var .image(value):
+            guard let rect = updatedRect(value.rect) else { NSSound.beep(); return }
+            value.source = fieldValues["Image source"] ?? value.source
+            value.rect = rect
+            updated = .image(value)
+        case var .label(value):
+            guard let rect = updatedRect(value.rect) else { NSSound.beep(); return }
+            value.text = fieldValues["Text"] ?? value.text
+            value.color = fieldValues["Color"]?.nilIfEmpty
+            value.rect = rect
+            updated = .label(value)
         case .unknown: return
         }
         canvas.editor.updateElement(at: id, to: updated)
         refresh()
     }
 
+    private static func number(_ value: Double) -> String {
+        value.rounded() == value ? String(Int(value)) : String(value)
+    }
+
     private func create(_ kind: AtlasCanvasView.Tool, rect: Atlas.Rect) {
+        let created: AtlasObjectID?
         switch kind {
         case .room:
             guard let name = prompt(title: "Create Room", label: "Room name", value: "Room") else { return }
-            _ = canvas.editor.addRoom(name: name, rect: rect)
+            created = canvas.editor.addRoom(name: name, rect: rect)
+            if canvas.editor.currentLocation == nil, let map = canvas.editor.currentMap, !map.rooms.isEmpty {
+                canvas.editor.setCurrentLocation(.init(mapIndex: canvas.editor.mapIndex, roomIndex: map.rooms.count - 1))
+            }
         case .rectangle:
-            _ = canvas.editor.addRectangle(rect: rect, color: "#3A3A3A")
+            created = canvas.editor.addRectangle(rect: rect, color: "#3A3A3A")
         case .label:
             guard let text = prompt(title: "Create Label", label: "Label text", value: "Label") else { return }
-            _ = canvas.editor.addLabel(text: text, rect: rect, color: "#FFFFFF")
+            created = canvas.editor.addLabel(text: text, rect: rect, color: "#FFFFFF")
         case .image:
             let panel = NSOpenPanel()
             panel.allowedContentTypes = [.png, .jpeg, .gif]
@@ -461,9 +677,13 @@ final class AtlasWindowController: NSWindowController, NSWindowDelegate, NSSearc
             let path = "images/\(url.lastPathComponent)"
             resources[path] = data
             canvas.resources = resources
-            _ = canvas.editor.addImage(source: path, rect: rect)
-        default: return
+            created = canvas.editor.addImage(source: path, rect: rect)
+        default:
+            created = nil
         }
+        guard let created else { return }
+        canvas.editor.selection = [created]
+        canvas.tool = .select
         refresh()
     }
 
@@ -523,6 +743,7 @@ final class AtlasCanvasView: NSView {
     private var mouseStart: NSPoint?
     private var worldStart: Atlas.Point?
     private var isPanning = false
+    private var resizingID: AtlasObjectID?
     private var imageCache: [String: NSImage] = [:]
     private var highlightedPath: [AtlasPathStep] = []
     private var highlightedDestination: AtlasLocation?
@@ -562,6 +783,11 @@ final class AtlasCanvasView: NSView {
         let point = convert(event.locationInWindow, from: nil)
         mouseStart = point
         worldStart = world(point)
+        if tool == .select, let id = resizeHandleHit(at: point) {
+            resizingID = id
+            isPanning = false
+            return
+        }
         isPanning = tool == .pan || event.buttonNumber == 2 || (tool == .select && hitTestObject(at: point) == nil)
         guard tool == .select, !isPanning, let id = hitTestObject(at: point) else { return }
         if event.modifierFlags.contains(.shift) {
@@ -570,6 +796,7 @@ final class AtlasCanvasView: NSView {
             editor.selection = [id]
         }
         needsDisplay = true
+        if event.clickCount == 2 { onEditProperties?() }
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -585,7 +812,14 @@ final class AtlasCanvasView: NSView {
         guard let start = worldStart else { return }
         let point = convert(event.locationInWindow, from: nil)
         let end = world(point)
-        defer { mouseStart = nil; worldStart = nil; isPanning = false }
+        defer { mouseStart = nil; worldStart = nil; isPanning = false; resizingID = nil }
+        if let id = resizingID, let element = editor.element(at: id), let original = element.rect {
+            let x2 = event.modifierFlags.contains(.control) ? end.x : (end.x / 10).rounded() * 10
+            let y2 = event.modifierFlags.contains(.control) ? end.y : (end.y / 10).rounded() * 10
+            editor.resizeElement(at: id, to: .init(x1: original.standardized.x1, y1: original.standardized.y1, x2: x2, y2: y2))
+            onChange?()
+            return
+        }
         if isPanning { onChange?(); return }
         switch tool {
         case .select:
@@ -640,10 +874,16 @@ final class AtlasCanvasView: NSView {
         if flags.contains(.command), event.charactersIgnoringModifiers?.lowercased() == "c" { onCopy?(); return }
         if flags.contains(.command), event.charactersIgnoringModifiers?.lowercased() == "v" { onPaste?(); return }
         if event.charactersIgnoringModifiers == "+" || event.charactersIgnoringModifiers == "=" {
-            editor.viewport.zoom(by: 1.2, around: .init(x: bounds.midX, y: bounds.midY)); needsDisplay = true; return
+            editor.viewport.zoom(by: 1.2, around: .init(x: bounds.midX, y: bounds.midY))
+            needsDisplay = true
+            onChange?()
+            return
         }
         if event.charactersIgnoringModifiers == "-" {
-            editor.viewport.zoom(by: 0.8, around: .init(x: bounds.midX, y: bounds.midY)); needsDisplay = true; return
+            editor.viewport.zoom(by: 0.8, around: .init(x: bounds.midX, y: bounds.midY))
+            needsDisplay = true
+            onChange?()
+            return
         }
         super.keyDown(with: event)
     }
@@ -770,6 +1010,10 @@ final class AtlasCanvasView: NSView {
             selection.lineWidth = 2
             selection.stroke()
         }
+        if selected, editor.selection.count == 1, let rect = element.rect {
+            NSColor.keyboardFocusIndicatorColor.setFill()
+            NSBezierPath(rect: resizeHandle(for: rect)).fill()
+        }
     }
 
     private func drawPath() {
@@ -800,6 +1044,18 @@ final class AtlasCanvasView: NSView {
         return map.rooms.enumerated().reversed().first { view($0.element.rect).contains(point) }.map {
             .init(mapIndex: editor.mapIndex, roomIndex: $0.offset)
         }
+    }
+
+    private func resizeHandleHit(at point: NSPoint) -> AtlasObjectID? {
+        guard editor.selection.count == 1, let id = editor.selection.first,
+              id.mapIndex == editor.mapIndex, let rect = editor.element(at: id)?.rect,
+              resizeHandle(for: rect).insetBy(dx: -3, dy: -3).contains(point) else { return nil }
+        return id
+    }
+
+    private func resizeHandle(for rect: Atlas.Rect) -> NSRect {
+        let value = view(rect)
+        return .init(x: value.maxX - 5, y: value.maxY - 5, width: 10, height: 10)
     }
 
     private func exitHit(_ value: Atlas.Exit, at point: NSPoint, map: Atlas.Map) -> Bool {

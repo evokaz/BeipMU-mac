@@ -131,6 +131,8 @@ final class AtlasEditorTests: XCTestCase {
         editor.selection = [background, room]
         editor.moveSelection(dx: 13, dy: 17, snap: 10)
         XCTAssertEqual(editor.atlas.maps[0].rooms[0].rect.x1, 30)
+        XCTAssertEqual(editor.atlas.maps[0].rooms[0].rect.width, 80)
+        XCTAssertEqual(editor.atlas.maps[0].rooms[0].rect.height, 60)
         XCTAssertEqual(editor.atlas.maps[0].rectangles[0].rect.y1, 20)
         editor.bringSelectionToFront()
         XCTAssertEqual(Set(editor.selection.map(\.elementIndex)), [1, 2])
@@ -139,6 +141,11 @@ final class AtlasEditorTests: XCTestCase {
         XCTAssertEqual(editor.atlas.maps[0].rooms[0].rect.x1, 20)
         editor.redo()
         XCTAssertEqual(editor.atlas.maps[0].rooms[0].rect.x1, 30)
+
+        editor.selection = [room]
+        editor.resizeElement(at: room, to: .init(x1: 30, y1: 40, x2: 150, y2: 130))
+        XCTAssertEqual(editor.atlas.maps[0].rooms[0].rect.width, 120)
+        XCTAssertEqual(editor.atlas.maps[0].rooms[0].rect.height, 90)
 
         var viewport = AtlasViewport()
         viewport.zoom(by: 2, around: .init(x: 50, y: 50))
@@ -189,6 +196,40 @@ final class AtlasEditorTests: XCTestCase {
         editor.setCurrentLocation(.init(mapIndex: 0, roomIndex: 0))
         XCTAssertTrue(editor.addExitToDirectionalRoom(outward: "north", returnCommand: "south"))
         XCTAssertFalse(editor.addExitToDirectionalRoom(outward: "downstairs", returnCommand: "upstairs"))
+    }
+
+    func testAutomaticMappingCreatesLinksAndReusesExistingRooms() throws {
+        var editor = AtlasEditor(atlas: Atlas(maps: [.init(name: "Main")]))
+        editor.liveTracking = true
+
+        let start = try XCTUnwrap(editor.observeOutput("Town Square"))
+        XCTAssertEqual(start, .init(mapIndex: 0, roomIndex: 0))
+        XCTAssertEqual(editor.atlas.maps[0].rooms.map(\.name), ["Town Square"])
+
+        XCTAssertNil(editor.recordTypedExit("north"))
+        XCTAssertNil(editor.observeOutput("You walk north."))
+        let north = try XCTUnwrap(editor.observeOutput("Moonlit Road"))
+        XCTAssertEqual(north, .init(mapIndex: 0, roomIndex: 1))
+        XCTAssertEqual(editor.atlas.maps[0].rooms.count, 2)
+        XCTAssertEqual(editor.atlas.maps[0].exits.first?.nameFrom, "north")
+        XCTAssertEqual(editor.atlas.maps[0].exits.first?.nameTo, "south")
+        XCTAssertLessThan(editor.atlas.maps[0].rooms[1].rect.center.y, editor.atlas.maps[0].rooms[0].rect.center.y)
+
+        XCTAssertEqual(editor.recordTypedExit("south"), start)
+        XCTAssertEqual(editor.observeOutput("Town Square"), start)
+        XCTAssertEqual(editor.atlas.maps[0].rooms.count, 2, "Revisiting a named room must not create a duplicate")
+        XCTAssertEqual(editor.atlas.maps[0].exits.count, 1)
+
+        XCTAssertEqual(editor.recordTypedExit("north"), north)
+        XCTAssertEqual(editor.observeOutput("You cannot go that way."), start)
+        XCTAssertEqual(editor.currentLocation, start, "A rejected move must restore the source room")
+        XCTAssertEqual(editor.atlas.maps[0].rooms.count, 2)
+
+        editor.setCurrentLocation(north)
+        editor.liveTracking = false
+        XCTAssertNil(editor.recordTypedExit("east"))
+        XCTAssertNil(editor.observeOutput("Eastern Gate"))
+        XCTAssertEqual(editor.atlas.maps[0].rooms.count, 2)
     }
 
     func testRoomInfoCreatesAndUpdatesAtlasLocation() {
