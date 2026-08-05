@@ -8,9 +8,161 @@ import BeipScriptRuntime
 import Darwin
 import UserNotifications
 
+enum WorldTabDragInsertion {
+    static func index(midpoints: [CGFloat], x: CGFloat) -> Int {
+        midpoints.firstIndex(where: { x < $0 }) ?? midpoints.count
+    }
+}
+
 @MainActor
-private final class SessionWindowTabItemView: NSView {
+private final class SessionTabStripView: NSStackView {
+    static let pasteboardType = NSPasteboard.PasteboardType("org.beipmu.world-tab")
+
+    weak var owner: ClientWindowController?
+    private var tabControllers: [ClientWindowController] = []
+    private var cells: [UUID: SessionWindowTabItemView] = [:]
+    private var draggedTabID: UUID?
+    private var dropInsertionIndex: Int?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        orientation = .horizontal
+        alignment = .centerY
+        distribution = .fill
+        spacing = 4
+        registerForDraggedTypes([Self.pasteboardType])
+        setAccessibilityRole(.tabGroup)
+        setAccessibilityLabel("World tabs")
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    func setTabs(_ controllers: [ClientWindowController], selectedController: ClientWindowController) {
+        tabControllers = controllers
+        arrangedSubviews.forEach {
+            removeArrangedSubview($0)
+            $0.removeFromSuperview()
+        }
+        cells.removeAll(keepingCapacity: true)
+        for controller in controllers {
+            let tab = SessionWindowTabItemView(
+                tabID: controller.tabDragIdentifier,
+                title: controller.sessionTabTextForTabStrip,
+                trailingIndicators: controller.sessionTabTrailingIndicatorsForTabStrip,
+                selected: controller === selectedController,
+                color: controller.sessionTabColorForTabStrip,
+                targetController: controller,
+                strip: self
+            )
+            cells[controller.tabDragIdentifier] = tab
+            addArrangedSubview(tab)
+        }
+        needsDisplay = true
+    }
+
+    func setDragging(_ id: UUID?, active: Bool) {
+        draggedTabID = active ? id : nil
+        cells.forEach { tabID, cell in cell.setDragging(active && tabID == id) }
+        needsDisplay = true
+    }
+
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        guard localDraggedTabID(from: sender) != nil else {
+            clearDropIndicator()
+            return []
+        }
+        updateDropIndicator(for: sender)
+        return .move
+    }
+
+    override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        guard localDraggedTabID(from: sender) != nil else {
+            clearDropIndicator()
+            return []
+        }
+        updateDropIndicator(for: sender)
+        return .move
+    }
+
+    override func draggingExited(_ sender: (any NSDraggingInfo)?) {
+        clearDropIndicator()
+    }
+
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        guard let id = localDraggedTabID(from: sender) else {
+            clearDropIndicator()
+            return false
+        }
+        let index = insertionIndex(at: sender.draggingLocation)
+        clearDropIndicator()
+        return (NSApp.delegate as? ApplicationDelegate)?.completeTabDrop(
+            tabID: id,
+            target: owner,
+            insertionIndex: index
+        ) ?? false
+    }
+
+    override func concludeDragOperation(_ sender: (any NSDraggingInfo)?) {
+        clearDropIndicator()
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard dropInsertionIndex != nil else { return }
+        let highlight = bounds.insetBy(dx: 1, dy: 1)
+        NSColor.controlAccentColor.withAlphaComponent(0.12).setFill()
+        NSBezierPath(roundedRect: highlight, xRadius: 6, yRadius: 6).fill()
+
+        let index = dropInsertionIndex ?? 0
+        let markerX: CGFloat
+        if index < tabControllers.count, let cell = cells[tabControllers[index].tabDragIdentifier] {
+            markerX = cell.frame.minX - 2
+        } else if let last = tabControllers.last,
+                  let cell = cells[last.tabDragIdentifier] {
+            markerX = cell.frame.maxX + 2
+        } else {
+            markerX = 2
+        }
+        NSColor.controlAccentColor.setFill()
+        NSBezierPath(rect: NSRect(x: markerX, y: 3, width: 2, height: max(0, bounds.height - 6))).fill()
+    }
+
+    static func insertionIndex(midpoints: [CGFloat], x: CGFloat) -> Int {
+        WorldTabDragInsertion.index(midpoints: midpoints, x: x)
+    }
+
+    func insertionIndex(at point: NSPoint) -> Int {
+        layoutSubtreeIfNeeded()
+        let midpoints = tabControllers.compactMap { cells[$0.tabDragIdentifier]?.frame.midX }
+        return Self.insertionIndex(midpoints: midpoints, x: convert(point, from: nil).x)
+    }
+
+    private func updateDropIndicator(for sender: any NSDraggingInfo) {
+        dropInsertionIndex = insertionIndex(at: sender.draggingLocation)
+        needsDisplay = true
+    }
+
+    private func clearDropIndicator() {
+        guard dropInsertionIndex != nil else { return }
+        dropInsertionIndex = nil
+        needsDisplay = true
+    }
+
+    private func localDraggedTabID(from sender: any NSDraggingInfo) -> UUID? {
+        guard let raw = sender.draggingPasteboard.string(forType: Self.pasteboardType),
+              let id = UUID(uuidString: raw),
+              sender.draggingSource is SessionWindowTabItemView,
+              let delegate = NSApp.delegate as? ApplicationDelegate,
+              delegate.tabController(for: id) != nil else { return nil }
+        return id
+    }
+}
+
+@MainActor
+private final class SessionWindowTabItemView: NSView, NSDraggingSource {
+    private let tabID: UUID
     weak var targetController: ClientWindowController?
+    private weak var strip: SessionTabStripView?
     private final class ClickThroughLabel: NSTextField {
         override var alignmentRectInsets: NSEdgeInsets {
             NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
@@ -24,15 +176,22 @@ private final class SessionWindowTabItemView: NSView {
     private var tracking: NSTrackingArea?
     private var selected = false
     private let tabColor: NSColor?
+    private var hovered = false
+    private var dragging = false
+    private var dragStarted = false
 
     init(
+        tabID: UUID,
         title: String,
         trailingIndicators: String,
         selected: Bool,
         color: NSColor?,
-        targetController: ClientWindowController
+        targetController: ClientWindowController,
+        strip: SessionTabStripView
     ) {
+        self.tabID = tabID
         self.targetController = targetController
+        self.strip = strip
         self.selected = selected
         tabColor = color
         super.init(frame: .zero)
@@ -99,7 +258,7 @@ private final class SessionWindowTabItemView: NSView {
             trailingIndicatorLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
             trailingIndicatorLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
-        updateBackground(hovered: false)
+        updateBackground()
     }
 
     required init?(coder: NSCoder) { nil }
@@ -117,21 +276,43 @@ private final class SessionWindowTabItemView: NSView {
     }
 
     override func mouseEntered(with event: NSEvent) {
+        hovered = true
         closeButton.isHidden = false
-        updateBackground(hovered: true)
+        updateBackground()
     }
 
     override func mouseExited(with event: NSEvent) {
+        hovered = false
         closeButton.isHidden = !selected
-        updateBackground(hovered: false)
+        updateBackground()
     }
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
-        updateBackground(hovered: false)
+        updateBackground()
     }
 
     override func mouseDown(with event: NSEvent) {
+        dragStarted = false
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard !dragStarted,
+              let delegate = NSApp.delegate as? ApplicationDelegate,
+              delegate.beginTabDrag(tabID: tabID) else { return }
+        dragStarted = true
+        strip?.setDragging(tabID, active: true)
+
+        let pasteboardItem = NSPasteboardItem()
+        pasteboardItem.setString(tabID.uuidString, forType: SessionTabStripView.pasteboardType)
+        let draggingItem = NSDraggingItem(pasteboardWriter: pasteboardItem)
+        draggingItem.setDraggingFrame(bounds, contents: dragImage())
+        beginDraggingSession(with: [draggingItem], event: event, source: self)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        defer { dragStarted = false }
+        guard !dragStarted else { return }
         selectTab(self)
     }
 
@@ -147,14 +328,52 @@ private final class SessionWindowTabItemView: NSView {
         targetController?.sessionTabContextMenu()
     }
 
-    private func updateBackground(hovered: Bool) {
+    func setDragging(_ dragging: Bool) {
+        self.dragging = dragging
+        updateBackground()
+    }
+
+    func draggingSession(
+        _ session: NSDraggingSession,
+        sourceOperationMaskFor context: NSDraggingContext
+    ) -> NSDragOperation {
+        context == .withinApplication ? .move : []
+    }
+
+    func draggingSession(
+        _ session: NSDraggingSession,
+        endedAt screenPoint: NSPoint,
+        operation: NSDragOperation
+    ) {
+        strip?.setDragging(tabID, active: false)
+        (NSApp.delegate as? ApplicationDelegate)?.finishTabDrag(
+            tabID: tabID,
+            screenPoint: screenPoint,
+            operation: operation
+        )
+    }
+
+    private func updateBackground() {
+        alphaValue = dragging ? 0.62 : 1
         layer?.backgroundColor = if selected {
             (tabColor ?? NSColor.controlColor).cgColor
-        } else if hovered {
+        } else if hovered || dragging {
             NSColor.quaternaryLabelColor.cgColor
         } else {
             NSColor.clear.cgColor
         }
+        layer?.borderWidth = dragging ? 2 : 0
+        layer?.borderColor = dragging ? NSColor.controlAccentColor.cgColor : nil
+    }
+
+    private func dragImage() -> NSImage {
+        guard let representation = bitmapImageRepForCachingDisplay(in: bounds) else {
+            return NSImage(size: bounds.size)
+        }
+        cacheDisplay(in: bounds, to: representation)
+        let image = NSImage(size: bounds.size)
+        image.addRepresentation(representation)
+        return image
     }
 
     @objc private func selectTab(_ sender: Any?) {
@@ -187,11 +406,77 @@ final class ClientTabGroup {
     }
 
     func add(_ controller: ClientWindowController) {
+        insert(controller, at: controllers.count, selecting: false)
+    }
+
+    func insert(
+        _ controller: ClientWindowController,
+        at index: Int,
+        selecting: Bool = true
+    ) {
         guard !controllers.contains(where: { $0 === controller }) else { return }
-        entries.append(WeakController(controller))
+        let insertionIndex = min(max(index, 0), entries.count)
+        entries.insert(WeakController(controller), at: insertionIndex)
         controller.sessionTabGroup = self
         refreshTabs()
-        controller.tabStateDidChange()
+        if selecting { select(controller, sender: nil) }
+    }
+
+    func reorder(_ controller: ClientWindowController, to index: Int) {
+        let currentControllers = controllers
+        guard let currentIndex = currentControllers.firstIndex(where: { $0 === controller }) else { return }
+        let entry = entries.remove(at: currentIndex)
+        let adjustedIndex = index > currentIndex ? index - 1 : index
+        let insertionIndex = min(max(adjustedIndex, 0), entries.count)
+        entries.insert(entry, at: insertionIndex)
+        refreshTabs()
+    }
+
+    @discardableResult
+    func detach(_ controller: ClientWindowController) -> Bool {
+        let currentControllers = controllers
+        guard currentControllers.count > 1,
+              let index = currentControllers.firstIndex(where: { $0 === controller }) else {
+            return false
+        }
+
+        let wasSelected = selectedController === controller
+        let sourceFrame = controller.window?.frame
+        entries.remove(at: index)
+        controller.sessionTabGroup = nil
+
+        let remaining = controllers
+        guard !remaining.isEmpty else {
+            selectedController = nil
+            return true
+        }
+
+        if remaining.count == 1 {
+            let survivor = remaining[0]
+            survivor.sessionTabGroup = nil
+            selectedController = nil
+            if wasSelected {
+                if let sourceFrame { survivor.window?.setFrame(sourceFrame, display: false) }
+                controller.window?.orderOut(nil)
+                survivor.showWindow(nil)
+                survivor.window?.makeKeyAndOrderFront(nil)
+                survivor.focusCommandInput()
+            }
+            survivor.rebuildSessionTabs()
+            return true
+        }
+
+        if wasSelected {
+            let replacement = remaining[min(index, remaining.count - 1)]
+            selectedController = replacement
+            if let sourceFrame { replacement.window?.setFrame(sourceFrame, display: false) }
+            controller.window?.orderOut(nil)
+            replacement.showWindow(nil)
+            replacement.window?.makeKeyAndOrderFront(nil)
+            replacement.focusCommandInput()
+        }
+        refreshTabs()
+        return true
     }
 
     func select(_ controller: ClientWindowController?, sender: Any?) {
@@ -325,7 +610,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private let applicationMenuButton = NSButton()
     private let quickConnectButton = NSButton()
     private let profilesButton = NSButton()
-    private let sessionTabs = NSStackView()
+    private let sessionTabs = SessionTabStripView(frame: .zero)
     private let titlebarStatistics = SessionTitlebarStatisticsController()
     private let commandRegistry = CommandRegistry()
     private let delayScheduler = DelayScheduler()
@@ -398,6 +683,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private var unreadCount = 0
     private var lastFindQuery = ""
     private var sessionTabColor: NSColor?
+    let tabDragIdentifier = UUID()
     private var profileLibraryObserverID: UUID?
     var sessionTabGroup: ClientTabGroup?
     private var preferences: WorkspacePreferences
@@ -433,6 +719,10 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     var dockPlacement: WorkspaceDockPlacement { dockController?.placement ?? preferences.dockPlacement }
     var legacyDockPlacement: WorkspaceDockPlacement? { dockController?.legacyPlacement }
     var activeLogCount: Int { logWriters.count }
+
+    var sessionTabTextForTabStrip: String { sessionTabText }
+    var sessionTabTrailingIndicatorsForTabStrip: String { sessionTabTrailingIndicators }
+    var sessionTabColorForTabStrip: NSColor? { sessionTabColor }
 
     func startDeviceMediaAuditIfRequested() {
         let environment = ProcessInfo.processInfo.environment
@@ -2407,6 +2697,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         sessionTabs.alignment = .centerY
         sessionTabs.distribution = .fill
         sessionTabs.spacing = 4
+        sessionTabs.owner = self
         sessionTabs.setContentHuggingPriority(.defaultLow, for: .horizontal)
         sessionTabs.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         sessionTabs.setAccessibilityIdentifier("sessionTabs")
@@ -4081,23 +4372,16 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     func rebuildSessionTabs() {
-        sessionTabs.arrangedSubviews.forEach {
-            sessionTabs.removeArrangedSubview($0)
-            $0.removeFromSuperview()
-        }
-
         let controllers = sessionTabGroup?.controllers ?? [self]
         let selectedController = sessionTabGroup?.selectedController ?? self
-        for controller in controllers {
-            let tab = SessionWindowTabItemView(
-                title: controller.sessionTabText,
-                trailingIndicators: controller.sessionTabTrailingIndicators,
-                selected: controller === selectedController,
-                color: controller.sessionTabColor,
-                targetController: controller
-            )
-            sessionTabs.addArrangedSubview(tab)
-        }
+        sessionTabs.setTabs(controllers, selectedController: selectedController)
+    }
+
+    func containsSessionTabStrip(screenPoint: NSPoint) -> Bool {
+        guard let window, window.isVisible else { return false }
+        let windowPoint = window.convertPoint(fromScreen: screenPoint)
+        let localPoint = sessionTabs.convert(windowPoint, from: nil)
+        return sessionTabs.bounds.contains(localPoint)
     }
 
     func focusCommandInput() {

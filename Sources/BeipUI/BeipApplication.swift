@@ -23,6 +23,12 @@ public enum BeipApplication {
 
 @MainActor
 final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
+    private struct TabDragState {
+        let tabID: UUID
+        var cancelled = false
+        var completed = false
+    }
+
     private var windows: [ClientWindowController] = []
     private let profileLibrary = ProfileLibrary()
     private var configurationManager: ConfigurationManagerWindowController?
@@ -30,6 +36,8 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     private var shortcutItems: [ShortcutAction: NSMenuItem] = [:]
     private var isRestoringTabs = false
     private var isTerminating = false
+    private var tabDragState: TabDragState?
+    private var tabDragEventMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSWindow.allowsAutomaticWindowTabbing = false
@@ -180,6 +188,130 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
             self?.windows.forEach { $0.synchronizeInputHeight(height) }
         }
         return controller
+    }
+
+    func tabController(for id: UUID) -> ClientWindowController? {
+        windows.first { $0.tabDragIdentifier == id }
+    }
+
+    @discardableResult
+    func beginTabDrag(tabID: UUID) -> Bool {
+        guard tabController(for: tabID) != nil else { return false }
+        endTabDragMonitor()
+        tabDragState = TabDragState(tabID: tabID)
+        tabDragEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
+            [weak self] event in
+            guard event.keyCode == 53 else { return event }
+            self?.cancelTabDrag()
+            return nil
+        }
+        return true
+    }
+
+    func completeTabDrop(
+        tabID: UUID,
+        target: ClientWindowController?,
+        insertionIndex: Int
+    ) -> Bool {
+        guard let target,
+              let state = tabDragState,
+              state.tabID == tabID,
+              !state.cancelled,
+              let source = tabController(for: tabID),
+              source !== target || source.sessionTabGroup != nil else {
+            return false
+        }
+
+        let sourceGroup = source.sessionTabGroup
+        let destinationGroup: ClientTabGroup
+        if let existing = target.sessionTabGroup {
+            destinationGroup = existing
+        } else {
+            destinationGroup = ClientTabGroup(target)
+        }
+
+        if let sourceGroup, sourceGroup === destinationGroup {
+            sourceGroup.reorder(source, to: insertionIndex)
+            finishCompletedTabDrag()
+            saveOpenTabs()
+            return true
+        }
+
+        if let sourceGroup {
+            guard sourceGroup.detach(source) else { return false }
+        }
+        destinationGroup.insert(
+            source,
+            at: min(max(insertionIndex, 0), destinationGroup.controllers.count),
+            selecting: true
+        )
+        finishCompletedTabDrag()
+        saveOpenTabs()
+        return true
+    }
+
+    func cancelTabDrag() {
+        guard tabDragState != nil else { return }
+        tabDragState?.cancelled = true
+        endTabDragMonitor()
+    }
+
+    func finishTabDrag(
+        tabID: UUID,
+        screenPoint: NSPoint,
+        operation _: NSDragOperation
+    ) {
+        guard let state = tabDragState, state.tabID == tabID else { return }
+        defer {
+            tabDragState = nil
+            endTabDragMonitor()
+        }
+        guard !state.cancelled, !state.completed else { return }
+        guard !windows.contains(where: { $0.containsSessionTabStrip(screenPoint: screenPoint) }),
+              let source = tabController(for: tabID),
+              let sourceGroup = source.sessionTabGroup,
+              sourceGroup.controllers.count > 1 else { return }
+
+        let originalSize = source.window?.frame.size
+        guard sourceGroup.detach(source), let window = source.window else { return }
+        if let originalSize {
+            var frame = window.frame
+            frame.size = originalSize
+            window.setFrame(frame, display: false)
+        }
+        positionUndockedWindow(window, near: screenPoint)
+        source.showWindow(nil)
+        window.makeKeyAndOrderFront(nil)
+        source.focusCommandInput()
+        saveOpenTabs()
+    }
+
+    private func finishCompletedTabDrag() {
+        tabDragState?.completed = true
+        endTabDragMonitor()
+    }
+
+    private func endTabDragMonitor() {
+        if let tabDragEventMonitor {
+            NSEvent.removeMonitor(tabDragEventMonitor)
+            self.tabDragEventMonitor = nil
+        }
+    }
+
+    private func positionUndockedWindow(_ window: NSWindow, near point: NSPoint) {
+        var frame = window.frame
+        let screen = NSScreen.screens.first { $0.visibleFrame.contains(point) }
+            ?? NSScreen.screens.first { $0.frame.contains(point) }
+            ?? window.screen
+        guard let visible = screen?.visibleFrame else { return }
+
+        frame.origin = NSPoint(
+            x: point.x - frame.width / 2,
+            y: point.y - frame.height / 2
+        )
+        frame.origin.x = min(max(frame.origin.x, visible.minX), max(visible.minX, visible.maxX - frame.width))
+        frame.origin.y = min(max(frame.origin.y, visible.minY), max(visible.minY, visible.maxY - frame.height))
+        window.setFrame(frame, display: true)
     }
 
     private func replaceLastTab(_ controller: ClientWindowController) {

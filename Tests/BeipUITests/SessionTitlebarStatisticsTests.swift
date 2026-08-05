@@ -15,6 +15,104 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
         XCTAssertEqual(SessionTitlebarStatisticsFormatter.duration(-1), "0s")
     }
 
+    func testWorldTabDragInsertionUsesTabMidpoints() {
+        XCTAssertEqual(WorldTabDragInsertion.index(midpoints: [40, 100, 160], x: 10), 0)
+        XCTAssertEqual(WorldTabDragInsertion.index(midpoints: [40, 100, 160], x: 100), 2)
+        XCTAssertEqual(WorldTabDragInsertion.index(midpoints: [40, 100, 160], x: 220), 3)
+    }
+
+    @MainActor
+    func testWorldTabGroupReordersWithoutChangingSelection() throws {
+        let library = ProfileLibrary(workspace: try .empty(isDirty: false))
+        let first = ClientWindowController(profileLibrary: library)
+        let second = ClientWindowController(profileLibrary: library)
+        let third = ClientWindowController(profileLibrary: library)
+        defer {
+            first.close()
+            second.close()
+            third.close()
+        }
+
+        let group = ClientTabGroup(first)
+        group.add(second)
+        group.add(third)
+        group.select(second, sender: nil)
+
+        group.reorder(first, to: 3)
+        XCTAssertTrue(group.controllers[0] === second)
+        XCTAssertTrue(group.controllers[1] === third)
+        XCTAssertTrue(group.controllers[2] === first)
+        XCTAssertTrue(group.selectedController === second)
+
+        group.reorder(first, to: 0)
+        XCTAssertTrue(group.controllers[0] === first)
+        XCTAssertTrue(group.controllers[1] === second)
+        XCTAssertTrue(group.controllers[2] === third)
+        XCTAssertTrue(group.selectedController === second)
+    }
+
+    @MainActor
+    func testWorldTabGroupDetachesAndDissolvesWithoutClosingControllers() throws {
+        let library = ProfileLibrary(workspace: try .empty(isDirty: false))
+        let first = ClientWindowController(profileLibrary: library)
+        let second = ClientWindowController(profileLibrary: library)
+        let third = ClientWindowController(profileLibrary: library)
+        defer {
+            first.close()
+            second.close()
+            third.close()
+        }
+
+        let group = ClientTabGroup(first)
+        group.add(second)
+        group.add(third)
+        group.select(second, sender: nil)
+
+        XCTAssertTrue(group.detach(first))
+        XCTAssertEqual(group.controllers.count, 2)
+        XCTAssertTrue(group.controllers[0] === second)
+        XCTAssertTrue(group.controllers[1] === third)
+        XCTAssertTrue(group.selectedController === second)
+        XCTAssertNil(first.sessionTabGroup)
+
+        XCTAssertTrue(group.detach(second))
+        XCTAssertEqual(group.controllers.count, 1)
+        XCTAssertTrue(group.controllers[0] === third)
+        XCTAssertNil(second.sessionTabGroup)
+        XCTAssertNil(third.sessionTabGroup)
+    }
+
+    @MainActor
+    func testWorldTabGroupIndexedInsertTransfersAnExistingController() throws {
+        let library = ProfileLibrary(workspace: try .empty(isDirty: false))
+        let first = ClientWindowController(profileLibrary: library)
+        let second = ClientWindowController(profileLibrary: library)
+        let third = ClientWindowController(profileLibrary: library)
+        let fourth = ClientWindowController(profileLibrary: library)
+        defer {
+            first.close()
+            second.close()
+            third.close()
+            fourth.close()
+        }
+
+        let source = ClientTabGroup(first)
+        source.add(second)
+        let destination = ClientTabGroup(third)
+        destination.add(fourth)
+
+        XCTAssertTrue(source.detach(second))
+        destination.insert(second, at: 1)
+
+        XCTAssertEqual(source.controllers.count, 1)
+        XCTAssertNil(first.sessionTabGroup)
+        XCTAssertEqual(destination.controllers.count, 3)
+        XCTAssertTrue(destination.controllers[0] === third)
+        XCTAssertTrue(destination.controllers[1] === second)
+        XCTAssertTrue(destination.controllers[2] === fourth)
+        XCTAssertTrue(destination.selectedController === second)
+    }
+
     @MainActor
     func testCustomSessionStripSuppressesNativeTabBar() async throws {
         let library = ProfileLibrary(workspace: try .empty(isDirty: false))
