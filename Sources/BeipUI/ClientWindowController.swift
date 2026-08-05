@@ -586,6 +586,11 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         var tabInputWindowSettings: [String: InputWindowSettingsOverride]
     }
 
+    private struct ActiveCharacterProfile: Equatable {
+        let serverID: UUID
+        let characterID: UUID
+    }
+
     private final class SimpleEditUploadState {
         let reference: String
         let type: String
@@ -631,6 +636,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private var keyboardMacroGroups: [KeyboardMacroGroup] = []
     private var session: SessionActor?
     private var sessionTask: Task<Void, Never>?
+    private var activeCharacterProfile: ActiveCharacterProfile?
+    private var persistedSessionStatistics = ConnectionStatistics()
     private var currentServer: ServerProfile?
     private var currentCharacter: CharacterProfile?
     private var currentPuppet: PuppetProfile?
@@ -898,8 +905,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         if runsScriptServices {
             Task { [scriptService] in await scriptService.stopAsyncOutputDelivery() }
         }
-        sessionTask?.cancel()
-        if let session { Task { await session.disconnect() } }
+        stopCurrentSessionAndPersistStatistics()
         onClose?()
     }
 
@@ -1341,7 +1347,11 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             return
         }
         guard let session else { return }
-        Task { await session.disconnect() }
+        Task { [weak self] in
+            await session.disconnect()
+            guard let self else { return }
+            await self.persistActiveCharacterStatistics(from: session)
+        }
     }
 
     func reconnect() {
@@ -2735,8 +2745,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         closeAtlasSurface(preservingDockPlacement: true)
         closeWebViews()
         closeAIWindow(preservingDockPlacement: true)
-        sessionTask?.cancel()
-        if let session { Task { await session.disconnect() } }
+        stopCurrentSessionAndPersistStatistics()
         isSessionConnected = false
         currentServer = server
         currentCharacter = character
@@ -2768,6 +2777,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         refreshDiagnostics()
         if let master, let puppet {
             session = nil
+            activeCharacterProfile = nil
             output.clear()
             master.attachPuppetChild(self, puppet: puppet)
             masterConnectionStateChanged(connected: master.connectionStateText == "Connected")
@@ -2783,6 +2793,10 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         processor.setTerminalType(terminalType)
         let next = SessionActor(transport: NetworkTransport(), processor: processor, localEcho: localEcho)
         session = next
+        activeCharacterProfile = master == nil
+            ? character.map { .init(serverID: server.id, characterID: $0.id) }
+            : nil
+        persistedSessionStatistics = ConnectionStatistics()
         let inputSettings = activeInputWindowSettings
         Task {
             await next.configureLocalEcho(
@@ -2795,13 +2809,95 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             let events = await next.events()
             for await event in events {
                 guard !Task.isCancelled else { return }
-                await self?.handle(event)
+                await self?.handle(event, from: next)
             }
         }
         let size = output.terminalSize
         Task {
             await next.updateWindowSize(columns: size.columns, rows: size.rows)
             await next.connect(.init(server: server, character: character, puppet: puppet, policy: policy))
+        }
+    }
+
+    private func stopCurrentSessionAndPersistStatistics() {
+        let previousSession = session
+        let previousProfile = activeCharacterProfile
+        let previousBaseline = persistedSessionStatistics
+        sessionTask?.cancel()
+        sessionTask = nil
+        session = nil
+        activeCharacterProfile = nil
+        persistedSessionStatistics = ConnectionStatistics()
+        guard let previousSession else { return }
+
+        Task { [weak self] in
+            await previousSession.disconnect()
+            let statistics = await previousSession.statistics()
+            guard let self, let previousProfile else { return }
+            self.persistCharacterStatistics(
+                statistics,
+                for: previousProfile,
+                since: previousBaseline
+            )
+        }
+    }
+
+    // SessionActor owns runtime counters, while CharacterProfile stores the
+    // lifetime totals shown by the configuration editor. Persist deltas so a
+    // reconnect or a second tab cannot count the same session twice.
+    private func persistActiveCharacterStatistics(
+        from source: SessionActor,
+        markLastUsed: Bool = false
+    ) async {
+        guard session === source, let activeCharacterProfile else { return }
+        let statistics = await source.statistics()
+        persistCharacterStatistics(
+            statistics,
+            for: activeCharacterProfile,
+            since: persistedSessionStatistics,
+            lastUsed: markLastUsed ? Date() : nil
+        )
+        persistedSessionStatistics = statistics
+    }
+
+    private func persistCharacterStatistics(
+        _ statistics: ConnectionStatistics,
+        for profile: ActiveCharacterProfile,
+        since baseline: ConnectionStatistics,
+        lastUsed: Date? = nil
+    ) {
+        let delta = ConnectionStatistics(
+            bytesSent: statistics.bytesSent >= baseline.bytesSent
+                ? statistics.bytesSent - baseline.bytesSent : 0,
+            bytesReceived: statistics.bytesReceived >= baseline.bytesReceived
+                ? statistics.bytesReceived - baseline.bytesReceived : 0,
+            secondsConnected: max(0, statistics.secondsConnected - baseline.secondsConnected),
+            connectionCount: statistics.connectionCount >= baseline.connectionCount
+                ? statistics.connectionCount - baseline.connectionCount : 0
+        )
+        guard let current = profileLibrary.workspace.servers
+            .first(where: { $0.profile.id == profile.serverID })?.characters
+            .first(where: { $0.id == profile.characterID }) else { return }
+        let created = lastUsed != nil && current.created.isEmpty
+            ? CharacterProfile.timestamp()
+            : nil
+        guard delta.bytesSent > 0 || delta.bytesReceived > 0
+                || delta.secondsConnected > 0 || delta.connectionCount > 0
+                || lastUsed != nil || created != nil else { return }
+
+        do {
+            try profileLibrary.mutate { workspace in
+                try workspace.updateCharacter(id: profile.characterID, inServerID: profile.serverID) { character in
+                    character.bytesSent += delta.bytesSent
+                    character.bytesReceived += delta.bytesReceived
+                    character.secondsConnected += UInt64(delta.secondsConnected)
+                    character.connectionCount += delta.connectionCount
+                    if let lastUsed { character.lastUsed = CharacterProfile.timestamp(for: lastUsed) }
+                    if let created { character.created = created }
+                }
+            }
+        } catch {
+            appendError("Could not save character statistics: \(error.localizedDescription)")
         }
     }
 
@@ -2833,7 +2929,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         }
     }
 
-    private func handle(_ event: SessionEvent) async {
+    private func handle(_ event: SessionEvent, from source: SessionActor) async {
+        guard session === source else { return }
         switch event {
         case let .state(state):
             switch state {
@@ -2854,6 +2951,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
                 stateLabel.stringValue = connectionStateText
                 stateLabel.textColor = .systemGreen
                 startAutomaticLog()
+                await persistActiveCharacterStatistics(from: source, markLastUsed: true)
             case .disconnecting:
                 isSessionConnected = false
                 connectionStateText = "Disconnecting…"; stateLabel.stringValue = connectionStateText; stateLabel.textColor = .systemOrange
@@ -2861,6 +2959,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
                 isSessionConnected = false
                 connectionStateText = "Failed"; stateLabel.stringValue = connectionStateText; stateLabel.textColor = .systemRed
                 appendConnectionError(message)
+                await persistActiveCharacterStatistics(from: source)
             }
             refreshTitlebarStatistics()
             refreshDiagnostics()
@@ -2878,6 +2977,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
                 }
             }
             if case .disconnected = state {
+                await persistActiveCharacterStatistics(from: source)
                 applyScriptEvaluation(await scriptService.dispatchConnectionEvent("disconnect", host: scriptHostSnapshot), showValue: false)
             }
             if case .failed = state {

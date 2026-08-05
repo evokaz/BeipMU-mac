@@ -1,6 +1,43 @@
 Version=329
 Connections
 {
+  Shortcuts
+  {
+    LambdaMOO
+    {
+      Host="lambda.moo.mud.org:8888"
+      Info="https://www.cc.gatech.edu/classes/cs8113e_99_winter/lambda.html"
+      Characters
+      {
+        Guest.Connect="connect guest"
+      }
+    }
+    CthulhuMud
+    {
+      Host="cthulhumud.com:8889"
+      Info="http://www.cthulhumud.com/"
+      Characters
+      {
+        Unnamed
+        {
+        }
+      }
+    }
+    "Heroes Assemble Mush"
+    {
+      Host="mushhaven.com:3000"
+      Info="https://heroesassemble.mushhaven.com/index.php?title=Main_Page"
+      Pueblo=true
+      Characters
+      {
+        Guest
+        {
+          Connect="/delay 3s \"connect %NAME% %PASSWORD%\""
+          Password="guest"
+        }
+      }
+    }
+  }
   KeyboardMacros2
   {
     {

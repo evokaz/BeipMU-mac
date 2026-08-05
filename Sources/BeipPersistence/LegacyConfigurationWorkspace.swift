@@ -1520,7 +1520,7 @@ public struct LegacyConfigurationWorkspace: Sendable {
             throw WorkspaceError.serverNotFound
         }
         let name = Self.uniqueName(requestedName, among: projection.servers[serverIndex].characters.map(\.name))
-        let character = CharacterProfile(name: name)
+        let character = CharacterProfile(name: name, created: CharacterProfile.timestamp())
         projection.servers[serverIndex].characters.append(character)
         isDirty = true
         return character.id

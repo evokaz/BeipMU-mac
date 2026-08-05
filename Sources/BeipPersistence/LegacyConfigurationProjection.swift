@@ -186,7 +186,15 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
             let profile = ServerProfile(
                 name: name,
                 host: endpoint.host,
+                info: version < 258
+                    ? Self.legacyMigratedInfo(
+                        children.value("Info") ?? "",
+                        oldName: children.value("Name"),
+                        shortcut: name
+                    )
+                    : children.value("Info") ?? "",
                 port: endpoint.port,
+                characterExpirationTime: children.value("CharacterExpirationTime").flatMap(Int.init) ?? 0,
                 encoding: encoding,
                 usesTLS: usesTLS,
                 verifiesCertificate: children.bool("VerifyCertificate") ?? false,
@@ -225,12 +233,26 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
                     name: characterName,
                     connectText: properties.value("Connect") ?? "",
                     password: properties.value("Password") ?? "",
-                    info: properties.value("Info") ?? "",
+                    info: version < 258
+                        ? Self.legacyMigratedInfo(
+                            properties.value("Info") ?? "",
+                            oldName: properties.value("Name"),
+                            shortcut: characterName
+                        )
+                        : properties.value("Info") ?? "",
                     autoConnect: properties.bool("ConnectAtStartup") ?? false,
                     idleTimeout: Self.idleTimeout(properties),
                     idleText: properties.value("IdleString") ?? "",
                     logFilename: properties.value("LogFileName") ?? "",
                     logAppendsDate: (properties.value("LogFileNameTimeFormat").flatMap(Int.init) ?? 0) & 0b110 != 0,
+                    restoreLog: properties.bool("RestoreLog") ?? true,
+                    restoreLogIndex: properties.value("RestoreLogIndex").flatMap(Int.init) ?? -1,
+                    bytesSent: properties.value("BytesSent").flatMap(UInt64.init) ?? 0,
+                    bytesReceived: properties.value("BytesReceived").flatMap(UInt64.init) ?? 0,
+                    secondsConnected: properties.value("SecondsConnected").flatMap(UInt64.init) ?? 0,
+                    connectionCount: properties.value("ConnectionCount").flatMap(UInt64.init) ?? 0,
+                    lastUsed: properties.value("LastUsed") ?? "",
+                    created: properties.value("Created") ?? "",
                     variables: Self.variables(properties),
                     puppets: puppets
                 )
@@ -382,6 +404,11 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
             let base = ["Connections", "Shortcuts", server.profile.name]
             let host = server.profile.host.contains(":") ? "[\(server.profile.host)]:\(server.profile.port)" : "\(server.profile.host):\(server.profile.port)"
             try result.upsertValue(host, at: base + ["Host"])
+            try Self.upsert(server.profile.info, default: "", at: base + ["Info"], in: &result)
+            try Self.upsert(
+                String(server.profile.characterExpirationTime), default: "0",
+                at: base + ["CharacterExpirationTime"], quoted: false, in: &result
+            )
             try Self.upsert(
                 server.profile.encoding.rawValue, default: TextEncoding.cp1252.rawValue,
                 at: base + ["Encoding"], quoted: false, in: &result
@@ -456,6 +483,32 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
                     character.logAppendsDate ? "6" : "0", default: "0",
                     at: characterBase + ["LogFileNameTimeFormat"], quoted: false, in: &result
                 )
+                try Self.upsert(
+                    Self.flag(character.restoreLog), default: "true",
+                    at: characterBase + ["RestoreLog"], quoted: false, in: &result
+                )
+                try Self.upsert(
+                    String(character.restoreLogIndex), default: "-1",
+                    at: characterBase + ["RestoreLogIndex"], quoted: false, in: &result
+                )
+                try Self.upsert(
+                    String(character.bytesSent), default: "0",
+                    at: characterBase + ["BytesSent"], quoted: false, in: &result
+                )
+                try Self.upsert(
+                    String(character.bytesReceived), default: "0",
+                    at: characterBase + ["BytesReceived"], quoted: false, in: &result
+                )
+                try Self.upsert(
+                    String(character.secondsConnected), default: "0",
+                    at: characterBase + ["SecondsConnected"], quoted: false, in: &result
+                )
+                try Self.upsert(
+                    String(character.connectionCount), default: "0",
+                    at: characterBase + ["ConnectionCount"], quoted: false, in: &result
+                )
+                try Self.upsert(character.lastUsed, default: "", at: characterBase + ["LastUsed"], in: &result)
+                try Self.upsert(character.created, default: "", at: characterBase + ["Created"], in: &result)
                 for puppet in character.puppets {
                     let puppetBase = characterBase + ["Puppets", puppet.name]
                     try result.upsertValue(puppet.receivePrefix, at: puppetBase + ["ReceivePrefix"])
@@ -1021,12 +1074,22 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
         base: [String],
         shortcut: String
     ) throws {
-        guard let oldName = nodes.value("Name"), !oldName.isEmpty,
-              oldName.caseInsensitiveCompare(shortcut) != .orderedSame else { return }
-        var info = nodes.value("Info") ?? ""
+        let info = legacyMigratedInfo(
+            nodes.value("Info") ?? "",
+            oldName: nodes.value("Name"),
+            shortcut: shortcut
+        )
+        guard info != (nodes.value("Info") ?? "") else { return }
+        try document.upsertValue(info, at: base + ["Info"])
+    }
+
+    private static func legacyMigratedInfo(_ info: String, oldName: String?, shortcut: String) -> String {
+        guard let oldName, !oldName.isEmpty,
+              oldName.caseInsensitiveCompare(shortcut) != .orderedSame else { return info }
+        var info = info
         if !info.isEmpty, !info.hasSuffix("\n") { info += "\r\n" }
         info += "Name:\(oldName)"
-        try document.upsertValue(info, at: base + ["Info"])
+        return info
     }
 
     private static func endpoint(_ value: String) -> (host: String, port: UInt16) {

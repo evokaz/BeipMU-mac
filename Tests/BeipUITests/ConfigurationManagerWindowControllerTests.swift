@@ -116,6 +116,34 @@ final class ConfigurationManagerWindowControllerTests: XCTestCase {
         XCTAssertLessThan(behaviorFrame.height, 220)
     }
 
+    func testNewCharacterDisplaysItsCreationDate() throws {
+        var workspace = try LegacyConfigurationWorkspace.empty(isDirty: false)
+        let serverID = workspace.addServer()
+        let characterID = try workspace.addCharacter(toServerID: serverID)
+        let expectedDate = try XCTUnwrap(
+            workspace.servers.first(where: { $0.profile.id == serverID })?
+                .characters.first(where: { $0.id == characterID })?.created
+        )
+        let controller = ConfigurationManagerWindowController(library: ProfileLibrary(workspace: workspace))
+        defer { controller.close() }
+
+        let table = try XCTUnwrap(
+            recursiveSubviews(of: controller.window?.contentView)
+                .compactMap { $0 as? NSTableView }
+                .first
+        )
+        table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        controller.tableViewSelectionDidChange(Notification(name: NSTableView.selectionDidChangeNotification))
+
+        let dateField = try XCTUnwrap(
+            recursiveSubviews(of: controller.window?.contentView)
+                .compactMap { $0 as? NSTextField }
+                .first { $0.accessibilityIdentifier() == "characterDateCreated" }
+        )
+        XCTAssertFalse(expectedDate.isEmpty)
+        XCTAssertEqual(dateField.stringValue, expectedDate)
+    }
+
     func testDoneAppliesPendingChanges() throws {
         var workspace = try LegacyConfigurationWorkspace.empty(isDirty: false)
         let serverID = workspace.addServer()

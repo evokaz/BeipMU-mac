@@ -10,7 +10,9 @@ public struct ServerProfile: Identifiable, Sendable, Hashable, Codable {
     public var id: UUID
     public var name: String
     public var host: String
+    public var info: String
     public var port: UInt16
+    public var characterExpirationTime: Int
     public var encoding: TextEncoding
     public var usesTLS: Bool
     public var verifiesCertificate: Bool
@@ -31,7 +33,9 @@ public struct ServerProfile: Identifiable, Sendable, Hashable, Codable {
         id: UUID = UUID(),
         name: String,
         host: String,
+        info: String = "",
         port: UInt16,
+        characterExpirationTime: Int = 0,
         encoding: TextEncoding = .utf8,
         usesTLS: Bool = false,
         verifiesCertificate: Bool = false,
@@ -49,7 +53,9 @@ public struct ServerProfile: Identifiable, Sendable, Hashable, Codable {
         self.id = id
         self.name = name
         self.host = host
+        self.info = info
         self.port = port
+        self.characterExpirationTime = characterExpirationTime
         self.encoding = encoding
         self.usesTLS = usesTLS
         self.verifiesCertificate = verifiesCertificate
@@ -77,8 +83,23 @@ public struct CharacterProfile: Identifiable, Sendable, Hashable, Codable {
     public var idleText: String
     public var logFilename: String
     public var logAppendsDate: Bool
+    public var restoreLog: Bool
+    public var restoreLogIndex: Int
+    public var bytesSent: UInt64
+    public var bytesReceived: UInt64
+    public var secondsConnected: UInt64
+    public var connectionCount: UInt64
+    public var lastUsed: String
+    public var created: String
     public var variables: [String: String]
     public var puppets: [PuppetProfile]
+
+    public static func timestamp(for date: Date = Date()) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-M-d-H-mm-ss-SSS"
+        return formatter.string(from: date)
+    }
 
     public init(
         id: UUID = UUID(),
@@ -91,6 +112,14 @@ public struct CharacterProfile: Identifiable, Sendable, Hashable, Codable {
         idleText: String = "",
         logFilename: String = "",
         logAppendsDate: Bool = false,
+        restoreLog: Bool = true,
+        restoreLogIndex: Int = -1,
+        bytesSent: UInt64 = 0,
+        bytesReceived: UInt64 = 0,
+        secondsConnected: UInt64 = 0,
+        connectionCount: UInt64 = 0,
+        lastUsed: String = "",
+        created: String = "",
         variables: [String: String] = [:],
         puppets: [PuppetProfile] = []
     ) {
@@ -104,6 +133,14 @@ public struct CharacterProfile: Identifiable, Sendable, Hashable, Codable {
         self.idleText = idleText
         self.logFilename = logFilename
         self.logAppendsDate = logAppendsDate
+        self.restoreLog = restoreLog
+        self.restoreLogIndex = restoreLogIndex
+        self.bytesSent = bytesSent
+        self.bytesReceived = bytesReceived
+        self.secondsConnected = secondsConnected
+        self.connectionCount = connectionCount
+        self.lastUsed = lastUsed
+        self.created = created
         self.variables = variables
         self.puppets = puppets
     }
@@ -251,4 +288,16 @@ public struct ConnectionStatistics: Sendable, Hashable, Codable {
     public var connectionCount: UInt64 = 0
 
     public init() {}
+
+    public init(
+        bytesSent: UInt64,
+        bytesReceived: UInt64,
+        secondsConnected: TimeInterval,
+        connectionCount: UInt64
+    ) {
+        self.bytesSent = bytesSent
+        self.bytesReceived = bytesReceived
+        self.secondsConnected = secondsConnected
+        self.connectionCount = connectionCount
+    }
 }

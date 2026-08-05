@@ -406,7 +406,24 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     @objc func connect(_ sender: Any?) { activeController?.showConnectDialog() }
     @objc func manageProfiles(_ sender: Any?) {
         if configurationManager == nil {
-            configurationManager = ConfigurationManagerWindowController(library: profileLibrary)
+            configurationManager = ConfigurationManagerWindowController(
+                library: profileLibrary,
+                onConnectProfile: { [weak self] server, character in
+                    guard let self, let controller = self.activeController else { return }
+                    if let onQuickConnectProfile = controller.onQuickConnectProfile {
+                        onQuickConnectProfile(controller, server, character)
+                    } else {
+                        controller.startSavedProfileSession(
+                            server,
+                            character: character,
+                            policy: self.profileLibrary.workspace.projection.connectionPolicy
+                        )
+                    }
+                },
+                onShowStatistics: { [weak self] in
+                    self?.activeController?.showConnectionStatistics()
+                }
+            )
         }
         configurationManager?.showWindow(sender)
         NSApplication.shared.activate(ignoringOtherApps: true)
