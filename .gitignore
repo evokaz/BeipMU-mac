@@ -4,6 +4,7 @@
 .swiftpm/
 DerivedData/
 DerivedData-*/
+BeipMU.xcodeproj/
 build/
 Build/
 dist/

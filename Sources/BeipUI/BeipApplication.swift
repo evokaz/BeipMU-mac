@@ -30,6 +30,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     }
 
     private var windows: [ClientWindowController] = []
+    private var aboutWindowController: AboutWindowController?
     private let profileLibrary = ProfileLibrary()
     private var configurationManager: ConfigurationManagerWindowController?
     private var keyboardShortcuts = KeyboardShortcutStore.load()
@@ -74,6 +75,12 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         controller.showWindow(sender)
         controller.startDeviceMediaAuditIfRequested()
         saveOpenTabs()
+    }
+
+    @objc func showAbout(_ sender: Any?) {
+        let controller = aboutWindowController ?? AboutWindowController()
+        aboutWindowController = controller
+        controller.showWindow(sender)
     }
 
     @discardableResult
@@ -642,7 +649,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         let appMenu = NSMenu()
         appMenu.autoenablesItems = false
         appItem.submenu = appMenu
-        appMenu.addItem(withTitle: "About BeipMU", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: "About BeipMU", action: #selector(showAbout(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Settings…", action: #selector(settings(_:)), keyEquivalent: ",")
         appMenu.addItem(

@@ -4266,7 +4266,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             case "aliases": showAutomationEditor(.aliases)
             case "triggers": showAutomationEditor(.triggers)
             case "macros": showAutomationEditor(.macros)
-            case "about": NSApplication.shared.orderFrontStandardAboutPanel(nil)
+            case "about":
+                NSApplication.shared.sendAction(#selector(ApplicationDelegate.showAbout(_:)), to: nil, from: nil)
             default: appendClient("The \(dialog) editor belongs to a later workspace milestone.")
             }
         case .listServers:
