@@ -669,22 +669,83 @@ private final class FakeTCPServer: @unchecked Sendable {
 }
 
 private func testTLSIdentity() throws -> sec_identity_t {
-    let fixture = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .appendingPathComponent("Fixtures/tls-identity.p12.base64")
-    let encoded = try String(contentsOf: fixture, encoding: .utf8)
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-    guard let data = Data(base64Encoded: encoded) else { throw FakeServerError.invalidTLSIdentity }
+    let fileManager = FileManager.default
+    let directory = fileManager.temporaryDirectory
+        .appendingPathComponent("BeipMU-TLS-\(UUID().uuidString)", isDirectory: true)
+    try fileManager.createDirectory(
+        at: directory,
+        withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700]
+    )
+    defer { try? fileManager.removeItem(at: directory) }
+
+    let key = directory.appendingPathComponent("key.pem")
+    let certificate = directory.appendingPathComponent("certificate.pem")
+    let bundle = directory.appendingPathComponent("identity.p12")
+    let passphrase = UUID().uuidString
+    let openssl = try testOpenSSLExecutable()
+
+    try runOpenSSL(openssl, arguments: [
+        "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+        "-keyout", key.path,
+        "-out", certificate.path,
+        "-days", "1",
+        "-subj", "/CN=localhost",
+    ])
+    try runOpenSSL(openssl, arguments: [
+        "pkcs12", "-export",
+        "-out", bundle.path,
+        "-inkey", key.path,
+        "-in", certificate.path,
+        "-passout", "pass:\(passphrase)",
+        "-name", "BeipMU TLS test",
+    ])
+
+    let data = try Data(contentsOf: bundle)
 
     var imported: CFArray?
-    let options = [kSecImportExportPassphrase as String: "beipmu-tests"] as CFDictionary
+    let options = [kSecImportExportPassphrase as String: passphrase] as CFDictionary
     guard SecPKCS12Import(data as CFData, options, &imported) == errSecSuccess,
           let item = (imported as? [[String: Any]])?.first,
           let identity = item[kSecImportItemIdentity as String] as! SecIdentity?,
           let protocolIdentity = sec_identity_create(identity)
     else { throw FakeServerError.invalidTLSIdentity }
     return protocolIdentity
+}
+
+private func testOpenSSLExecutable() throws -> URL {
+    let candidates = [
+        ProcessInfo.processInfo.environment["OPENSSL_BIN"],
+        "/usr/bin/openssl",
+        "/opt/homebrew/bin/openssl",
+        "/usr/local/bin/openssl",
+    ].compactMap { value -> URL? in
+        guard let value, !value.isEmpty else { return nil }
+        return URL(fileURLWithPath: value)
+    }
+
+    guard let executable = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0.path) }) else {
+        throw FakeServerError.tlsToolUnavailable
+    }
+    return executable
+}
+
+private func runOpenSSL(_ executable: URL, arguments: [String]) throws {
+    let process = Process()
+    process.executableURL = executable
+    process.arguments = arguments
+    let errorPipe = Pipe()
+    process.standardError = errorPipe
+    try process.run()
+    process.waitUntilExit()
+
+    guard process.terminationStatus == 0 else {
+        let details = String(
+            data: errorPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8
+        )?.trimmingCharacters(in: .whitespacesAndNewlines)
+        throw FakeServerError.tlsToolFailed(details ?? "exit status \(process.terminationStatus)")
+    }
 }
 
 private final class FakeServerConnection: @unchecked Sendable {
@@ -775,6 +836,8 @@ private enum FakeServerError: LocalizedError {
     case emptyRead
     case invalidTLSIdentity
     case missingPort
+    case tlsToolFailed(String)
+    case tlsToolUnavailable
     case timeout(String)
 
     var errorDescription: String? {
@@ -783,6 +846,8 @@ private enum FakeServerError: LocalizedError {
         case .emptyRead: "The fake server received an empty, incomplete read."
         case .invalidTLSIdentity: "The fake server TLS identity is invalid."
         case .missingPort: "The fake server listener did not expose its assigned port."
+        case let .tlsToolFailed(details): "The fake server could not generate its TLS identity: \(details)"
+        case .tlsToolUnavailable: "OpenSSL is required to generate the fake server TLS identity. Set OPENSSL_BIN to its executable path."
         case let .timeout(operation): "Timed out waiting for \(operation)."
         }
     }
