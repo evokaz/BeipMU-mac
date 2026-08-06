@@ -74,8 +74,6 @@ dmg_path="$distribution/$dmg_name"
 staging=$(mktemp -d "${TMPDIR:-/tmp}/beipmu-release.XXXXXX")
 trap 'rm -rf "$staging"' EXIT HUP INT TERM
 ditto "$app" "$staging/BeipMU.app"
-cp "$repo_dir/LICENSE" "$staging/LICENSE"
-cp "$repo_dir/Documentation/DISTRIBUTION.md" "$staging/INSTALL.md"
 
 rm -f \
   "$zip_path" \
@@ -97,9 +95,13 @@ if [ "$format" = zip ] || [ "$format" = both ]; then
 fi
 
 if [ "$format" = dmg ] || [ "$format" = both ]; then
+  dmg_staging="$staging/dmg"
+  mkdir "$dmg_staging"
+  ditto "$app" "$dmg_staging/BeipMU.app"
+  ln -s /Applications "$dmg_staging/Applications"
   hdiutil create \
     -volname "BeipMU" \
-    -srcfolder "$staging" \
+    -srcfolder "$dmg_staging" \
     -ov \
     -format UDZO \
     "$dmg_path"
