@@ -17,6 +17,7 @@ final class TriggerSpawnWindowController: NSWindowController, NSWindowDelegate {
     private let dockingAccessory = DockSurfaceAccessoryViewController()
     private(set) var isDocked = false
     var onClose: (() -> Void)?
+    var onCloseRequest: (() -> Void)?
     var onWindowDragEnded: ((NSPoint) -> Bool)?
     var onDockRequest: ((WebViewDockSide) -> Void)? {
         didSet { dockingAccessory.onDockRequest = onDockRequest }
@@ -45,6 +46,7 @@ final class TriggerSpawnWindowController: NSWindowController, NSWindowDelegate {
         panel.delegate = self
         panel.addTitlebarAccessoryViewController(dockingAccessory)
         panel.onLeftMouseUp = { [weak self] in self?.finishFloatingDrag() }
+        output.onContextMenu = { [weak self] _ in self?.outputContextMenu() }
     }
 
     required init?(coder: NSCoder) { nil }
@@ -85,6 +87,8 @@ final class TriggerSpawnWindowController: NSWindowController, NSWindowDelegate {
         }
         close()
     }
+    func requestClose() { onCloseRequest?() ?? closeSurface() }
+    var contextMenuForTesting: NSMenu { outputContextMenu() }
     func windowDidMove(_ notification: Notification) {
         guard !isDocked, let frame = window?.frame else { return }
         observeFloatingDrag(frame: frame)
@@ -138,6 +142,42 @@ final class TriggerSpawnWindowController: NSWindowController, NSWindowDelegate {
         floatingDragTask = nil
     }
 
+    private func closeContextMenu() -> NSMenu {
+        let menu = NSMenu(title: "Trigger Pane")
+        menu.addItem(clearMenuItem())
+        menu.addItem(.separator())
+        menu.addItem(closeMenuItem())
+        return menu
+    }
+
+    private func outputContextMenu() -> NSMenu {
+        let menu = NSMenu(title: "Trigger Pane")
+        menu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "")
+        menu.addItem(.separator())
+        menu.addItem(clearMenuItem())
+        menu.addItem(.separator())
+        menu.addItem(closeMenuItem())
+        return menu
+    }
+
+    private func clearMenuItem() -> NSMenuItem {
+        let item = NSMenuItem(title: "Clear", action: #selector(clearOutput(_:)), keyEquivalent: "")
+        item.target = self
+        item.isEnabled = output.visibleLineCount > 0
+        return item
+    }
+
+    @objc private func clearOutput(_ sender: Any?) { clear() }
+
+    private func closeMenuItem() -> NSMenuItem {
+        let item = NSMenuItem(title: "Close", action: #selector(requestClose(_:)), keyEquivalent: "")
+        item.target = self
+        return item
+    }
+
+    @objc private func requestClose(_ sender: Any?) { requestClose() }
+
     fileprivate static var leftMouseButtonIsPressed: Bool {
         NSEvent.pressedMouseButtons & 1 == 1
     }
@@ -176,6 +216,7 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
     private var selectedID: UUID?
     private(set) var isDocked = false
     var onClose: (() -> Void)?
+    var onCloseRequest: (() -> Void)?
     var onWindowDragEnded: ((NSPoint) -> Bool)?
     var onDockRequest: ((WebViewDockSide) -> Void)? {
         didSet { dockingAccessory.onDockRequest = onDockRequest }
@@ -266,14 +307,15 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
         }
         close()
     }
+    func requestClose() { onCloseRequest?() ?? closeSurface() }
+    var contextMenuForTesting: NSMenu { outputContextMenu() }
 
     func ensureTab(named title: String, selected: Bool = false) {
         if let index = index(ofTitle: title) {
             if selected { select(id: tabs[index].id) }
             return
         }
-        let output = OutputTextView()
-        output.onAction = { [weak self] action in self?.onAction?(action) }
+        let output = makeOutput()
         let id = UUID()
         tabs.append(.init(id: id, title: title, output: output, highlighted: false))
         rebuildTabStrip()
@@ -295,8 +337,7 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
             tabs[index].output.append(line)
             if selectedID != id, highlight { tabs[index].highlighted = true }
         } else {
-            let output = OutputTextView()
-            output.onAction = { [weak self] action in self?.onAction?(action) }
+            let output = makeOutput()
             output.append(line)
             id = UUID()
             tabs.append(.init(
@@ -468,6 +509,57 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
         floatingDragTask?.cancel()
         floatingDragTask = nil
     }
+
+    private func makeOutput() -> OutputTextView {
+        let output = OutputTextView()
+        output.onAction = { [weak self] action in self?.onAction?(action) }
+        output.onContextMenu = { [weak self] _ in self?.outputContextMenu() }
+        return output
+    }
+
+    fileprivate func closeContextMenu() -> NSMenu {
+        let menu = NSMenu(title: "Trigger Pane")
+        menu.addItem(clearMenuItem())
+        menu.addItem(.separator())
+        menu.addItem(closeMenuItem())
+        return menu
+    }
+
+    private func outputContextMenu() -> NSMenu {
+        let menu = NSMenu(title: "Trigger Pane")
+        menu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "")
+        menu.addItem(.separator())
+        menu.addItem(clearMenuItem())
+        menu.addItem(.separator())
+        menu.addItem(closeMenuItem())
+        return menu
+    }
+
+    private func clearMenuItem() -> NSMenuItem {
+        let item = NSMenuItem(title: "Clear", action: #selector(clearSelectedTab(_:)), keyEquivalent: "")
+        item.target = self
+        let lineCount = selectedID.flatMap { id in
+            tabs.first(where: { $0.id == id })?.output.visibleLineCount
+        } ?? 0
+        item.isEnabled = lineCount > 0
+        return item
+    }
+
+    private func closeMenuItem() -> NSMenuItem {
+        let item = NSMenuItem(title: "Close", action: #selector(requestClose(_:)), keyEquivalent: "")
+        item.target = self
+        return item
+    }
+
+    @objc private func clearSelectedTab(_ sender: Any?) {
+        guard let selectedID,
+              let index = tabs.firstIndex(where: { $0.id == selectedID }) else { return }
+        tabs[index].output.clear()
+        onStructureChange?()
+    }
+
+    @objc private func requestClose(_ sender: Any?) { requestClose() }
 }
 
 @MainActor
@@ -551,6 +643,8 @@ private final class SpawnTabStripView: NSStackView {
         let point = window.convertPoint(toScreen: event.locationInWindow)
         if owner?.dragDockedSurface(to: point) != true { super.mouseDragged(with: event) }
     }
+
+    override func menu(for event: NSEvent) -> NSMenu? { owner?.closeContextMenu() }
 
     private func localDraggedID(from sender: any NSDraggingInfo) -> UUID? {
         guard let raw = sender.draggingPasteboard.string(forType: Self.pasteboardType),
@@ -672,6 +766,8 @@ private final class SpawnTabCellView: NSView, NSDraggingSource {
     override func mouseDown(with event: NSEvent) {
         owner?.selectDraggedTab(id)
     }
+
+    override func menu(for event: NSEvent) -> NSMenu? { owner?.closeContextMenu() }
 
     override func mouseDragged(with event: NSEvent) {
         owner?.setDraggedTab(id, active: true)

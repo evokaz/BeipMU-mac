@@ -834,6 +834,122 @@ final class WorkspacePreferencesTests: XCTestCase {
     }
 
     @MainActor
+    func testClosingOneDockedTriggerPaneLeavesOtherPanesOpen() throws {
+        let owner = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let dock = WorkspaceDockController(mainView: NSView(), ownerWindow: owner)
+        owner.contentView = dock.hostView
+
+        let first = TriggerSpawnWindowController(title: "WHO")
+        let second = TriggerSpawnWindowController(title: "Pages")
+        let firstPane = WorkspacePaneKind.spawn("WHO")
+        let secondPane = WorkspacePaneKind.spawn("Pages")
+        first.onClose = { dock.undockPane(firstPane) }
+        second.onClose = { dock.undockPane(secondPane) }
+
+        dock.dockPaneInVerticalStack(
+            firstPane,
+            view: first.contentViewForDocking(),
+            title: "WHO",
+            side: .right,
+            matching: isStandaloneSpawnPane,
+            onClose: { first.requestClose() }
+        )
+        dock.dockPaneInVerticalStack(
+            secondPane,
+            view: second.contentViewForDocking(),
+            title: "Pages",
+            side: .right,
+            matching: isStandaloneSpawnPane,
+            onClose: { second.requestClose() }
+        )
+
+        let closeButtons = recursiveSubviews(of: dock.hostView).compactMap { view in
+            view as? NSButton
+        }.filter { $0.accessibilityIdentifier() == "workspacePaneClose" }
+        XCTAssertEqual(closeButtons.count, 2)
+        closeButtons[0].performClick(nil)
+
+        XCTAssertFalse(dock.containsPane(firstPane))
+        XCTAssertTrue(dock.containsPane(secondPane))
+        XCTAssertFalse(first.isDocked)
+        XCTAssertTrue(second.isDocked)
+        second.closeSurface()
+    }
+
+    @MainActor
+    func testSavedPanePlaceholderCanBeClosed() {
+        let owner = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let dock = WorkspaceDockController(mainView: NSView(), ownerWindow: owner)
+        owner.contentView = dock.hostView
+        let pane = WorkspacePaneKind.spawnTabs("Pages")
+
+        dock.apply(layout: .mainOnly.inserting(pane, side: .right))
+        XCTAssertTrue(dock.containsPane(pane))
+
+        let closeButton = recursiveSubviews(of: dock.hostView)
+            .compactMap { $0 as? NSButton }
+            .first { $0.accessibilityIdentifier() == "workspacePaneClose" }
+        XCTAssertNotNil(closeButton)
+        closeButton?.performClick(nil)
+
+        XCTAssertFalse(dock.containsPane(pane))
+        XCTAssertEqual(dock.currentLayout, .mainOnly)
+    }
+
+    @MainActor
+    func testTriggerSpawnContextMenuIncludesClearAndClose() {
+        let standalone = TriggerSpawnWindowController(title: "WHO")
+        let group = TriggerSpawnTabGroupWindowController(title: "Channels")
+
+        XCTAssertEqual(standalone.contextMenuForTesting.items.map(\.title), ["Copy", "Select All", "", "Clear", "", "Close"])
+        XCTAssertEqual(group.contextMenuForTesting.items.map(\.title), ["Copy", "Select All", "", "Clear", "", "Close"])
+        standalone.closeSurface()
+        group.closeSurface()
+    }
+
+    @MainActor
+    func testTriggerSpawnClearContextMenuOnlyClearsTargetPane() throws {
+        let standalone = TriggerSpawnWindowController(title: "WHO")
+        standalone.append(.init(text: "standalone"))
+        let standaloneClear = try XCTUnwrap(standalone.contextMenuForTesting.item(withTitle: "Clear"))
+        XCTAssertTrue(NSApplication.shared.sendAction(
+            try XCTUnwrap(standaloneClear.action),
+            to: standaloneClear.target,
+            from: standaloneClear
+        ))
+        XCTAssertTrue(standalone.retainedLines.isEmpty)
+
+        let group = TriggerSpawnTabGroupWindowController(title: "Channels")
+        group.ensureTab(named: "WHO", selected: true)
+        group.ensureTab(named: "Pages")
+        group.deliver(.init(text: "who line"), to: "WHO", clear: false, showTab: false)
+        group.deliver(.init(text: "page line"), to: "Pages", clear: false, showTab: false)
+        XCTAssertTrue(group.selectTab(named: "WHO"))
+
+        let groupClear = try XCTUnwrap(group.contextMenuForTesting.item(withTitle: "Clear"))
+        XCTAssertTrue(NSApplication.shared.sendAction(
+            try XCTUnwrap(groupClear.action),
+            to: groupClear.target,
+            from: groupClear
+        ))
+        XCTAssertTrue(group.retainedLines(in: "WHO").isEmpty)
+        XCTAssertEqual(group.retainedLines(in: "Pages").map(\.text), ["page line"])
+
+        standalone.closeSurface()
+        group.closeSurface()
+    }
+
+    @MainActor
     func testStandaloneTriggerSpawnDockingBuildsVerticalStack() {
         let owner = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),

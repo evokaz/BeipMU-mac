@@ -5135,6 +5135,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             self.triggerSpawnWindows.removeValue(forKey: title)
             self.saveSpawnSurfacePreferences()
         }
+        controller.onCloseRequest = { [weak controller] in controller?.closeSurface() }
         controller.onDockRequest = { [weak self, weak controller] side in
             guard let self, let controller else { return }
             self.dockSpawnWindow(controller, title: title, side: side)
@@ -5176,6 +5177,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             self.triggerSpawnTabGroups.removeValue(forKey: title)
             self.saveSpawnSurfacePreferences()
         }
+        controller.onCloseRequest = { [weak controller] in controller?.closeSurface() }
         controller.onDockRequest = { [weak self, weak controller] side in
             guard let self, let controller else { return }
             self.dockSpawnTabGroup(controller, title: title, side: side)
@@ -5213,6 +5215,9 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             },
             onDrag: { [weak self] point in
                 self?.handleDraggedDockedSpawn(title: title, point: point) ?? false
+            },
+            onClose: { [weak controller] in
+                controller?.requestClose()
             }
         ) {
             controller.showFloating(self)
@@ -5234,6 +5239,9 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             },
             onDrag: { [weak self] point in
                 self?.handleDraggedDockedSpawnTabGroup(title: title, point: point) ?? false
+            },
+            onClose: { [weak controller] in
+                controller?.requestClose()
             }
         ) {
             controller.showFloating(self)
@@ -5255,6 +5263,9 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             },
             onDrag: { [weak self] point in
                 self?.handleDraggedDockedSpawn(title: title, point: point) ?? false
+            },
+            onClose: { [weak controller] in
+                controller?.requestClose()
             }
         )
     }
@@ -5273,6 +5284,9 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             },
             onDrag: { [weak self] point in
                 self?.handleDraggedDockedSpawnTabGroup(title: title, point: point) ?? false
+            },
+            onClose: { [weak controller] in
+                controller?.requestClose()
             }
         )
     }

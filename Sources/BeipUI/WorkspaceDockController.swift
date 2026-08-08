@@ -112,7 +112,8 @@ final class WorkspaceDockController: NSObject, NSWindowDelegate, NSSplitViewDele
         fraction: Double = 0.72,
         showsTitle: Bool = true,
         onUndock: (() -> Void)? = nil,
-        onDrag: ((NSPoint) -> Bool)? = nil
+        onDrag: ((NSPoint) -> Bool)? = nil,
+        onClose: (() -> Void)? = nil
     ) {
         precondition(!WorkspacePaneKind.allCases.contains(pane), "Built-in workspace panes cannot be dynamically replaced.")
         paneViews[pane] = Self.wrapped(
@@ -120,7 +121,8 @@ final class WorkspaceDockController: NSObject, NSWindowDelegate, NSSplitViewDele
             title: title,
             showsTitle: showsTitle,
             onUndock: onUndock,
-            onDrag: onDrag
+            onDrag: onDrag,
+            onClose: onClose
         )
         placement = .right
         rebuild(currentLayout.inserting(pane, side: side, fraction: fraction))
@@ -135,7 +137,8 @@ final class WorkspaceDockController: NSObject, NSWindowDelegate, NSSplitViewDele
         title: String,
         showsTitle: Bool = true,
         onUndock: (() -> Void)? = nil,
-        onDrag: ((NSPoint) -> Bool)? = nil
+        onDrag: ((NSPoint) -> Bool)? = nil,
+        onClose: (() -> Void)? = nil
     ) -> Bool {
         guard currentLayout.panes.contains(pane) else { return false }
         paneViews[pane] = Self.wrapped(
@@ -143,7 +146,8 @@ final class WorkspaceDockController: NSObject, NSWindowDelegate, NSSplitViewDele
             title: title,
             showsTitle: showsTitle,
             onUndock: onUndock,
-            onDrag: onDrag
+            onDrag: onDrag,
+            onClose: onClose
         )
         rebuild(currentLayout)
         return true
@@ -165,10 +169,17 @@ final class WorkspaceDockController: NSObject, NSWindowDelegate, NSSplitViewDele
         fraction: Double = 0.72,
         matching isStackPane: (WorkspacePaneKind) -> Bool,
         onUndock: (() -> Void)? = nil,
-        onDrag: ((NSPoint) -> Bool)? = nil
+        onDrag: ((NSPoint) -> Bool)? = nil,
+        onClose: (() -> Void)? = nil
     ) {
         precondition(!WorkspacePaneKind.allCases.contains(pane), "Built-in workspace panes cannot be dynamically replaced.")
-        paneViews[pane] = Self.wrapped(view, title: title, onUndock: onUndock, onDrag: onDrag)
+        paneViews[pane] = Self.wrapped(
+            view,
+            title: title,
+            onUndock: onUndock,
+            onDrag: onDrag,
+            onClose: onClose
+        )
         placement = .right
         rebuild(currentLayout.insertingVerticalStack(pane, side: side, fraction: fraction, matching: isStackPane))
         onLayoutChange?(currentLayout)
@@ -465,7 +476,10 @@ final class WorkspaceDockController: NSObject, NSWindowDelegate, NSSplitViewDele
         if let existing = paneViews[pane] { return existing }
         let placeholder = Self.wrapped(
             NSTextField(wrappingLabelWithString: "This saved pane is waiting for its session content."),
-            title: pane.title
+            title: pane.title,
+            onClose: { [weak self] in
+                self?.undockPane(pane)
+            }
         )
         placeholder.setAccessibilityLabel("Unavailable saved pane: \(pane.title)")
         paneViews[pane] = placeholder
@@ -534,9 +548,11 @@ final class WorkspaceDockController: NSObject, NSWindowDelegate, NSSplitViewDele
         title: String,
         showsTitle: Bool = true,
         onUndock: (() -> Void)? = nil,
-        onDrag: ((NSPoint) -> Bool)? = nil
+        onDrag: ((NSPoint) -> Bool)? = nil,
+        onClose: (() -> Void)? = nil
     ) -> NSView {
-        let root = NSView()
+        let root = DockPaneRootView()
+        root.onClose = onClose
         content.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(content)
 
@@ -547,14 +563,29 @@ final class WorkspaceDockController: NSObject, NSWindowDelegate, NSSplitViewDele
                 content.topAnchor.constraint(equalTo: root.topAnchor),
                 content.bottomAnchor.constraint(equalTo: root.bottomAnchor),
             ]
+            var popOutButton: DockPanePopOutButton?
             if let onUndock {
                 let button = DockPanePopOutButton(action: onUndock)
+                button.translatesAutoresizingMaskIntoConstraints = false
+                root.addSubview(button)
+                popOutButton = button
+                constraints += [
+                    button.topAnchor.constraint(equalTo: root.topAnchor, constant: 5),
+                ]
+            }
+            if let onClose {
+                let button = DockPaneCloseButton(action: onClose)
                 button.translatesAutoresizingMaskIntoConstraints = false
                 root.addSubview(button)
                 constraints += [
                     button.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -8),
                     button.topAnchor.constraint(equalTo: root.topAnchor, constant: 5),
                 ]
+                if let popOutButton {
+                    constraints.append(popOutButton.trailingAnchor.constraint(equalTo: button.leadingAnchor, constant: -8))
+                }
+            } else if let popOutButton {
+                constraints.append(popOutButton.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -8))
             }
             NSLayoutConstraint.activate(constraints)
             return root
@@ -564,6 +595,7 @@ final class WorkspaceDockController: NSObject, NSWindowDelegate, NSSplitViewDele
         label.onDrag = onDrag
         label.font = .systemFont(ofSize: 12, weight: .semibold)
         label.textColor = .secondaryLabelColor
+        label.onClose = onClose
         label.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(label)
         var constraints = [
@@ -574,8 +606,19 @@ final class WorkspaceDockController: NSObject, NSWindowDelegate, NSSplitViewDele
             content.topAnchor.constraint(equalTo: label.bottomAnchor, constant: 5),
             content.bottomAnchor.constraint(equalTo: root.bottomAnchor),
         ]
+        var popOutButton: DockPanePopOutButton?
         if let onUndock {
             let button = DockPanePopOutButton(action: onUndock)
+            button.translatesAutoresizingMaskIntoConstraints = false
+            root.addSubview(button)
+            popOutButton = button
+            constraints += [
+                label.trailingAnchor.constraint(lessThanOrEqualTo: button.leadingAnchor, constant: -8),
+                button.centerYAnchor.constraint(equalTo: label.centerYAnchor),
+            ]
+        }
+        if let onClose {
+            let button = DockPaneCloseButton(action: onClose)
             button.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(button)
             constraints += [
@@ -583,6 +626,11 @@ final class WorkspaceDockController: NSObject, NSWindowDelegate, NSSplitViewDele
                 button.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -8),
                 button.centerYAnchor.constraint(equalTo: label.centerYAnchor),
             ]
+            if let popOutButton {
+                constraints.append(popOutButton.trailingAnchor.constraint(equalTo: button.leadingAnchor, constant: -8))
+            }
+        } else if let popOutButton {
+            constraints.append(popOutButton.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -8))
         } else {
             constraints.append(label.trailingAnchor.constraint(lessThanOrEqualTo: root.trailingAnchor, constant: -8))
         }
@@ -613,8 +661,25 @@ final class WorkspaceDockController: NSObject, NSWindowDelegate, NSSplitViewDele
 }
 
 @MainActor
+private final class DockPaneRootView: NSView {
+    var onClose: (() -> Void)?
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard onClose != nil else { return super.menu(for: event) }
+        let item = NSMenuItem(title: "Close", action: #selector(closePane(_:)), keyEquivalent: "")
+        item.target = self
+        let menu = NSMenu(title: "Pane")
+        menu.addItem(item)
+        return menu
+    }
+
+    @objc private func closePane(_ sender: Any?) { onClose?() }
+}
+
+@MainActor
 private final class DockPaneTitleLabel: NSTextField {
     var onDrag: ((NSPoint) -> Bool)?
+    var onClose: (() -> Void)?
 
     convenience init(labelWithString string: String) {
         self.init(frame: .zero)
@@ -630,6 +695,17 @@ private final class DockPaneTitleLabel: NSTextField {
         let point = window.convertPoint(toScreen: event.locationInWindow)
         if onDrag?(point) != true { super.mouseDragged(with: event) }
     }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard onClose != nil else { return super.menu(for: event) }
+        let item = NSMenuItem(title: "Close", action: #selector(closePane(_:)), keyEquivalent: "")
+        item.target = self
+        let menu = NSMenu(title: "Pane")
+        menu.addItem(item)
+        return menu
+    }
+
+    @objc private func closePane(_ sender: Any?) { onClose?() }
 }
 
 @MainActor
@@ -645,6 +721,29 @@ private final class DockPanePopOutButton: NSButton {
         target = self
         self.action = #selector(performAction)
         setAccessibilityLabel("Move pane to a separate window")
+    }
+
+    required init?(coder: NSCoder) { nil }
+    @objc private func performAction() { handler() }
+}
+
+@MainActor
+private final class DockPaneCloseButton: NSButton {
+    private let handler: () -> Void
+
+    init(action: @escaping () -> Void) {
+        handler = action
+        super.init(frame: .zero)
+        image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close pane")
+        imageScaling = .scaleProportionallyDown
+        isBordered = false
+        focusRingType = .none
+        contentTintColor = .secondaryLabelColor
+        toolTip = "Close pane"
+        setAccessibilityLabel("Close pane")
+        setAccessibilityIdentifier("workspacePaneClose")
+        target = self
+        self.action = #selector(performAction)
     }
 
     required init?(coder: NSCoder) { nil }
