@@ -163,6 +163,10 @@ final class RenderedLineTests: XCTestCase {
         XCTAssertTrue(header.contains("unformat-toggle"))
         XCTAssertTrue(header.contains("show-timestamps"))
         XCTAssertTrue(header.contains("body.unformatted"))
+        XCTAssertTrue(header.contains("text-align:left!important"))
+        XCTAssertTrue(header.contains("font:inherit!important"))
+        XCTAssertTrue(header.contains("text-decoration:none!important"))
+        XCTAssertTrue(header.contains("border:0!important"))
         let html = renderer.line(line)
         XCTAssertTrue(html.contains("class=\"timestamp\""))
         XCTAssertTrue(html.contains("class=\"line-content\""))
@@ -170,6 +174,56 @@ final class RenderedLineTests: XCTestCase {
         XCTAssertTrue(html.contains("color:#FF0080"))
         XCTAssertTrue(html.contains("font-weight:bold"))
         XCTAssertTrue(html.contains("a=1&amp;b=2"))
+    }
+
+    func testHTMLSessionLogAppliesLaterOverlappingTriggerStyles() {
+        let line = RenderedLine(
+            text: "WARNING: Haha",
+            runs: [
+                .init(range: 0..<13, style: .init(foreground: .white)),
+                .init(
+                    range: 0..<8,
+                    style: .init(foreground: .init(red: 255, green: 255, blue: 0), bold: true)
+                ),
+            ]
+        )
+
+        let html = SessionLogRenderer(format: .html, title: "Test").line(line)
+
+        XCTAssertTrue(html.contains("<span style=\"color:#FFFF00;font-weight:bold\">WARNING:</span>"))
+    }
+
+    func testHTMLSessionLogPreservesParagraphLayoutAndDecorations() {
+        let line = RenderedLine(
+            text: "A decorated trigger line",
+            paragraph: .init(
+                alignment: .right,
+                leftIndent: 12,
+                wrappedIndent: 6,
+                rightIndent: 8,
+                topPadding: 3,
+                bottomPadding: 4,
+                background: .init(red: 10, green: 20, blue: 30),
+                borderWidth: 2,
+                borderStyle: .round,
+                strokeWidth: 3,
+                strokeColor: .init(red: 40, green: 50, blue: 60),
+                strokeStyle: .top,
+                horizontalRule: true
+            )
+        )
+        let html = SessionLogRenderer(format: .html, title: "Test").line(line)
+
+        XCTAssertTrue(html.contains("text-align:right"))
+        XCTAssertTrue(html.contains("margin-left:12.0%;margin-right:8.0%;"))
+        XCTAssertTrue(html.contains("padding-left:8.0px;padding-right:2.0px;"))
+        XCTAssertTrue(html.contains("padding-top:5.0px;padding-bottom:6.0px;"))
+        XCTAssertTrue(html.contains("text-indent:-6.0px;"))
+        XCTAssertTrue(html.contains("background:#0A141E;"))
+        XCTAssertTrue(html.contains("border-radius:8px;"))
+        XCTAssertTrue(html.contains("class=\"paragraph-stroke\""))
+        XCTAssertTrue(html.contains("border-top:3.0px solid #28323C;"))
+        XCTAssertTrue(html.contains("class=\"horizontal-rule\""))
     }
 
     func testLogFilenameExpandsTokensAndMarksDailyFilesForRollover() {

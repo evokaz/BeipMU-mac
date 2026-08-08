@@ -175,10 +175,15 @@ public struct SessionLogRenderer: Sendable {
         .log-control input:checked+.switch::after{transform:translateX(1em)}
         .log-control input:focus-visible+.switch{outline:2px solid currentColor;outline-offset:2px}
         .line{display:flex;white-space:pre-wrap;margin:0}
-        .line-content{flex:auto}
+        .line-content{box-sizing:border-box;display:block;flex:1 1 auto;min-width:0;position:relative}
+        .paragraph-stroke{box-sizing:border-box;position:absolute;inset:0;pointer-events:none}
+        .horizontal-rule{position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);pointer-events:none}
         .timestamp{display:none;flex:none;opacity:.65;margin-right:1em;white-space:nowrap}
         body.show-timestamps .timestamp{display:inline}
-        body.unformatted .line,body.unformatted .line span,body.unformatted .line a{color:inherit!important;background-color:transparent!important;border-color:currentColor!important}
+        body.unformatted .line{color:inherit!important;background:transparent!important;border:0!important;text-align:left!important;font:inherit!important}
+        body.unformatted .line .line-content{color:inherit!important;background:transparent!important;border:0!important;border-radius:0!important;box-shadow:none!important;font:inherit!important;margin:0!important;outline:0!important;padding:0!important;text-indent:0!important}
+        body.unformatted .line .line-content *{color:inherit!important;background:transparent!important;border:0!important;box-shadow:none!important;font:inherit!important;text-decoration:none!important}
+        body.unformatted .line .line-content .paragraph-stroke,body.unformatted .line .line-content .horizontal-rule{display:none!important}
         @media(max-width:600px){.log-event:first-of-type{padding-top:2.5em}.log-control{top:1em}}
         </style>
         <script>
@@ -211,11 +216,13 @@ public struct SessionLogRenderer: Sendable {
             return plainLine(line.text, date: line.timestamp)
         case .html:
             let timestamp = timestampHTML(line.timestamp)
-            let alignment = line.paragraph.alignment.rawValue
-            let background = line.paragraph.background.map { "background:\(Self.hex($0));" } ?? ""
-            let border = line.paragraph.borderWidth > 0
-                ? "border:\(line.paragraph.borderWidth)px solid \(line.paragraph.strokeColor.map(Self.hex) ?? "currentColor");border-radius:\(line.paragraph.borderStyle == .round ? 8 : 0)px;" : ""
-            return "<p class=\"line\" style=\"text-align:\(alignment);\(background)\(border)\">\(timestamp)<span class=\"line-content\">\(styledHTML(line))</span></p>\n"
+            let paragraph = line.paragraph
+            let style = paragraphHTMLStyle(paragraph)
+            let stroke = paragraphStrokeHTML(paragraph)
+            let horizontalRule = paragraph.horizontalRule
+                ? "<span class=\"horizontal-rule\" style=\"height:\(Self.cssPixels(max(1, paragraph.strokeWidth)));background:\(paragraph.strokeColor.map(Self.hex) ?? "currentColor");\"></span>"
+                : ""
+            return "<p class=\"line\" style=\"text-align:\(paragraph.alignment.rawValue);\">\(timestamp)<span class=\"line-content\" style=\"\(style)\">\(styledHTML(line))\(stroke)\(horizontalRule)</span></p>\n"
         }
     }
 
@@ -234,6 +241,31 @@ public struct SessionLogRenderer: Sendable {
         case .plainText: plainLine(text, date: date)
         case .html: "<p class=\"line\">\(timestampHTML(date))<span class=\"line-content\">\(Self.escapeHTML(text))</span></p>\n"
         }
+    }
+
+    private func paragraphHTMLStyle(_ paragraph: ParagraphStyle) -> String {
+        let leftIndent = max(0, paragraph.leftIndent)
+        let rightIndent = max(0, paragraph.rightIndent)
+        let wrappedIndent = max(0, paragraph.wrappedIndent)
+        let borderWidth = max(0, paragraph.borderWidth)
+        let topPadding = max(0, paragraph.topPadding)
+        let bottomPadding = max(0, paragraph.bottomPadding)
+        let background = paragraph.background.map { "background:\(Self.hex($0));" } ?? ""
+        let radius = paragraph.borderStyle == .round ? "border-radius:8px;" : ""
+        return "margin-left:\(leftIndent)%;margin-right:\(rightIndent)%;padding-left:\(Self.cssPixels(borderWidth + wrappedIndent));padding-right:\(Self.cssPixels(borderWidth));padding-top:\(Self.cssPixels(borderWidth + topPadding));padding-bottom:\(Self.cssPixels(borderWidth + bottomPadding));text-indent:-\(Self.cssPixels(wrappedIndent));\(background)\(radius)"
+    }
+
+    private func paragraphStrokeHTML(_ paragraph: ParagraphStyle) -> String {
+        let width = max(0, paragraph.strokeWidth)
+        guard width > 0 else { return "" }
+        let color = paragraph.strokeColor.map(Self.hex) ?? "currentColor"
+        let border = switch paragraph.strokeStyle {
+        case .outline: "border:\(Self.cssPixels(width)) solid \(color);"
+        case .top: "border-top:\(Self.cssPixels(width)) solid \(color);"
+        case .bottom: "border-bottom:\(Self.cssPixels(width)) solid \(color);"
+        }
+        let radius = paragraph.borderStyle == .round ? "border-radius:8px;" : ""
+        return "<span class=\"paragraph-stroke\" style=\"\(border)\(radius)\"></span>"
     }
 
     private func plainLine(_ text: String, date: Date) -> String {
@@ -317,38 +349,46 @@ public struct SessionLogRenderer: Sendable {
 
     private func styledHTML(_ line: RenderedLine) -> String {
         let source = line.text as NSString
-        let runs = line.runs.sorted { $0.range.lowerBound < $1.range.lowerBound }
+        let boundaries = Set(
+            [0, source.length]
+                + line.runs.flatMap { run in
+                    let lower = max(0, min(source.length, run.range.lowerBound))
+                    let upper = max(lower, min(source.length, run.range.upperBound))
+                    return [lower, upper]
+                }
+        ).sorted()
         var result = ""
-        var cursor = 0
-        for run in runs {
-            let lower = max(cursor, min(source.length, run.range.lowerBound))
-            let upper = max(lower, min(source.length, run.range.upperBound))
-            if lower > cursor {
-                result += Self.escapeHTML(source.substring(with: NSRange(location: cursor, length: lower - cursor)))
-            }
-            guard upper > lower else { continue }
+        for (lower, upper) in zip(boundaries, boundaries.dropFirst()) where lower < upper {
             let text = Self.escapeHTML(source.substring(with: NSRange(location: lower, length: upper - lower)))
-            var css: [String] = []
-            if let color = run.style.foreground { css.append("color:\(Self.hex(color))") }
-            if let color = run.style.background { css.append("background:\(Self.hex(color))") }
-            if run.style.bold { css.append("font-weight:bold") }
-            if run.style.italic { css.append("font-style:italic") }
-            var decoration: [String] = []
-            if run.style.underline { decoration.append("underline") }
-            if run.style.strikeout { decoration.append("line-through") }
-            if !decoration.isEmpty { css.append("text-decoration:\(decoration.joined(separator: " "))") }
-            let styled = css.isEmpty ? text : "<span style=\"\(css.joined(separator: ";"))\">\(text)</span>"
-            if case let .url(url)? = run.style.link {
-                result += "<a href=\"\(Self.escapeHTML(url))\">\(styled)</a>"
-            } else {
-                result += styled
+            // Trigger effects are appended after the protocol's original style
+            // runs. Resolve overlaps from the end so HTML matches AppKit's
+            // later-attributes-win behavior.
+            guard let run = line.runs.last(where: {
+                $0.range.lowerBound <= lower && $0.range.upperBound >= upper
+            }) else {
+                result += text
+                continue
             }
-            cursor = upper
-        }
-        if cursor < source.length {
-            result += Self.escapeHTML(source.substring(from: cursor))
+            result += styledHTML(text, style: run.style)
         }
         return result
+    }
+
+    private func styledHTML(_ text: String, style: TextStyle) -> String {
+        var css: [String] = []
+        if let color = style.foreground { css.append("color:\(Self.hex(color))") }
+        if let color = style.background { css.append("background:\(Self.hex(color))") }
+        if style.bold { css.append("font-weight:bold") }
+        if style.italic { css.append("font-style:italic") }
+        var decoration: [String] = []
+        if style.underline { decoration.append("underline") }
+        if style.strikeout { decoration.append("line-through") }
+        if !decoration.isEmpty { css.append("text-decoration:\(decoration.joined(separator: " "))") }
+        let styled = css.isEmpty ? text : "<span style=\"\(css.joined(separator: ";"))\">\(text)</span>"
+        if case let .url(url)? = style.link {
+            return "<a href=\"\(Self.escapeHTML(url))\">\(styled)</a>"
+        }
+        return styled
     }
 
     private static func escapeHTML(_ text: String) -> String {
@@ -361,5 +401,10 @@ public struct SessionLogRenderer: Sendable {
 
     private static func hex(_ color: RGBColor) -> String {
         String(format: "#%02X%02X%02X", color.red, color.green, color.blue)
+    }
+
+    private static func cssPixels(_ value: Double) -> String {
+        guard value.isFinite else { return "0px" }
+        return "\(value)px"
     }
 }

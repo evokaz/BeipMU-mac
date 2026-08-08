@@ -651,6 +651,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private var isInputHistoryPaneVisible = false
     private var editWindows: [EditWindowController] = []
     private var statisticsWindow: SessionStatisticsWindowController?
+    private var loggingWindow: LoggingWindowController?
     private var triggerStatisticsWindows: [String: TriggerStatisticsWindowController] = [:]
     private var triggerStatistics: [String: TriggerStatisticStore] = [:]
     private var triggerSpawnWindows: [String: TriggerSpawnWindowController] = [:]
@@ -681,6 +682,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private var lastTypedAt = Date()
     private var isSessionConnected = false
     private var logWriters: [URL: ActiveLog] = [:]
+    private var dailyLogRolloverTimer: Timer?
     private var localEcho = true
     private var terminalType = "Beip"
     private var gmcpDumpEnabled = false
@@ -827,6 +829,18 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(localCalendarDidChange(_:)),
+            name: .NSCalendarDayChanged,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(localCalendarDidChange(_:)),
+            name: .NSSystemTimeZoneDidChange,
+            object: nil
+        )
         configureUI(in: window)
         startTitlebarStatisticsUpdates()
         Self.configureUnrestrictedSizing(for: window)
@@ -858,6 +872,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     func windowWillClose(_ notification: Notification) {
+        NotificationCenter.default.removeObserver(self, name: .NSCalendarDayChanged, object: nil)
+        NotificationCenter.default.removeObserver(self, name: .NSSystemTimeZoneDidChange, object: nil)
         profileLibrary.removeChangeObserver(profileLibraryObserverID)
         profileLibraryObserverID = nil
         sessionTabGroup?.controllerWillClose(self)
@@ -883,7 +899,10 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         editWindows.forEach { $0.close() }
         statisticsTask?.cancel()
         titlebarStatisticsTask?.cancel()
+        dailyLogRolloverTimer?.invalidate()
+        dailyLogRolloverTimer = nil
         statisticsWindow?.close()
+        loggingWindow?.close()
         triggerStatisticsWindows.values.forEach { $0.close() }
         saveSpawnSurfacePreferences()
         closeSpawnSurfaces()
@@ -2245,110 +2264,24 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     func showLoggingControls() {
-        let alert = NSAlert()
-        alert.messageText = "Session Logging"
-        alert.informativeText = logWriters.isEmpty
-            ? "Start a plain-text or HTML log for this session."
-            : "\(logWriters.count) active log\(logWriters.count == 1 ? "" : "s"). Starting another log keeps existing logs running."
-        alert.addButton(withTitle: "Start Log…")
-        alert.addButton(withTitle: "Stop All")
-        alert.addButton(withTitle: "Cancel")
-
-        let history = NSPopUpButton()
-        history.addItems(withTitles: ["From Now", "From Beginning", "From Visible Window"])
-        history.setAccessibilityIdentifier("loggingHistory")
-        let autoLog = NSButton(checkboxWithTitle: "Start automatic log on connect", target: nil, action: nil)
-        autoLog.state = preferences.logging.autoLogEnabled ? .on : .off
-        let autoLogFilename = NSTextField(string: preferences.logging.defaultLogFilename)
-        autoLogFilename.placeholderString = "For example: %server%-%date%.html"
-        let appendFileDate = NSButton(checkboxWithTitle: "Append date to automatic filename", target: nil, action: nil)
-        appendFileDate.state = preferences.logging.appendsDateToFilename ? .on : .off
-        let fileDateFormat = NSTextField(string: preferences.logging.fileDateFormat)
-        let logTyped = NSButton(checkboxWithTitle: "Log typed input", target: nil, action: nil)
-        logTyped.state = preferences.logging.logsTypedText ? .on : .off
-        let typedPrefix = NSTextField(string: preferences.logging.typedPrefix)
-        let logSent = NSButton(checkboxWithTitle: "Log sent text", target: nil, action: nil)
-        logSent.state = preferences.logging.logsSentText ? .on : .off
-        let sentPrefix = NSTextField(string: preferences.logging.sentPrefix)
-        let time = NSButton(checkboxWithTitle: "Time", target: nil, action: nil)
-        time.state = preferences.logging.includesTime ? .on : .off
-        let date = NSButton(checkboxWithTitle: "Date", target: nil, action: nil)
-        date.state = preferences.logging.includesDate ? .on : .off
-        let hour24 = NSButton(checkboxWithTitle: "24-hour", target: nil, action: nil)
-        hour24.state = preferences.logging.uses24HourTime ? .on : .off
-        let timestampOptions = NSStackView(views: [time, date, hour24])
-        timestampOptions.orientation = .horizontal
-        timestampOptions.spacing = 8
-        let wrap = NSButton(checkboxWithTitle: "Wrap", target: nil, action: nil)
-        wrap.state = preferences.logging.wrapWidth == nil ? .off : .on
-        let wrapWidth = NSTextField(string: String(preferences.logging.wrapWidth ?? 80))
-        wrapWidth.alignment = .right
-        let hangingIndent = NSTextField(string: String(preferences.logging.hangingIndent))
-        hangingIndent.alignment = .right
-        let nearestWord = NSButton(checkboxWithTitle: "Wrap at words", target: nil, action: nil)
-        nearestWord.state = preferences.logging.wrapsAtWords ? .on : .off
-        let doubleSpace = NSButton(checkboxWithTitle: "Double-space lines", target: nil, action: nil)
-        doubleSpace.state = preferences.logging.doubleSpaces ? .on : .off
-        let grid = NSGridView(views: [
-            [NSTextField(labelWithString: "History:"), history],
-            [autoLog, autoLogFilename],
-            [appendFileDate, fileDateFormat],
-            [logTyped, typedPrefix],
-            [logSent, sentPrefix],
-            [NSTextField(labelWithString: "Timestamps:"), timestampOptions],
-            [wrap, wrapWidth],
-            [NSTextField(labelWithString: "Hanging indent:"), hangingIndent],
-            [NSView(), nearestWord],
-            [NSView(), doubleSpace],
-        ])
-        grid.column(at: 0).xPlacement = .trailing
-        grid.column(at: 1).width = 240
-        grid.rowSpacing = 7
-        grid.frame = NSRect(x: 0, y: 0, width: 390, height: 240)
-        alert.accessoryView = grid
-
-        let finish: (NSApplication.ModalResponse) -> Void = { [weak self] response in
-            guard let self else { return }
-            if response == .alertSecondButtonReturn {
-                self.stopAllLogs()
-                return
-            }
-            guard response == .alertFirstButtonReturn else { return }
-            self.preferences.logging = SessionLogOptions(
-                autoLogEnabled: autoLog.state == .on,
-                defaultLogFilename: autoLogFilename.stringValue,
-                appendsDateToFilename: appendFileDate.state == .on,
-                fileDateFormat: fileDateFormat.stringValue,
-                logsSentText: logSent.state == .on,
-                sentPrefix: sentPrefix.stringValue,
-                logsTypedText: logTyped.state == .on,
-                typedPrefix: typedPrefix.stringValue,
-                includesTime: time.state == .on,
-                includesDate: date.state == .on,
-                uses24HourTime: hour24.state == .on,
-                wrapWidth: wrap.state == .on ? max(2, wrapWidth.integerValue) : nil,
-                hangingIndent: max(0, hangingIndent.integerValue),
-                wrapsAtWords: nearestWord.state == .on,
-                doubleSpaces: doubleSpace.state == .on
-            )
-            self.savePreferences()
-            let panel = NSSavePanel()
-            panel.title = "Start Session Log"
-            panel.nameFieldStringValue = "\(Self.logDateFormatter.string(from: Date()))-\(self.baseWindowTitle.safeFilename).txt"
-            let selectedHistory: CommandOutcome.LogHistory = switch history.indexOfSelectedItem {
-            case 1: .all
-            case 2: .window
-            default: .none
-            }
-            let start: (NSApplication.ModalResponse) -> Void = { [weak self] response in
-                guard response == .OK, let self, let url = panel.url else { return }
-                self.startLog(template: url.path, history: selectedHistory)
-            }
-            if let window = self.window { panel.beginSheetModal(for: window, completionHandler: start) }
-            else { start(panel.runModal()) }
+        if let loggingWindow {
+            loggingWindow.update(entries: activeLogEntries)
+            loggingWindow.showWindow(nil)
+            loggingWindow.window?.makeKeyAndOrderFront(nil)
+            return
         }
-        if let window { alert.beginSheetModal(for: window, completionHandler: finish) }
-        else { finish(alert.runModal()) }
+
+        let controller = LoggingWindowController(entries: activeLogEntries)
+        controller.onClose = { [weak self] in self?.loggingWindow = nil }
+        controller.onStop = { [weak self] url in self?.stopLog(at: url) }
+        controller.onStopAll = { [weak self] in self?.stopAllLogs() }
+        controller.onStart = { [weak self] history in self?.beginManualLog(history: history) }
+        loggingWindow = controller
+        controller.showWindow(nil)
+        if let owner = window, let panel = controller.window {
+            owner.addChildWindow(panel, ordered: .above)
+            panel.center()
+        }
     }
 
     func applyThemeSettings(_ settings: WorkspaceThemeSettings) {
@@ -2369,6 +2302,11 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
 
     @objc private func accessibilityDisplayOptionsChanged(_ notification: Notification) {
         applyThemeSettings(preferences.theme)
+    }
+
+    @objc private func localCalendarDidChange(_ notification: Notification) {
+        rollOverLogsIfNeeded()
+        scheduleDailyLogRollover()
     }
 
     func showInputPrefixDialog() {
@@ -3363,7 +3301,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     private func appendToLogs(_ line: RenderedLine) {
-        rollOverLogsIfNeeded(at: line.timestamp)
+        rollOverLogsIfNeeded()
         var failed: [(URL, Error)] = []
         for (url, log) in logWriters {
             do { try log.writer.append(line) }
@@ -3397,7 +3335,48 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             if let log = logWriters.removeValue(forKey: url) { try? log.writer.stop() }
             appendError("Logging stopped for \(url.lastPathComponent): \(error.localizedDescription)")
         }
-        if !failures.isEmpty { updateWindowTitle(); refreshDiagnostics() }
+        if !failures.isEmpty {
+            updateWindowTitle()
+            refreshDiagnostics()
+            scheduleDailyLogRollover()
+        }
+        refreshLoggingWindow()
+    }
+
+    private var activeLogEntries: [LoggingWindowController.Entry] {
+        logWriters.map { url, log in
+            LoggingWindowController.Entry(url: url, isAutomatic: log.isAutomatic)
+        }
+        .sorted {
+            if $0.isAutomatic != $1.isAutomatic { return $0.isAutomatic && !$1.isAutomatic }
+            return $0.url.path.localizedStandardCompare($1.url.path) == .orderedAscending
+        }
+    }
+
+    private func refreshLoggingWindow() {
+        loggingWindow?.update(entries: activeLogEntries)
+    }
+
+    private func beginManualLog(history: LoggingWindowController.StartHistory) {
+        let selectedHistory: CommandOutcome.LogHistory = switch history {
+        case .now: .none
+        case .beginning: .all
+        case .topOfWindow: .window
+        }
+        let panel = NSSavePanel()
+        panel.title = "Start Session Log"
+        panel.prompt = "Start"
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = "\(Self.logDateFormatter.string(from: Date()))-\(baseWindowTitle.safeFilename).txt"
+        let start: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            guard response == .OK, let self, let url = panel.url else { return }
+            self.startLog(template: url.path, history: selectedHistory)
+        }
+        if let window = loggingWindow?.window ?? self.window {
+            panel.beginSheetModal(for: window, completionHandler: start)
+        } else {
+            start(panel.runModal())
+        }
     }
 
     private func startLog(
@@ -3435,17 +3414,34 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
                 appendsDate: appendingDate,
                 writer: writer
             )
+            scheduleDailyLogRollover()
             appendInformationalNotice("\(automatic ? "Automatic logging" : "Logging") to \(url.path) started.")
             updateWindowTitle()
             refreshDiagnostics()
+            refreshLoggingWindow()
         } catch {
             appendError("Cannot create log \(url.path): \(error.localizedDescription)")
         }
     }
 
+    private func stopLog(at url: URL, announcing: Bool = true) {
+        guard let log = logWriters.removeValue(forKey: url) else {
+            refreshLoggingWindow()
+            return
+        }
+        if announcing { appendInformationalNotice("Logging to \(url.path) stopped.") }
+        do { try log.writer.stop() }
+        catch { appendError("Could not finish log \(url.lastPathComponent): \(error.localizedDescription)") }
+        scheduleDailyLogRollover()
+        updateWindowTitle()
+        refreshDiagnostics()
+        refreshLoggingWindow()
+    }
+
     private func stopAllLogs(announcing: Bool = true) {
         guard !logWriters.isEmpty else {
             if announcing { appendClient("No active logs.") }
+            refreshLoggingWindow()
             return
         }
         let writers = logWriters
@@ -3455,6 +3451,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             }
         }
         logWriters.removeAll()
+        scheduleDailyLogRollover()
         var errors: [String] = []
         for (url, log) in writers {
             do { try log.writer.stop() }
@@ -3463,6 +3460,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         errors.forEach { appendError("Could not finish log \($0)") }
         updateWindowTitle()
         refreshDiagnostics()
+        refreshLoggingWindow()
     }
 
     private func resolvedLogURL(
@@ -3560,6 +3558,41 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
                 removeFailedLogs([(entry.url, error)])
             }
         }
+        refreshLoggingWindow()
+    }
+
+    private func scheduleDailyLogRollover() {
+        dailyLogRolloverTimer?.invalidate()
+        dailyLogRolloverTimer = nil
+        guard logWriters.values.contains(where: \.rollsOverDaily) else { return }
+
+        let calendar = Calendar.autoupdatingCurrent
+        let now = Date()
+        guard let midnight = calendar.nextDate(
+            after: now,
+            matching: DateComponents(hour: 0, minute: 0, second: 0),
+            matchingPolicy: .nextTime,
+            repeatedTimePolicy: .first,
+            direction: .forward
+        ) else { return }
+
+        let timer = Timer(
+            timeInterval: max(0.001, midnight.timeIntervalSince(now)),
+            repeats: false
+        ) { [weak self] timer in
+            guard self != nil else {
+                timer.invalidate()
+                return
+            }
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.dailyLogRolloverTimer = nil
+                self.rollOverLogsIfNeeded()
+                self.scheduleDailyLogRollover()
+            }
+        }
+        dailyLogRolloverTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
     }
 
     private func handleSmartPaste(_ lines: [String]) -> Bool {
@@ -4388,6 +4421,18 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         startLog(template: url.path, history: .none)
     }
 
+    func startDailyLogForTesting(template: String) {
+        startLog(template: template, history: .none)
+    }
+
+    func rollOverLogsForTesting(at date: Date) {
+        rollOverLogsIfNeeded(at: date)
+        scheduleDailyLogRollover()
+    }
+
+    var activeLogURLsForTesting: [URL] { Array(logWriters.keys) }
+    var hasDailyLogRolloverTimerForTesting: Bool { dailyLogRolloverTimer?.isValid == true }
+
     private var sessionTabTitle: String {
         [sessionTabText, sessionTabTrailingIndicators].filter { !$0.isEmpty }.joined(separator: " ")
     }
@@ -5033,6 +5078,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
                 guard let session else { appendError("No previous connection to reconnect."); continue }
                 Task { await session.reconnect() }
             case .logWrite, .logWriteLine:
+                rollOverLogsIfNeeded()
                 var failures: [(URL, Error)] = []
                 for (url, log) in logWriters {
                     do {
