@@ -144,6 +144,42 @@ final class ConfigurationManagerWindowControllerTests: XCTestCase {
         XCTAssertEqual(dateField.stringValue, expectedDate)
     }
 
+    func testCopyingWorldAndCharacterAddsCopySuffix() throws {
+        var workspace = try LegacyConfigurationWorkspace.empty(isDirty: false)
+        let serverID = workspace.addServer(named: "World")
+        _ = try workspace.addCharacter(toServerID: serverID, named: "Hero")
+        let library = ProfileLibrary(workspace: workspace)
+        let controller = ConfigurationManagerWindowController(library: library)
+        defer { controller.close() }
+
+        let content = try XCTUnwrap(controller.window?.contentView)
+        let table = try XCTUnwrap(
+            recursiveSubviews(of: content)
+                .compactMap { $0 as? NSOutlineView }
+                .first { $0.accessibilityIdentifier() == "configurationProfileList" }
+        )
+        let copy = try XCTUnwrap(
+            recursiveSubviews(of: content)
+                .compactMap { $0 as? NSButton }
+                .first { $0.accessibilityIdentifier() == "copyWorld" }
+        )
+
+        table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        controller.tableViewSelectionDidChange(Notification(name: NSTableView.selectionDidChangeNotification))
+        copy.performClick(nil)
+
+        XCTAssertEqual(library.workspace.servers.map(\.profile.name), ["World", "World - copy"])
+
+        table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        controller.tableViewSelectionDidChange(Notification(name: NSTableView.selectionDidChangeNotification))
+        copy.performClick(nil)
+
+        XCTAssertEqual(
+            library.workspace.servers.first?.characters.map(\.name),
+            ["Hero", "Hero - copy"]
+        )
+    }
+
     func testDoneAppliesPendingChanges() throws {
         var workspace = try LegacyConfigurationWorkspace.empty(isDirty: false)
         let serverID = workspace.addServer()

@@ -973,10 +973,12 @@ final class ConfigurationManagerWindowController: NSWindowController, NSOutlineV
         _ source: LegacyConfigurationProjection.Server,
         into workspace: inout LegacyConfigurationWorkspace
     ) throws -> UUID {
-        let newServerID = workspace.addServer(named: source.profile.name)
+        let newServerID = workspace.addServer(named: copiedName(source.profile.name))
+        let newServerName = workspace.servers.first { $0.profile.id == newServerID }?.profile.name
         try workspace.updateServer(id: newServerID) { target in
             target.profile = source.profile
             target.profile.id = newServerID
+            target.profile.name = newServerName ?? copiedName(source.profile.name)
         }
         for character in source.characters {
             let newCharacterID = try workspace.addCharacter(toServerID: newServerID, named: character.name)
@@ -1032,10 +1034,14 @@ final class ConfigurationManagerWindowController: NSWindowController, NSOutlineV
         case let (.server(server), .server):
             return .server(try copyServer(server, into: &workspace))
         case let (.character(character), .character(serverID, _)):
-            let newID = try workspace.addCharacter(toServerID: serverID, named: character.name)
+            let newID = try workspace.addCharacter(toServerID: serverID, named: copiedName(character.name))
+            let newCharacterName = workspace.servers
+                .first { $0.profile.id == serverID }?.characters
+                .first { $0.id == newID }?.name
             try workspace.updateCharacter(id: newID, inServerID: serverID) { target in
                 target = character
                 target.id = newID
+                target.name = newCharacterName ?? copiedName(character.name)
                 target.restoreLogIndex = -1
             }
             return .character(server: serverID, character: newID)
@@ -1053,6 +1059,10 @@ final class ConfigurationManagerWindowController: NSWindowController, NSOutlineV
         default:
             throw LegacyConfigurationWorkspace.WorkspaceError.serverNotFound
         }
+    }
+
+    private func copiedName(_ name: String) -> String {
+        "\(name) - copy"
     }
 
     private func sampleServer(for selection: Selection) -> LegacyConfigurationProjection.Server? {
