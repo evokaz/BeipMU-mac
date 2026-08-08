@@ -1008,7 +1008,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         applyTextWindowSettings()
         applyInputWindowSettings()
         dockController.setNotes(preferences.characterNotes[notesKey] ?? "")
-        if let layout = preferences.workspaceLayouts[notesKey] ?? preferences.workspaceLayout {
+        if let layout = restoredWorkspaceLayout {
             dockController.apply(layout: layout)
         }
         restoreSpawnSurfacePreferences()
@@ -2668,7 +2668,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         ])
         if preferences.dockPlacement == .floating {
             dockController.apply(placement: .floating, thickness: preferences.dockThickness)
-        } else if let layout = preferences.workspaceLayouts[notesKey] ?? preferences.workspaceLayout {
+        } else if let layout = restoredWorkspaceLayout {
             dockController.apply(layout: layout)
         } else {
             dockController.apply(placement: preferences.dockPlacement, thickness: preferences.dockThickness)
@@ -2768,7 +2768,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         tabStateDidChange()
         updateWindowTitle()
         dockController.setNotes(preferences.characterNotes[notesKey] ?? "")
-        if let layout = preferences.workspaceLayouts[notesKey] ?? preferences.workspaceLayout {
+        if let layout = restoredWorkspaceLayout {
             dockController.apply(layout: layout)
         }
         restoreSpawnSurfacePreferences()
@@ -4650,6 +4650,35 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             ? "Untitled"
             : [currentServer?.name, currentCharacter?.name, currentPuppet?.name].compactMap { $0 }.joined(separator: "/"))
             .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+    }
+
+    private var restoredWorkspaceLayout: WorkspaceLayoutNode? {
+        guard let layout = preferences.workspaceLayouts[notesKey] ?? preferences.workspaceLayout else {
+            return nil
+        }
+
+        // The global layout is a default for new sessions. Spawn panes are
+        // session surfaces, so a new session must not inherit one belonging
+        // to another world. For an identified session, only retain panes for
+        // surfaces that have a matching saved spawn state.
+        let saved = currentServer.flatMap { _ in preferences.spawnSurfaces[notesKey] }
+        let standaloneTitles = Set(saved?.standaloneWindows.filter { !$0.isEmpty } ?? [])
+        let tabGroupTitles = Set(
+            saved?.tabGroups
+                .filter { !$0.title.isEmpty && !$0.tabs.isEmpty }
+                .map(\.title) ?? []
+        )
+
+        return layout.removingPanes { pane in
+            switch pane {
+            case let .spawn(title):
+                return !standaloneTitles.contains(title)
+            case let .spawnTabs(title):
+                return !tabGroupTitles.contains(title)
+            default:
+                return false
+            }
+        } ?? .mainOnly
     }
 
     private func refreshDiagnostics() {

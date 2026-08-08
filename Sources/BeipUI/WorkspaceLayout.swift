@@ -311,6 +311,36 @@ indirect enum WorkspaceLayoutNode: Codable, Equatable, Sendable {
         }
     }
 
+    /// Removes panes that do not have a live session surface to restore.
+    ///
+    /// Spawn panes are part of a session's layout, but the global fallback
+    /// layout can be reused by a different world. Keeping an unavailable
+    /// spawn pane in that fallback produces a misleading placeholder instead
+    /// of an empty/default workspace.
+    func removingPanes(where shouldRemove: (WorkspacePaneKind) -> Bool) -> Self? {
+        switch self {
+        case let .pane(pane):
+            return shouldRemove(pane) ? nil : self
+        case let .tabs(panes, selected):
+            let retained = panes.filter { !shouldRemove($0) }
+            guard !retained.isEmpty else { return nil }
+            return .tabs(
+                panes: retained,
+                selected: retained.contains(selected) ? selected : retained[0]
+            )
+        case let .split(axis, fraction, first, second):
+            let retainedFirst = first.removingPanes(where: shouldRemove)
+            let retainedSecond = second.removingPanes(where: shouldRemove)
+            switch (retainedFirst, retainedSecond) {
+            case let (first?, second?):
+                return .split(axis: axis, fraction: fraction, first: first, second: second)
+            case let (first?, nil): return first
+            case let (nil, second?): return second
+            case (nil, nil): return nil
+            }
+        }
+    }
+
     private func insertingBesideMain(_ pane: WorkspacePaneKind, side: WebViewDockSide, fraction: Double) -> Self {
         insertingNodeBesideMain(.pane(pane), side: side, fraction: fraction)
     }

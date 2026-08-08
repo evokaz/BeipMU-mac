@@ -271,6 +271,50 @@ final class WorkspacePreferencesTests: XCTestCase {
         XCTAssertTrue(restored.workspaceLayouts["world/first"]?.panes.contains(.spawn("Pages")) == true)
     }
 
+    @MainActor
+    func testFreshWorldDoesNotInheritGlobalSpawnPane() throws {
+        var workspace = try LegacyConfigurationWorkspace.empty(isDirty: false)
+        let serverID = workspace.addServer(named: "Fresh World")
+        let server = try XCTUnwrap(workspace.servers.first { $0.profile.id == serverID }?.profile)
+        let layout = WorkspaceLayoutNode.mainOnly.inserting(.spawn("Pages"), side: .right)
+        let controller = ClientWindowController(
+            profileLibrary: ProfileLibrary(workspace: workspace),
+            runsScriptServices: false,
+            initialPreferences: .init(workspaceLayout: layout)
+        )
+        defer { controller.close() }
+
+        controller.restoreOpenTab(server: server, character: nil)
+
+        XCTAssertTrue(controller.usesWorkspaceLayout(.mainOnly))
+        XCTAssertEqual(controller.testingSpawnSurfaceState().standalone, [:])
+    }
+
+    @MainActor
+    func testSavedWorldSpawnPaneStillRestoresWithItsSurfaceState() throws {
+        var workspace = try LegacyConfigurationWorkspace.empty(isDirty: false)
+        let serverID = workspace.addServer(named: "Saved World")
+        let server = try XCTUnwrap(workspace.servers.first { $0.profile.id == serverID }?.profile)
+        let key = try XCTUnwrap(TextWindowSettingsIdentity(world: server.name, character: nil, tab: nil).worldKey)
+        let layout = WorkspaceLayoutNode.mainOnly.inserting(.spawn("Pages"), side: .right)
+        let preferences = WorkspacePreferences(
+            workspaceLayout: .mainOnly,
+            workspaceLayouts: [key: layout],
+            spawnSurfaces: [key: .init(standaloneWindows: ["Pages"])]
+        )
+        let controller = ClientWindowController(
+            profileLibrary: ProfileLibrary(workspace: workspace),
+            runsScriptServices: false,
+            initialPreferences: preferences
+        )
+        defer { controller.close() }
+
+        controller.restoreOpenTab(server: server, character: nil)
+
+        XCTAssertTrue(controller.usesWorkspaceLayout(layout))
+        XCTAssertEqual(controller.testingSpawnSurfaceState().standalone, ["Pages": true])
+    }
+
     func testTextWindowSettingsResolveAcrossWorldCharacterAndTabScopes() {
         let identity = TextWindowSettingsIdentity(world: "Example World", character: "Builder", tab: "Main")
         var preferences = WorkspacePreferences()
