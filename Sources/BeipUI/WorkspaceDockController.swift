@@ -462,7 +462,7 @@ final class WorkspaceDockController: NSObject, NSWindowDelegate, NSSplitViewDele
         case let .split(axis, _, first, second):
             let split = NSSplitView()
             split.isVertical = axis == .columns
-            split.dividerStyle = .thin
+            split.dividerStyle = .thick
             split.delegate = self
             split.setAccessibilityIdentifier("workspaceSplit.\(path.map(\.rawValue).joined(separator: "."))")
             split.addArrangedSubview(build(first, path: path + [.first]))

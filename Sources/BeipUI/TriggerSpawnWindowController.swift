@@ -318,9 +318,13 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
         let output = makeOutput()
         let id = UUID()
         tabs.append(.init(id: id, title: title, output: output, highlighted: false))
+        output.setWindowFocused(surfaceIsFocused && (selectedID == nil || selected))
         rebuildTabStrip()
         if selectedID == nil || selected { select(id: id) }
-        else { onStructureChange?() }
+        else {
+            updateOutputFocus()
+            onStructureChange?()
+        }
     }
 
     func deliver(
@@ -338,6 +342,7 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
             if selectedID != id, highlight { tabs[index].highlighted = true }
         } else {
             let output = makeOutput()
+            output.setWindowFocused(surfaceIsFocused && (selectedID == nil || showTab))
             output.append(line)
             id = UUID()
             tabs.append(.init(
@@ -351,6 +356,7 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
         if selectedID == nil || showTab { select(id: id) }
         else {
             updateTabStripState()
+            updateOutputFocus()
             onStructureChange?()
         }
     }
@@ -388,6 +394,14 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
         guard !isDocked, let frame = window?.frame else { return }
         observeFloatingDrag(frame: frame)
         pulseDragFeedback()
+    }
+
+    func windowDidBecomeKey(_ notification: Notification) {
+        updateOutputFocus()
+    }
+
+    func windowDidResignKey(_ notification: Notification) {
+        updateOutputFocus()
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -432,6 +446,7 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
             view.bottomAnchor.constraint(equalTo: contentHost.bottomAnchor),
         ])
         updateTabStripState()
+        updateOutputFocus()
         NSAccessibility.post(element: contentHost, notification: .layoutChanged)
         onTabActivate?(tabs[tabIndex].title)
         onStructureChange?()
@@ -456,6 +471,7 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
             select(id: tabs[min(index, tabs.count - 1)].id)
         } else {
             updateTabStripState()
+            updateOutputFocus()
             onStructureChange?()
         }
     }
@@ -467,6 +483,17 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
 
     private func updateTabStripState() {
         tabStrip.update(selectedID: selectedID, highlightedIDs: Set(tabs.filter(\.highlighted).map(\.id)))
+    }
+
+    private func updateOutputFocus() {
+        let isFocused = surfaceIsFocused
+        for tab in tabs {
+            tab.output.setWindowFocused(isFocused && tab.id == selectedID)
+        }
+    }
+
+    private var surfaceIsFocused: Bool {
+        window?.isKeyWindow == true || root.window?.isKeyWindow == true
     }
 
     private func pulseDragFeedback() {
@@ -512,6 +539,7 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
 
     private func makeOutput() -> OutputTextView {
         let output = OutputTextView()
+        output.setWindowFocused(false)
         output.onAction = { [weak self] action in self?.onAction?(action) }
         output.onContextMenu = { [weak self] _ in self?.outputContextMenu() }
         return output

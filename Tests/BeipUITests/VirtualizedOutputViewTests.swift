@@ -144,6 +144,43 @@ final class VirtualizedOutputViewTests: XCTestCase {
         XCTAssertFalse(view.isMarked(itemID: id))
     }
 
+    func testInactiveOutputMarksFirstNewLineAndUserScrollToBottomClearsIt() {
+        let output = OutputTextView()
+        let host = NSView(frame: NSRect(x: 0, y: 0, width: 500, height: 80))
+        output.containerView.frame = host.bounds
+        host.addSubview(output.containerView)
+        output.containerView.layoutSubtreeIfNeeded()
+
+        output.setWindowFocused(false)
+        let firstNewLine = RenderedLine(text: "first inactive line")
+        output.append(firstNewLine)
+        (2...20).forEach { output.append(.init(text: "inactive line \($0)")) }
+
+        XCTAssertEqual(output.newContentBoundaryIDForTesting, firstNewLine.id)
+        XCTAssertEqual(output.primaryOutputViewForTesting.newContentBoundaryItemIDForTesting, firstNewLine.id)
+
+        output.primaryOutputViewForTesting.scrollToEnd()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+
+        XCTAssertNil(output.newContentBoundaryIDForTesting)
+        XCTAssertNil(output.primaryOutputViewForTesting.newContentBoundaryItemIDForTesting)
+    }
+
+    func testAutomaticFollowScrollDoesNotClearInactiveBoundary() {
+        let output = OutputTextView()
+        let host = NSView(frame: NSRect(x: 0, y: 0, width: 500, height: 80))
+        output.containerView.frame = host.bounds
+        host.addSubview(output.containerView)
+        output.containerView.layoutSubtreeIfNeeded()
+
+        output.setWindowFocused(false)
+        let firstNewLine = RenderedLine(text: "first followed line")
+        output.append(firstNewLine)
+        (2...20).forEach { output.append(.init(text: "followed line \($0)")) }
+
+        XCTAssertEqual(output.newContentBoundaryIDForTesting, firstNewLine.id)
+    }
+
     func testReduceMotionDisablesBlinkTimersAndKeepsContentVisible() {
         let view = VirtualizedOutputView(frame: NSRect(x: 0, y: 0, width: 500, height: 300))
         view.applyAccessibilityDisplayOptions(.init())

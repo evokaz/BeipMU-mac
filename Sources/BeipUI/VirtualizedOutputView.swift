@@ -43,6 +43,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     private var focus: Position?
     private var mouseDownPosition: Position?
     private var markedItems: Set<UUID> = []
+    private var newContentBoundaryItemID: UUID?
     private var blinkTimer: Timer?
     private var blinkVisible = true
     private var blinkingItemCount = 0
@@ -84,6 +85,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     var isBlinkTimerActive: Bool { blinkTimer != nil }
     var isAnimationTimerActive: Bool { animationTimer != nil }
     var selectedRangeIsEmpty: Bool { anchor == nil || anchor == focus }
+    var newContentBoundaryItemIDForTesting: UUID? { newContentBoundaryItemID }
     var effectiveContentWidthForTesting: CGFloat { contentWidth }
     func renderedAttributedTextForTesting(at index: Int) -> NSAttributedString? {
         item(at: index).map(attributedTextForLayout(_:))
@@ -104,11 +106,13 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     }
 
     func setItems(_ items: [Item]) {
+        let boundaryID = newContentBoundaryItemID
         storage = items
         head = 0
         anchor = nil
         focus = nil
         markedItems.formIntersection(items.map(\.id))
+        newContentBoundaryItemID = boundaryID.flatMap { id in items.contains(where: { $0.id == id }) ? id : nil }
         blinkingItemCount = items.reduce(0) { $0 + (hasBlink($1) ? 1 : 0) }
         rebuildIndexMap()
         rebuildMeasurements()
@@ -136,6 +140,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
                 if hasBlink(removedItem) { blinkingItemCount -= 1 }
                 itemIndices.removeValue(forKey: removedItem.id)
                 markedItems.remove(removedItem.id)
+                if newContentBoundaryItemID == removedItem.id { newContentBoundaryItemID = nil }
             }
         }
         head += removed
@@ -162,6 +167,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         let item = storage.removeLast()
         if hasBlink(item) { blinkingItemCount -= 1 }
         markedItems.remove(item.id)
+        if newContentBoundaryItemID == item.id { newContentBoundaryItemID = nil }
         let heights = (0..<(itemCount - 1)).compactMap(layoutIndex.height(at:))
         layoutIndex.replaceHeights(with: heights)
         clampSelection()
@@ -180,6 +186,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         anchor = nil
         focus = nil
         markedItems.removeAll()
+        newContentBoundaryItemID = nil
         blinkingItemCount = 0
         renderedItemCount = 0
         updateDocumentHeight()
@@ -274,6 +281,17 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
 
     func isMarked(itemID: UUID) -> Bool { markedItems.contains(itemID) }
 
+    func setNewContentBoundary(itemID: UUID?) {
+        let oldID = newContentBoundaryItemID
+        newContentBoundaryItemID = itemID.flatMap { itemIndices[$0] == nil ? nil : $0 }
+        if let oldID, let physicalIndex = itemIndices[oldID] {
+            setNeedsDisplay(itemRect(at: physicalIndex - head))
+        }
+        if let itemID = newContentBoundaryItemID, let physicalIndex = itemIndices[itemID] {
+            setNeedsDisplay(itemRect(at: physicalIndex - head))
+        }
+    }
+
     func visibleItemCount(in rect: NSRect) -> Int {
         layoutIndex.visibleRange(
             intersecting: Double(rect.minY - contentInsets.top)..<Double(rect.maxY - contentInsets.top)
@@ -310,6 +328,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
             )
             drawMarker(for: value, in: rect)
             drawParagraphDecoration(value.paragraph, in: rect)
+            drawNewContentBoundary(for: value, in: rect)
             let attributed = attributedTextForDrawing(value, itemIndex: index)
             drawCoreText(attributed, paragraph: value.paragraph, in: rect, context: context)
             drawAssets(value.assets, attributedText: attributed, in: rect)
@@ -632,6 +651,19 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
             NSColor.labelColor.setStroke()
             NSBezierPath(rect: marker).stroke()
         }
+    }
+
+    private func drawNewContentBoundary(for item: Item, in rect: NSRect) {
+        guard item.id == newContentBoundaryItemID else { return }
+        NSColor.systemRed.setStroke()
+        let path = NSBezierPath()
+        // Keep the separator in the inter-line breathing room instead of
+        // putting it directly against the first unread glyphs.
+        let y = rect.minY - 3
+        path.move(to: NSPoint(x: contentInsets.left, y: y))
+        path.line(to: NSPoint(x: bounds.width - contentInsets.right, y: y))
+        path.lineWidth = 2
+        path.stroke()
     }
 
     private func drawAssets(

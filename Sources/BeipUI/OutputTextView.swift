@@ -1,6 +1,31 @@
 import AppKit
 import BeipCore
 
+@MainActor
+private final class OutputContainerView: NSSplitView {
+    var onWindowChange: ((NSWindow?) -> Void)?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        onWindowChange?(window)
+    }
+}
+
+@MainActor
+private final class OutputClipView: NSClipView {
+    var onScroll: (() -> Void)?
+
+    override func scroll(to newOrigin: NSPoint) {
+        super.scroll(to: newOrigin)
+        onScroll?()
+    }
+
+    override func setBoundsOrigin(_ newOrigin: NSPoint) {
+        super.setBoundsOrigin(newOrigin)
+        onScroll?()
+    }
+}
+
 /// Coordinates retained rendered lines with the line-virtualized Core Text
 /// view. The document view measures retained rows but only draws the rows
 /// intersecting its clip view, keeping history size independent of paint cost.
@@ -35,6 +60,14 @@ final class OutputTextView: NSObject {
     private var currentSearchSignature: SearchSignature?
     private var settings = TextWindowSettings()
     private var automaticMarkerID: UUID?
+    private var newContentBoundaryID: UUID?
+    private var windowIsFocused = true
+    private var boundaryDismissalTimer: Timer?
+    private var programmaticScrollGeneration = 0
+    private var isPerformingProgrammaticScroll = false
+    private weak var observedWindow: NSWindow?
+
+    private static let boundaryDismissalInterval: TimeInterval = 60
 
     private struct SearchSignature: Equatable {
         var query: String
@@ -70,9 +103,11 @@ final class OutputTextView: NSObject {
     var primaryOutputViewForTesting: VirtualizedOutputView { outputView }
     var primaryScrollViewForTesting: NSScrollView { scrollView }
     var secondaryScrollViewForTesting: NSScrollView? { secondaryScrollView }
+    var newContentBoundaryIDForTesting: UUID? { newContentBoundaryID }
 
     func applySettings(_ suppliedSettings: TextWindowSettings) {
         settings = suppliedSettings.normalized
+        if !settings.showsNewContentMarkers { clearNewContentBoundary() }
         let foreground = NSColor(hexString: settings.foregroundHex) ?? .textColor
         let background = NSColor(hexString: settings.backgroundHex) ?? .textBackgroundColor
         defaultForeground = settings.invertBrightness ? foreground.invertingBrightness : foreground
@@ -109,6 +144,7 @@ final class OutputTextView: NSObject {
         timestampFormatter.dateFormat = "HH:mm:ss"
         outputView = VirtualizedOutputView(frame: NSRect(x: 0, y: 0, width: 900, height: 1))
         scrollView = NSScrollView()
+        scrollView.contentView = OutputClipView()
         scrollView.documentView = outputView
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
@@ -118,7 +154,8 @@ final class OutputTextView: NSObject {
         scrollView.backgroundColor = NSColor(calibratedWhite: 0.05, alpha: 1)
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         Self.fitDocumentWidth(outputView, in: scrollView)
-        containerView = NSSplitView()
+        let container = OutputContainerView()
+        containerView = container
         containerView.isVertical = false
         containerView.dividerStyle = .thin
         containerView.translatesAutoresizingMaskIntoConstraints = false
@@ -130,6 +167,10 @@ final class OutputTextView: NSObject {
         preferredScrollHeight.priority = .defaultHigh
         preferredScrollHeight.isActive = true
         super.init()
+        container.onWindowChange = { [weak self] window in self?.observeWindow(window) }
+        scrollView.contentView.postsBoundsChangedNotifications = true
+        addScrollObserver(for: scrollView)
+        observeWindow(container.window)
         outputView.onLink = { [weak self] url in self?.perform(url: url) }
         outputView.onPageUp = { [weak self] in self?.performPageUp() ?? false }
         outputView.onPageDown = { [weak self] in self?.performPageDown() ?? false }
@@ -144,6 +185,7 @@ final class OutputTextView: NSObject {
         currentMatchIndex = nil
         currentSearchSignature = nil
         automaticMarkerID = nil
+        clearNewContentBoundary()
         notifyPauseChange()
         NSAccessibility.post(element: outputView, notification: .valueChanged)
     }
@@ -153,6 +195,7 @@ final class OutputTextView: NSObject {
         lineContentRanges.removeValue(forKey: line.id)
         outputView.removeLast()
         secondaryOutputView?.removeLast()
+        if newContentBoundaryID == line.id { clearNewContentBoundary() }
         currentMatchIndex = nil
         notifyPauseChange()
     }
@@ -164,6 +207,7 @@ final class OutputTextView: NSObject {
         }
         lineContentRanges.removeValue(forKey: id)
         if automaticMarkerID == id { automaticMarkerID = nil }
+        if newContentBoundaryID == id { clearNewContentBoundary() }
         rebuild(preservingScrollPosition: true)
     }
 
@@ -197,6 +241,7 @@ final class OutputTextView: NSObject {
         guard !history.isPaused else { notifyPauseChange(); return }
         if terminator != "\n" {
             rebuild(scrollToEnd: true, finalTerminator: terminator)
+            if !windowIsFocused { setNewContentBoundaryIfNeeded(for: line.id) }
         } else {
             if removedCount > 0 {
                 removedIDs.forEach { lineContentRanges.removeValue(forKey: $0) }
@@ -208,12 +253,13 @@ final class OutputTextView: NSObject {
             secondaryOutputView?.append(item)
             if settings.scrollsToBottomOnNewText {
                 clearAutomaticMarker()
-                outputView.scrollToEnd(animated: settings.smoothScrolling)
+                scrollLiveOutputToEnd(animated: settings.smoothScrolling)
             } else if settings.showsNewContentMarkers, automaticMarkerID == nil {
                 automaticMarkerID = line.id
                 outputView.setMarker(itemID: line.id, marked: true)
                 secondaryOutputView?.setMarker(itemID: line.id, marked: true)
             }
+            if !windowIsFocused { setNewContentBoundaryIfNeeded(for: line.id) }
         }
         currentMatchIndex = nil
         NSAccessibility.post(element: outputView, notification: .valueChanged)
@@ -289,6 +335,11 @@ final class OutputTextView: NSObject {
 
     func toggleSplit() {
         if let secondaryScrollView {
+            NotificationCenter.default.removeObserver(
+                self,
+                name: NSView.boundsDidChangeNotification,
+                object: secondaryScrollView.contentView
+            )
             containerView.removeArrangedSubview(secondaryScrollView)
             secondaryScrollView.removeFromSuperview()
             self.secondaryScrollView = nil
@@ -355,6 +406,7 @@ final class OutputTextView: NSObject {
         secondaryOutputView = view
         view.onInteractionCompleted = onInteractionCompleted
         secondaryScrollView = secondary
+        addScrollObserver(for: secondary)
         containerView.insertArrangedSubview(secondary, at: 0)
         containerView.setHoldingPriority(.defaultLow, forSubviewAt: 0)
         secondary.heightAnchor.constraint(greaterThanOrEqualToConstant: 80).isActive = true
@@ -362,7 +414,7 @@ final class OutputTextView: NSObject {
         restoreScrollPosition(in: secondary, to: scrollbackOrigin)
         scrollAdjustment?(secondary)
         if settings.scrollsToBottomOnNewText {
-            outputView.scrollToEnd()
+            scrollLiveOutputToEnd()
         }
         DispatchQueue.main.async { [weak self] in
             guard let self, self.secondaryOutputView != nil else { return }
@@ -371,7 +423,7 @@ final class OutputTextView: NSObject {
             self.restoreScrollPosition(in: secondary, to: scrollbackOrigin)
             scrollAdjustment?(secondary)
             if self.settings.scrollsToBottomOnNewText {
-                self.outputView.scrollToEnd()
+                self.scrollLiveOutputToEnd()
             }
         }
     }
@@ -419,6 +471,136 @@ final class OutputTextView: NSObject {
         automaticMarkerID = nil
     }
 
+    func setWindowFocused(_ focused: Bool) {
+        guard windowIsFocused != focused else {
+            if focused { scheduleBoundaryDismissalIfNeeded() }
+            return
+        }
+        windowIsFocused = focused
+        if focused {
+            scheduleBoundaryDismissalIfNeeded()
+        } else {
+            boundaryDismissalTimer?.invalidate()
+            boundaryDismissalTimer = nil
+        }
+    }
+
+    private func setNewContentBoundaryIfNeeded(for id: UUID) {
+        guard settings.showsNewContentMarkers else { return }
+        guard newContentBoundaryID == nil || !history.lines.contains(where: { $0.id == newContentBoundaryID }) else {
+            return
+        }
+        newContentBoundaryID = id
+        outputView.setNewContentBoundary(itemID: id)
+        secondaryOutputView?.setNewContentBoundary(itemID: id)
+    }
+
+    private func clearNewContentBoundary() {
+        boundaryDismissalTimer?.invalidate()
+        boundaryDismissalTimer = nil
+        newContentBoundaryID = nil
+        outputView.setNewContentBoundary(itemID: nil)
+        secondaryOutputView?.setNewContentBoundary(itemID: nil)
+    }
+
+    private func scheduleBoundaryDismissalIfNeeded() {
+        guard newContentBoundaryID != nil, windowIsFocused, boundaryDismissalTimer == nil else { return }
+        boundaryDismissalTimer = Timer.scheduledTimer(
+            withTimeInterval: Self.boundaryDismissalInterval,
+            repeats: false
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.clearNewContentBoundary() }
+        }
+    }
+
+    private func clearNewContentBoundaryIfAtBottom() {
+        guard !isPerformingProgrammaticScroll,
+              newContentBoundaryID != nil,
+              isAtBottom(scrollView) else { return }
+        clearNewContentBoundary()
+    }
+
+    private func scrollLiveOutputToEnd(animated: Bool = false) {
+        programmaticScrollGeneration += 1
+        let generation = programmaticScrollGeneration
+        isPerformingProgrammaticScroll = true
+        outputView.scrollToEnd(animated: animated)
+        guard animated else {
+            isPerformingProgrammaticScroll = false
+            return
+        }
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard let self, self.programmaticScrollGeneration == generation else { return }
+            self.isPerformingProgrammaticScroll = false
+        }
+    }
+
+    private func addScrollObserver(for scrollView: NSScrollView) {
+        if let clipView = scrollView.contentView as? OutputClipView {
+            clipView.onScroll = { [weak self, weak scrollView] in
+                guard let self, let scrollView else { return }
+                if scrollView === self.scrollView {
+                    self.clearNewContentBoundaryIfAtBottom()
+                } else if !self.isPerformingProgrammaticScroll,
+                          self.newContentBoundaryID != nil,
+                          self.isAtBottom(scrollView) {
+                    self.clearNewContentBoundary()
+                }
+            }
+        }
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(outputScrollBoundsChanged(_:)),
+            name: NSView.boundsDidChangeNotification,
+            object: scrollView.contentView
+        )
+    }
+
+    private func observeWindow(_ window: NSWindow?) {
+        if let observedWindow {
+            NotificationCenter.default.removeObserver(self, name: NSWindow.didBecomeKeyNotification, object: observedWindow)
+            NotificationCenter.default.removeObserver(self, name: NSWindow.didResignKeyNotification, object: observedWindow)
+        }
+        observedWindow = window
+        guard let window else { return }
+
+        setWindowFocused(window.isKeyWindow)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(outputWindowDidBecomeKey(_:)),
+            name: NSWindow.didBecomeKeyNotification,
+            object: window
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(outputWindowDidResignKey(_:)),
+            name: NSWindow.didResignKeyNotification,
+            object: window
+        )
+    }
+
+    @objc private func outputScrollBoundsChanged(_ notification: Notification) {
+        guard let changedClipView = notification.object as? NSClipView else { return }
+        if changedClipView === scrollView.contentView {
+            clearNewContentBoundaryIfAtBottom()
+        } else if !isPerformingProgrammaticScroll,
+                  changedClipView === secondaryScrollView?.contentView,
+                  newContentBoundaryID != nil,
+                  let changedScrollView = secondaryScrollView,
+                  isAtBottom(changedScrollView) {
+            clearNewContentBoundary()
+        }
+    }
+
+    @objc private func outputWindowDidBecomeKey(_ notification: Notification) {
+        setWindowFocused(true)
+    }
+
+    @objc private func outputWindowDidResignKey(_ notification: Notification) {
+        setWindowFocused(false)
+    }
+
     private func showSelectionCopiedPopupIfNeeded() {
         guard settings.showsSelectionCopiedPopup else { return }
         let label = NSTextField(labelWithString: "Copied")
@@ -443,6 +625,10 @@ final class OutputTextView: NSObject {
         let oldSecondaryOrigin = secondaryScrollView?.contentView.bounds.origin
         lineContentRanges.removeAll(keepingCapacity: true)
         let lines = history.lines
+        if let newContentBoundaryID,
+           !lines.contains(where: { $0.id == newContentBoundaryID }) {
+            clearNewContentBoundary()
+        }
         let items = lines.enumerated().map { index, line in
             makeItem(
                 for: line,
@@ -453,7 +639,7 @@ final class OutputTextView: NSObject {
         outputView.setItems(items)
         secondaryOutputView?.setItems(items)
         if scrollToEnd {
-            outputView.scrollToEnd()
+            scrollLiveOutputToEnd()
         } else if preservingScrollPosition {
             restoreScrollPosition(in: scrollView, to: oldOrigin)
         }
@@ -645,6 +831,7 @@ final class OutputTextView: NSObject {
 
     private static func makeScrollView(documentView: NSView, backgroundColor: NSColor) -> NSScrollView {
         let scroll = NSScrollView()
+        scroll.contentView = OutputClipView()
         scroll.documentView = documentView
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = false
