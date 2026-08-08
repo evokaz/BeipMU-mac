@@ -134,6 +134,16 @@ final class ProfileLibrary {
         try MacSidecarStore.save(sidecar, to: sidecarURL)
     }
 
+    func clearOpenTabGroups() throws {
+        var sidecar = try MacSidecarStore.load(from: sidecarURL)
+        sidecar.openTabGroups = nil
+        try FileManager.default.createDirectory(
+            at: sidecarURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try MacSidecarStore.save(sidecar, to: sidecarURL)
+    }
+
     func newConfiguration() throws {
         workspace = try .empty(isDirty: persistentConfigURL == nil)
         if persistentConfigURL != nil { try persistCurrentWorkspace() }

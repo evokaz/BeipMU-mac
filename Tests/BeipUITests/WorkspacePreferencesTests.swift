@@ -243,6 +243,23 @@ final class WorkspacePreferencesTests: XCTestCase {
         XCTAssertEqual(WorkspacePreferencesStore.load(defaults: defaults), .init())
     }
 
+    func testWorkspacePreferencesResetClearsSavedWorkspaceState() throws {
+        let suiteName = "WorkspacePreferencesTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        WorkspacePreferencesStore.save(
+            .init(
+                workspaceLayouts: ["world": .mainOnly.inserting(.spawn("Pages"), side: .right)],
+                spawnSurfaces: ["world": .init(standaloneWindows: ["Pages"])]
+            ),
+            defaults: defaults
+        )
+        WorkspacePreferencesStore.reset(defaults: defaults)
+
+        XCTAssertEqual(WorkspacePreferencesStore.load(defaults: defaults), .init())
+    }
+
     func testSessionPreferenceWritesDoNotEraseOtherSessionsSpawnState() throws {
         let suiteName = "WorkspacePreferencesTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

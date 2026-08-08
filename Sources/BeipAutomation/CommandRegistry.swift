@@ -675,7 +675,7 @@ public struct CommandRegistry: Sendable {
     /resetscript - Reset the scripting engine (possibly switching languages)
     /roll [count]d[sides](+bonus) - Dice roll. Example /roll 10d6
     /rolltest - Run the deterministic six-sided die fairness test
-    /resetconfig - Reset the active Config.txt projection to a new empty configuration
+    /resetconfig - Reset Config.txt and saved workspace/session persistence, then close open tabs
     /script $ - Run single line script
     /shelp ($) - Scripting help
     /set $=$ - Set environment variable

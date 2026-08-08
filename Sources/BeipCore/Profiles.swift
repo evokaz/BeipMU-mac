@@ -112,7 +112,7 @@ public struct CharacterProfile: Identifiable, Sendable, Hashable, Codable {
         idleText: String = "",
         logFilename: String = "",
         logAppendsDate: Bool = false,
-        restoreLog: Bool = true,
+        restoreLog: Bool = false,
         restoreLogIndex: Int = -1,
         bytesSent: UInt64 = 0,
         bytesReceived: UInt64 = 0,

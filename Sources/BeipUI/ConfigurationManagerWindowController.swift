@@ -228,13 +228,14 @@ final class ConfigurationManagerWindowController: NSWindowController, NSOutlineV
 
         let statistics = button("Statistics", identifier: "worldStatistics", action: #selector(showStatistics(_:)))
         let help = button("Help", identifier: "worldHelp", action: #selector(showHelp(_:)))
+        let apply = button("Apply", identifier: "applyWorldChanges", action: #selector(applyManager(_:)))
         let ok = button("OK", identifier: "applyProfileChanges", action: #selector(closeManager(_:)))
         ok.keyEquivalent = "\r"
         let cancel = button("Cancel", identifier: "cancelWorlds", action: #selector(cancelManager(_:)))
         cancel.keyEquivalent = "\u{1b}"
         let rightFooter = NSStackView(views: [
             buttonRow([statistics, help]),
-            buttonRow([ok, cancel]),
+            buttonRow([apply, ok, cancel]),
         ])
         rightFooter.orientation = .vertical
         rightFooter.spacing = 3
@@ -1109,6 +1110,11 @@ final class ConfigurationManagerWindowController: NSWindowController, NSOutlineV
             try applyCurrentSelection()
             close()
         } catch { present(error) }
+    }
+
+    @objc private func applyManager(_ sender: Any?) {
+        do { try applyCurrentSelection() }
+        catch { present(error) }
     }
 
     @objc private func cancelManager(_ sender: Any?) {

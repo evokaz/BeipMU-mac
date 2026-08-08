@@ -182,6 +182,58 @@ final class ConfigurationManagerWindowControllerTests: XCTestCase {
         XCTAssertEqual(character.name, "Updated Character")
     }
 
+    func testApplyKeepsWindowOpenAndPersistsBeforeSwitchingEntries() throws {
+        var workspace = try LegacyConfigurationWorkspace.empty(isDirty: false)
+        let serverID = workspace.addServer()
+        let firstCharacterID = try workspace.addCharacter(toServerID: serverID)
+        _ = try workspace.addCharacter(toServerID: serverID)
+        let library = ProfileLibrary(workspace: workspace)
+        let controller = ConfigurationManagerWindowController(library: library)
+        defer { controller.close() }
+        controller.showWindow(nil)
+
+        let content = try XCTUnwrap(controller.window?.contentView)
+        let table = try XCTUnwrap(
+            recursiveSubviews(of: content)
+                .compactMap { $0 as? NSOutlineView }
+                .first { $0.accessibilityIdentifier() == "configurationProfileList" }
+        )
+        table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        controller.tableViewSelectionDidChange(Notification(name: NSTableView.selectionDidChangeNotification))
+
+        let nameField = try XCTUnwrap(
+            recursiveSubviews(of: content)
+                .compactMap { $0 as? NSTextField }
+                .first { $0.accessibilityIdentifier() == "characterName" }
+        )
+        nameField.stringValue = "Updated Character"
+        let apply = try XCTUnwrap(
+            recursiveSubviews(of: content)
+                .compactMap { $0 as? NSButton }
+                .first { $0.accessibilityIdentifier() == "applyWorldChanges" }
+        )
+
+        apply.performClick(nil)
+
+        XCTAssertTrue(controller.window?.isVisible == true)
+        XCTAssertEqual(
+            library.workspace.servers.first?.characters.first(where: { $0.id == firstCharacterID })?.name,
+            "Updated Character"
+        )
+
+        table.selectRowIndexes(IndexSet(integer: 2), byExtendingSelection: false)
+        controller.tableViewSelectionDidChange(Notification(name: NSTableView.selectionDidChangeNotification))
+        table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        controller.tableViewSelectionDidChange(Notification(name: NSTableView.selectionDidChangeNotification))
+
+        let reloadedNameField = try XCTUnwrap(
+            recursiveSubviews(of: content)
+                .compactMap { $0 as? NSTextField }
+                .first { $0.accessibilityIdentifier() == "characterName" }
+        )
+        XCTAssertEqual(reloadedNameField.stringValue, "Updated Character")
+    }
+
     func testTabMovesBetweenWorldTextFields() throws {
         var workspace = try LegacyConfigurationWorkspace.empty(isDirty: false)
         _ = workspace.addServer()

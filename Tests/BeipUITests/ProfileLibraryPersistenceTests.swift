@@ -4,6 +4,20 @@ import XCTest
 
 @MainActor
 final class ProfileLibraryPersistenceTests: XCTestCase {
+    func testClearOpenTabGroupsRemovesSavedSessionPersistence() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BeipMU.ProfileLibraryTests.\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let library = try ProfileLibrary(storageDirectory: directory)
+        try library.saveOpenTabGroups([.init(tabs: [.init(serverName: "Old World")])])
+        XCTAssertEqual(library.openTabGroups?.count, 1)
+
+        try library.clearOpenTabGroups()
+
+        XCTAssertNil(library.openTabGroups)
+    }
+
     func testImportOverwritesPersistentConfigurationAndExportRetainsAppState() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("BeipMU.ProfileLibraryTests.\(UUID().uuidString)", isDirectory: true)

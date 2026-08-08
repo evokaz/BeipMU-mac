@@ -4233,14 +4233,26 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             sendToSession("@pemit me=\(grabPrefix!)&\(property) \(object)=[get(\(object)/\(property))]")
         case let .recall(lineCount, search): recallOutput(lineCount: lineCount, search: search)
         case .resetConfiguration:
-            disconnect()
+            var controllers = Self.openControllers
+            if !controllers.contains(where: { $0 === self }) { controllers.append(self) }
+            controllers.forEach { $0.disconnect() }
             do {
                 try profileLibrary.newConfiguration()
+                try profileLibrary.clearOpenTabGroups()
+                controllers.forEach { $0.resetWorkspaceStateAfterConfigurationReset() }
+                WorkspacePreferencesStore.reset()
+                Self.removeSpawnWindowFrameAutosaves()
                 currentServer = nil
                 currentCharacter = nil
                 currentPuppet = nil
                 reloadCurrentAutomation()
-                appendClient("Configuration reset.")
+                appendClient("Configuration and workspace persistence reset; closing open tabs.")
+                controllers.forEach { $0.closeForTabReplacement() }
+                // Closing a controller can briefly save the remaining tabs via
+                // ApplicationDelegate. Remove that transient snapshot after
+                // the final controller has closed.
+                WorkspacePreferencesStore.reset()
+                try? profileLibrary.clearOpenTabGroups()
             } catch { appendError("Unable to reset configuration: \(error.localizedDescription)") }
         case .rollTest:
             appendClient(DiceFairnessReport.run().displayText)
@@ -4426,6 +4438,37 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             preferences,
             sessionKey: notesKey
         )
+    }
+
+    private func resetWorkspaceStateAfterConfigurationReset() {
+        closeSpawnSurfaces()
+        closeAtlasSurface()
+        closeWebViews()
+        closeAIWindow(preservingDockPlacement: false)
+        tileMapWindows.values.forEach { $0.close() }
+        tileMapWindows.removeAll()
+
+        currentServer = nil
+        currentCharacter = nil
+        currentPuppet = nil
+        spawnCapture = nil
+        preferences = .init()
+        dockController.apply(placement: .hidden, thickness: preferences.dockThickness)
+        dockController.setLayout(.mainOnly)
+        dockController.setNotes("")
+        applyPreferences()
+        reloadCurrentAutomation(resetRuntimeState: true)
+    }
+
+    private static func removeSpawnWindowFrameAutosaves() {
+        let autosavePrefix = "NSWindow Frame "
+        let spawnPrefix = "BeipMUSpawn"
+        let names = UserDefaults.standard.dictionaryRepresentation().keys.compactMap { key -> String? in
+            guard key.hasPrefix(autosavePrefix) else { return nil }
+            let name = String(key.dropFirst(autosavePrefix.count))
+            return name.hasPrefix(spawnPrefix) ? name : nil
+        }
+        names.forEach { NSWindow.removeFrame(usingName: $0) }
     }
 
     private var textWindowIdentity: TextWindowSettingsIdentity {

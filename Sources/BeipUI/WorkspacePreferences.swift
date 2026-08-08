@@ -390,6 +390,11 @@ enum WorkspacePreferencesStore {
         defaults.set(data, forKey: key)
     }
 
+    static func reset(defaults suppliedDefaults: UserDefaults? = nil) {
+        let defaults = suppliedDefaults ?? activeDefaults
+        defaults.removeObject(forKey: key)
+    }
+
     /// Saves one session's snapshot without allowing another open session's
     /// stale copy of keyed UI state to erase it.
     @discardableResult
