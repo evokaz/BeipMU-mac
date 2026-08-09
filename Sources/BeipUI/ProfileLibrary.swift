@@ -8,42 +8,39 @@ final class ProfileLibrary {
     private(set) var workspaceRevision: UInt64 = 0
     private let persistentConfigURL: URL?
     private let sidecarURL: URL
+    private(set) var storageDirectory: URL?
     private var changeObservers: [UUID: () -> Void] = [:]
 
-    init() {
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("BeipMU", isDirectory: true)
-        persistentConfigURL = support.appendingPathComponent("Config.txt")
-        sidecarURL = support.appendingPathComponent("Config.mac.json")
-        workspace = try! .empty(isDirty: false)
-
-        try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
-        if restore(from: persistentConfigURL!) { return }
-        if restore(from: backupURL(for: persistentConfigURL!), sourceURL: persistentConfigURL!) {
-            try? persistCurrentWorkspace(backingUpCurrent: false)
-            return
-        }
-
-        // One-time migration for builds that remembered an external Config.txt
-        // as their live database. The source remains untouched.
-        if let sidecar = try? MacSidecarStore.load(from: sidecarURL),
-           let path = sidecar.selectedConfigPath,
-           restore(from: URL(fileURLWithPath: path)) {
-            try? persistCurrentWorkspace()
-            clearLegacySelectedPath()
-            return
-        }
-        try? persistCurrentWorkspace()
+    convenience init() {
+        let context = RuntimeStateContext.current
+        try! self.init(
+            storageDirectory: context.configurationDirectory,
+            allowsExternalConfigurationMigration: context.configuration == .release
+        )
     }
 
-    init(storageDirectory: URL) throws {
-        persistentConfigURL = storageDirectory.appendingPathComponent("Config.txt")
+    init(
+        storageDirectory: URL,
+        allowsExternalConfigurationMigration: Bool = false
+    ) throws {
+        self.storageDirectory = storageDirectory
+        let configURL = storageDirectory.appendingPathComponent("Config.txt")
+        persistentConfigURL = configURL
         sidecarURL = storageDirectory.appendingPathComponent("Config.mac.json")
         workspace = try .empty(isDirty: false)
         try FileManager.default.createDirectory(at: storageDirectory, withIntermediateDirectories: true)
-        if !restore(from: persistentConfigURL!) {
-            if restore(from: backupURL(for: persistentConfigURL!), sourceURL: persistentConfigURL!) {
+        if !restore(from: configURL) {
+            if restore(from: backupURL(for: configURL), sourceURL: configURL) {
                 try persistCurrentWorkspace(backingUpCurrent: false)
+            } else if allowsExternalConfigurationMigration,
+                      let sidecar = try? MacSidecarStore.load(from: sidecarURL),
+                      let path = sidecar.selectedConfigPath,
+                      restore(from: URL(fileURLWithPath: path)) {
+                // One-time migration for Release builds that remembered an
+                // external Config.txt as their live database. Debug and
+                // UI-test contexts never enter this branch.
+                try persistCurrentWorkspace()
+                clearLegacySelectedPath()
             } else {
                 try persistCurrentWorkspace()
             }
@@ -55,6 +52,7 @@ final class ProfileLibrary {
         persistentConfigURL = nil
         sidecarURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("BeipMU.ProfileLibrary.\(UUID().uuidString).json")
+        storageDirectory = nil
     }
 
     var displayName: String { "BeipMU Configuration" }

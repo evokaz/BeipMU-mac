@@ -36,6 +36,9 @@ targets:
         CODE_SIGN_STYLE: Automatic
         ENABLE_HARDENED_RUNTIME: NO
         SWIFT_STRICT_CONCURRENCY: complete
+      configs:
+        Debug:
+          PRODUCT_BUNDLE_IDENTIFIER: org.beipmu.BeipMU.Debug
     scheme:
       testTargets:
         - BeipMUXCUITests
@@ -59,6 +62,9 @@ targets:
         ENABLE_HARDENED_RUNTIME: NO
         SKIP_INSTALL: YES
         SWIFT_STRICT_CONCURRENCY: complete
+      configs:
+        Debug:
+          PRODUCT_BUNDLE_IDENTIFIER: org.beipmu.BeipMU.Debug.ScriptService
   BeipMUXCUITests:
     type: bundle.ui-testing
     platform: macOS

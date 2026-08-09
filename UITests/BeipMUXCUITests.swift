@@ -1,6 +1,41 @@
 import AppKit
 import XCTest
 
+private final class UITestStateSandbox: NSObject, XCTestObservation, @unchecked Sendable {
+    static let shared = UITestStateSandbox()
+
+    let directory: URL
+    let defaultsSuiteName: String
+
+    private override init() {
+        directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BeipMU-UI-Test-\(UUID().uuidString)", isDirectory: true)
+        defaultsSuiteName = "org.beipmu.BeipMU.UITests.\(UUID().uuidString)"
+        super.init()
+        try! FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        XCTestObservationCenter.shared.addTestObserver(self)
+    }
+
+    @MainActor
+    func configure(_ app: XCUIApplication, reset: Bool = true) {
+        if !app.launchArguments.contains("-ApplePersistenceIgnoreState") {
+            app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
+        }
+        app.launchEnvironment["BEIPMU_UI_TESTING"] = "1"
+        app.launchEnvironment["BEIPMU_UI_TEST_RESET"] = reset ? "1" : "0"
+        app.launchEnvironment["BEIPMU_UI_TEST_STATE_DIRECTORY"] = directory.path
+        app.launchEnvironment["BEIPMU_UI_TEST_DEFAULTS_SUITE"] = defaultsSuiteName
+    }
+
+    func testBundleDidFinish(_ testBundle: Bundle) {
+        UserDefaults.standard.removePersistentDomain(forName: defaultsSuiteName)
+        try? FileManager.default.removeItem(at: directory)
+    }
+}
+
 @MainActor
 final class BeipMUXCUITests: XCTestCase {
     func testPermanentTabBarNavigationControls() {
@@ -255,9 +290,7 @@ final class BeipMUXCUITests: XCTestCase {
     private func launchApplication(environment: [String: String] = [:]) -> XCUIApplication {
         continueAfterFailure = false
         let app = XCUIApplication()
-        app.launchArguments = ["-ApplePersistenceIgnoreState", "YES"]
-        app.launchEnvironment["BEIPMU_UI_TESTING"] = "1"
-        app.launchEnvironment["BEIPMU_UI_TEST_RESET"] = "1"
+        UITestStateSandbox.shared.configure(app)
         for (key, value) in environment { app.launchEnvironment[key] = value }
         app.launch()
         XCTAssertTrue(app.windows["mainWindow"].waitForExistence(timeout: 5))
@@ -391,9 +424,7 @@ final class M10ScaleUITests: XCTestCase {
         try? FileManager.default.removeItem(at: resultURL)
 
         let app = XCUIApplication()
-        app.launchArguments = ["-ApplePersistenceIgnoreState", "YES"]
-        app.launchEnvironment["BEIPMU_UI_TESTING"] = "1"
-        app.launchEnvironment["BEIPMU_UI_TEST_RESET"] = "1"
+        UITestStateSandbox.shared.configure(app)
         app.launchEnvironment["BEIPMU_M10_SCALE"] = "1"
         app.launchEnvironment["BEIPMU_M10_SCALE_RESULT"] = resultURL.path
         app.launch()

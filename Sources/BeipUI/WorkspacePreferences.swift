@@ -344,7 +344,6 @@ struct WorkspacePreferences: Codable, Equatable {
 
 enum WorkspacePreferencesStore {
     private static let key = "BeipMU.WorkspacePreferences.v1"
-    private static let uiTestSuiteName = "org.beipmu.BeipMU.UITests"
 
     static func load(defaults suppliedDefaults: UserDefaults? = nil) -> WorkspacePreferences {
         let defaults = suppliedDefaults ?? activeDefaults
@@ -424,14 +423,13 @@ enum WorkspacePreferencesStore {
     }
 
     static func resetUITestDefaults() {
-        guard ProcessInfo.processInfo.environment["BEIPMU_UI_TESTING"] == "1" else { return }
-        activeDefaults.removePersistentDomain(forName: uiTestSuiteName)
+        guard RuntimeStateContext.current.isUITesting,
+              let suiteName = RuntimeStateContext.current.defaultsSuiteName else { return }
+        UserDefaults.standard.removePersistentDomain(forName: suiteName)
     }
 
     private static var activeDefaults: UserDefaults {
-        guard ProcessInfo.processInfo.environment["BEIPMU_UI_TESTING"] == "1",
-              let defaults = UserDefaults(suiteName: uiTestSuiteName) else { return .standard }
-        return defaults
+        RuntimeStateContext.current.defaults
     }
 }
 

@@ -42,10 +42,17 @@ public actor ScriptServiceClient {
     /// boundary even though JavaScriptCore cannot interrupt a tight loop.
     public static let watchdogInterval: TimeInterval = 3
 
+    public static func serviceName(for bundleIdentifier: String?) -> String {
+        bundleIdentifier == "org.beipmu.BeipMU.Debug"
+            ? "org.beipmu.BeipMU.Debug.ScriptService"
+            : "org.beipmu.BeipMU.ScriptService"
+    }
+
     public init() {
         requestWatchdogInterval = Self.watchdogInterval
+        let serviceName = Self.serviceName(for: Bundle.main.bundleIdentifier)
         connectionFactory = {
-            NSXPCConnection(serviceName: "org.beipmu.BeipMU.ScriptService")
+            NSXPCConnection(serviceName: serviceName)
         }
     }
 

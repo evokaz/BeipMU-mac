@@ -97,7 +97,10 @@ final class WebViewWindowController: NSWindowController, NSWindowDelegate, WKNav
         webView.uiDelegate = self
         webView.setAccessibilityIdentifier("webViewContent")
         webView.setAccessibilityLabel(id.isEmpty ? "Web content" : "Web content: \(id)")
-        window.setFrameAutosaveName("BeipMUWebView-\(Self.safeAutosaveName(id))")
+        RuntimeStateContext.setFrameAutosaveName(
+            "BeipMUWebView-\(Self.safeAutosaveName(id))",
+            for: window
+        )
         window.center()
         apply(request)
     }

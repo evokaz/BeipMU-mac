@@ -537,7 +537,7 @@ final class WorkspaceDockController: NSObject, NSWindowDelegate, NSSplitViewDele
         panel.hidesOnDeactivate = false
         panel.delegate = self
         panel.contentView = build(.tabs(panes: [.notes, .diagnostics], selected: .notes), path: [])
-        panel.setFrameAutosaveName("BeipMUWorkspacePanel")
+        RuntimeStateContext.setFrameAutosaveName("BeipMUWorkspacePanel", for: panel)
         ownerWindow?.addChildWindow(panel, ordered: .above)
         panel.makeKeyAndOrderFront(nil)
         floatingPanel = panel

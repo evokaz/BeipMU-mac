@@ -103,7 +103,7 @@ final class ConfigurationManagerWindowController: NSWindowController, NSOutlineV
         window.setAccessibilityIdentifier("configurationManager")
         window.titlebarSeparatorStyle = .line
         super.init(window: window)
-        window.setFrameAutosaveName("BeipMUWorlds")
+        RuntimeStateContext.setFrameAutosaveName("BeipMUWorlds", for: window)
         window.center()
         configureUI(in: window)
         loadSampleWorlds()

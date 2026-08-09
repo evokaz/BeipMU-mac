@@ -41,7 +41,8 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
 
     private var windows: [ClientWindowController] = []
     private var aboutWindowController: AboutWindowController?
-    private let profileLibrary = ProfileLibrary()
+    private let stateContext: RuntimeStateContext
+    private let profileLibrary: ProfileLibrary
     private var configurationManager: ConfigurationManagerWindowController?
     private var keyboardShortcuts = KeyboardShortcutStore.load()
     private var shortcutItems: [ShortcutAction: NSMenuItem] = [:]
@@ -50,15 +51,27 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     private var tabDragState: TabDragState?
     private var tabDragEventMonitor: Any?
 
+    override init() {
+        let context = RuntimeStateContext.current
+        stateContext = context
+        if context.isUITesting,
+           ProcessInfo.processInfo.environment[RuntimeStateContext.uiTestResetKey] == "1" {
+            try! context.resetUITestState()
+        }
+        profileLibrary = try! ProfileLibrary(
+            storageDirectory: context.configurationDirectory,
+            allowsExternalConfigurationMigration: context.configuration == .release
+        )
+        super.init()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSWindow.allowsAutomaticWindowTabbing = false
-        if ProcessInfo.processInfo.environment["BEIPMU_UI_TEST_RESET"] == "1" {
-            WorkspacePreferencesStore.resetUITestDefaults()
-        }
         keyboardShortcuts = KeyboardShortcutStore.load(from: profileLibrary.keyEquivalents)
         configureMenu()
-        if ProcessInfo.processInfo.environment["BEIPMU_UI_TEST_RESET"] == "1"
-            || !restoreOpenTabs() {
+        let shouldResetUITestState = stateContext.isUITesting
+            && ProcessInfo.processInfo.environment[RuntimeStateContext.uiTestResetKey] == "1"
+        if shouldResetUITestState || !restoreOpenTabs() {
             newWindow(nil)
         }
         NSApplication.shared.activate(ignoringOtherApps: true)

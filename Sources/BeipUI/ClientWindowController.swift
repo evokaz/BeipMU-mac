@@ -849,7 +849,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             window.center()
         } else {
             if !window.setFrameUsingName("BeipMUClientWindow") { window.center() }
-            window.setFrameAutosaveName("BeipMUClientWindow")
+            RuntimeStateContext.setFrameAutosaveName("BeipMUClientWindow", for: window)
         }
         restoreInputHeight()
         tracksInputHeight = true
@@ -4516,7 +4516,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private static func removeSpawnWindowFrameAutosaves() {
         let autosavePrefix = "NSWindow Frame "
         let spawnPrefix = "BeipMUSpawn"
-        let names = UserDefaults.standard.dictionaryRepresentation().keys.compactMap { key -> String? in
+        let names = RuntimeStateContext.current.defaults.dictionaryRepresentation().keys.compactMap { key -> String? in
             guard key.hasPrefix(autosavePrefix) else { return nil }
             let name = String(key.dropFirst(autosavePrefix.count))
             return name.hasPrefix(spawnPrefix) ? name : nil
@@ -5266,7 +5266,12 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             guard let self, let controller else { return }
             self.dockSpawnWindow(controller, title: title, side: side)
         }
-        controller.window?.setFrameAutosaveName("BeipMUSpawn.\((notesKey + "." + title).safeFilename)")
+        if let window = controller.window {
+            RuntimeStateContext.setFrameAutosaveName(
+                "BeipMUSpawn.\((notesKey + "." + title).safeFilename)",
+                for: window
+            )
+        }
         triggerSpawnWindows[title] = controller
         saveSpawnSurfacePreferences()
         return controller
@@ -5308,7 +5313,12 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             guard let self, let controller else { return }
             self.dockSpawnTabGroup(controller, title: title, side: side)
         }
-        controller.window?.setFrameAutosaveName("BeipMUSpawnTabs.\((notesKey + "." + title).safeFilename)")
+        if let window = controller.window {
+            RuntimeStateContext.setFrameAutosaveName(
+                "BeipMUSpawnTabs.\((notesKey + "." + title).safeFilename)",
+                for: window
+            )
+        }
         triggerSpawnTabGroups[title] = controller
         saveSpawnSurfacePreferences()
         return controller
@@ -6073,7 +6083,7 @@ final class EmbeddedHelpWindowController: NSWindowController {
         )
         super.init(window: window)
         window.title = "BeipMU Help"
-        window.setFrameAutosaveName("BeipMU.EmbeddedHelp")
+        RuntimeStateContext.setFrameAutosaveName("BeipMU.EmbeddedHelp", for: window)
         window.setAccessibilityIdentifier("embeddedHelpWindow")
         textView.isEditable = false
         textView.isSelectable = true

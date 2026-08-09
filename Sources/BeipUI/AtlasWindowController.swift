@@ -69,7 +69,7 @@ final class AtlasWindowController: NSWindowController, NSWindowDelegate, NSSearc
         window.title = "Atlas"
         window.minSize = NSSize(width: 680, height: 440)
         window.isReleasedWhenClosed = false
-        window.setFrameAutosaveName("BeipMU.Atlas")
+        RuntimeStateContext.setFrameAutosaveName("BeipMU.Atlas", for: window)
         window.setAccessibilityIdentifier("atlasWindow")
         super.init(window: window)
         window.delegate = self

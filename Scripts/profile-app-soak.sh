@@ -20,6 +20,8 @@ else
     record_root=$(mktemp -d /tmp/beipmu-app-soak.XXXXXX)
     keep_artifacts=${BEIPMU_KEEP_APP_SOAK_ARTIFACTS:-0}
 fi
+ui_state_root=$(mktemp -d /tmp/beipmu-app-soak-state.XXXXXX)
+ui_defaults_suite="org.beipmu.BeipMU.UIProfile.$(basename "$ui_state_root")"
 app_pid=""
 
 cleanup() {
@@ -34,6 +36,10 @@ cleanup() {
             /tmp/beipmu-app-soak.*) rm -rf "$record_root" ;;
         esac
     fi
+    defaults delete "$ui_defaults_suite" >/dev/null 2>&1 || true
+    case "$ui_state_root" in
+        /tmp/beipmu-app-soak-state.*) rm -rf "$ui_state_root" ;;
+    esac
 }
 trap cleanup EXIT HUP INT TERM
 
@@ -55,6 +61,8 @@ leaks_path="$record_root/leaks.txt"
 env \
     BEIPMU_UI_TESTING=1 \
     BEIPMU_UI_TEST_RESET=1 \
+    BEIPMU_UI_TEST_STATE_DIRECTORY="$ui_state_root" \
+    BEIPMU_UI_TEST_DEFAULTS_SUITE="$ui_defaults_suite" \
     BEIPMU_PERFORMANCE_SOAK=1 \
     BEIPMU_PERFORMANCE_SOAK_START_DELAY_SECONDS=3 \
     BEIPMU_PERFORMANCE_SOAK_LINES="$line_count" \
@@ -76,6 +84,8 @@ xcrun xctrace export --input "$trace_path" --toc --output "$toc_path"
 
 BEIPMU_UI_TESTING=1 \
 BEIPMU_UI_TEST_RESET=1 \
+BEIPMU_UI_TEST_STATE_DIRECTORY="$ui_state_root" \
+BEIPMU_UI_TEST_DEFAULTS_SUITE="$ui_defaults_suite" \
 BEIPMU_PERFORMANCE_SOAK=1 \
 BEIPMU_PERFORMANCE_SOAK_LINES="${BEIPMU_APP_LEAK_LINES:-10000}" \
 BEIPMU_PERFORMANCE_SOAK_HOLD_SECONDS=1 \

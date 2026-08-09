@@ -4,6 +4,17 @@ import BeipTestSupport
 import XCTest
 
 final class ScriptRuntimeTests: XCTestCase {
+    func testConfigurationSpecificScriptServiceIdentifier() {
+        XCTAssertEqual(
+            ScriptServiceClient.serviceName(for: "org.beipmu.BeipMU"),
+            "org.beipmu.BeipMU.ScriptService"
+        )
+        XCTAssertEqual(
+            ScriptServiceClient.serviceName(for: "org.beipmu.BeipMU.Debug"),
+            "org.beipmu.BeipMU.Debug.ScriptService"
+        )
+    }
+
     func testPersistentJavaScriptContext() async {
         let runtime = ScriptRuntime()
         _ = await runtime.evaluate("var counter = 40")

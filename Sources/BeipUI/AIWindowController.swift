@@ -29,7 +29,10 @@ final class AIWindowController: NSWindowController, NSWindowDelegate {
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = false
         let safeKey = profileKey.unicodeScalars.map { CharacterSet.alphanumerics.contains($0) ? String($0) : "-" }.joined()
-        panel.setFrameAutosaveName("BeipMU.AI.\(safeKey.isEmpty ? "Session" : safeKey)")
+        RuntimeStateContext.setFrameAutosaveName(
+            "BeipMU.AI.\(safeKey.isEmpty ? "Session" : safeKey)",
+            for: panel
+        )
         super.init(window: panel)
         panel.delegate = self
         panel.addTitlebarAccessoryViewController(dockingAccessory)
