@@ -438,6 +438,70 @@ final class WorkspacePreferencesTests: XCTestCase {
         )
         XCTAssertEqual(menu.item(withTitle: "Use global settings")?.state, .on)
         XCTAssertFalse(try XCTUnwrap(menu.item(withTitle: "Use global settings")).isEnabled)
+        XCTAssertEqual(controller.activeTextWindowSettingsScopeForTesting, .global)
+    }
+
+    @MainActor
+    func testContextSettingsRouteToResolvedScopeAndSeedInheritedTabOverrides() throws {
+        let server = ServerProfile(name: "Settings World", host: "example.invalid", port: 8888)
+        let character = CharacterProfile(name: "Settings Character")
+        let identity = TextWindowSettingsIdentity(
+            world: server.name,
+            character: character.name,
+            tab: "Main"
+        )
+        var preferences = WorkspacePreferences()
+        preferences.globalTextWindowSettings.fontSize = 11
+        preferences.globalInputWindowSettings.fontSize = 12
+        preferences.characterTextWindowSettings[try XCTUnwrap(identity.characterKey)] = .init(
+            usesGlobalSettings: false,
+            settings: .init(fontSize: 17)
+        )
+        preferences.characterInputWindowSettings[try XCTUnwrap(identity.characterKey)] = .init(
+            usesGlobalSettings: false,
+            settings: .init(fontSize: 18)
+        )
+
+        let controller = ClientWindowController(
+            profileLibrary: .init(workspace: try .empty(isDirty: false)),
+            initialPreferences: preferences
+        )
+        defer { controller.close() }
+        controller.restoreOpenTab(server: server, character: character)
+
+        XCTAssertEqual(controller.activeTextWindowSettingsScopeForTesting, .tab)
+        XCTAssertEqual(controller.activeInputWindowSettingsScopeForTesting, .tab)
+        XCTAssertEqual(controller.outputContextMenuForTesting().item(withTitle: "Use global settings")?.state, .off)
+        XCTAssertEqual(controller.inputContextMenuForTesting().item(withTitle: "Use global settings")?.state, .off)
+        XCTAssertEqual(
+            controller.textWindowSettingsEditorStatesForTesting()[.tab]?.override,
+            .init(usesGlobalSettings: false, settings: .init(fontSize: 17))
+        )
+        XCTAssertEqual(
+            controller.inputWindowSettingsEditorStatesForTesting()[.tab]?.override,
+            .init(usesGlobalSettings: false, settings: .init(fontSize: 18))
+        )
+
+        var inheritedPreferences = preferences
+        inheritedPreferences.tabTextWindowSettings[try XCTUnwrap(identity.tabKey)] = .init(
+            usesGlobalSettings: true,
+            settings: .init(fontSize: 99)
+        )
+        inheritedPreferences.tabInputWindowSettings[try XCTUnwrap(identity.tabKey)] = .init(
+            usesGlobalSettings: true,
+            settings: .init(fontSize: 99)
+        )
+        let inheritedController = ClientWindowController(
+            profileLibrary: .init(workspace: try .empty(isDirty: false)),
+            initialPreferences: inheritedPreferences
+        )
+        defer { inheritedController.close() }
+        inheritedController.restoreOpenTab(server: server, character: character)
+
+        XCTAssertEqual(inheritedController.activeTextWindowSettingsScopeForTesting, .global)
+        XCTAssertEqual(inheritedController.activeInputWindowSettingsScopeForTesting, .global)
+        XCTAssertEqual(inheritedController.outputContextMenuForTesting().item(withTitle: "Use global settings")?.state, .on)
+        XCTAssertEqual(inheritedController.inputContextMenuForTesting().item(withTitle: "Use global settings")?.state, .on)
     }
 
     @MainActor

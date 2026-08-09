@@ -1813,7 +1813,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     @objc private func contextClear(_ sender: Any?) { clearOutput() }
     @objc private func contextDeleteLine(_ sender: Any?) { output.removeSelectedLine() }
     @objc private func contextTextWindowSettings(_ sender: Any?) {
-        showTextWindowSettings(initialScope: textWindowIdentity.tabKey == nil ? .global : .tab)
+        showTextWindowSettings(initialScope: activeTextWindowSettingsScope)
     }
 
     @objc private func contextUseGlobalSettings(_ sender: Any?) {
@@ -1830,34 +1830,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
 
     private func showInputWindowSettings(initialScope: TextWindowSettingsEditorView.Scope) {
         let identity = textWindowIdentity
-        let global = preferences.globalInputWindowSettings
-        var states: [TextWindowSettingsEditorView.Scope: InputWindowSettingsEditorView.State] = [
-            .global: .init(
-                label: "Global",
-                override: .init(usesGlobalSettings: false, settings: global)
-            ),
-        ]
-        if let key = identity.worldKey {
-            states[.world] = .init(
-                label: "World — \(identity.world ?? "")",
-                override: preferences.worldInputWindowSettings[key]
-                    ?? .init(usesGlobalSettings: true, settings: global)
-            )
-        }
-        if let key = identity.characterKey {
-            states[.character] = .init(
-                label: "Character — \(identity.character ?? "")",
-                override: preferences.characterInputWindowSettings[key]
-                    ?? .init(usesGlobalSettings: true, settings: global)
-            )
-        }
-        if let key = identity.tabKey {
-            states[.tab] = .init(
-                label: "Tab — \(identity.tab ?? "")",
-                override: preferences.tabInputWindowSettings[key]
-                    ?? .init(usesGlobalSettings: true, settings: global)
-            )
-        }
+        let states = inputWindowSettingsEditorStates()
         let editor = InputWindowSettingsEditorView(
             states: states,
             initialScope: states[initialScope] == nil ? .global : initialScope
@@ -1914,34 +1887,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
 
     private func showTextWindowSettings(initialScope: TextWindowSettingsEditorView.Scope) {
         let identity = textWindowIdentity
-        let global = preferences.globalTextWindowSettings
-        var states: [TextWindowSettingsEditorView.Scope: TextWindowSettingsEditorView.State] = [
-            .global: .init(
-                label: "Global",
-                override: .init(usesGlobalSettings: false, settings: global)
-            ),
-        ]
-        if let key = identity.worldKey {
-            states[.world] = .init(
-                label: "World — \(identity.world ?? "")",
-                override: preferences.worldTextWindowSettings[key]
-                    ?? .init(usesGlobalSettings: true, settings: global)
-            )
-        }
-        if let key = identity.characterKey {
-            states[.character] = .init(
-                label: "Character — \(identity.character ?? "")",
-                override: preferences.characterTextWindowSettings[key]
-                    ?? .init(usesGlobalSettings: true, settings: global)
-            )
-        }
-        if let key = identity.tabKey {
-            states[.tab] = .init(
-                label: "Tab — \(identity.tab ?? "")",
-                override: preferences.tabTextWindowSettings[key]
-                    ?? .init(usesGlobalSettings: true, settings: global)
-            )
-        }
+        let states = textWindowSettingsEditorStates()
 
         let editor = TextWindowSettingsEditorView(
             states: states,
@@ -2343,7 +2289,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         controller.input.onPageDown = { [weak self] in self?.output.performPageDown() ?? false }
         controller.input.onShowSettings = { [weak self] in
             guard let self else { return }
-            self.showInputWindowSettings(initialScope: self.textWindowIdentity.tabKey == nil ? .global : .tab)
+            self.showInputWindowSettings(initialScope: self.activeInputWindowSettingsScope)
         }
         controller.input.onToggleUseGlobalSettings = { [weak self] in self?.toggleInputUseGlobalSettings() }
         controller.input.usesGlobalSettings = activeInputWindowUsesGlobalSettings
@@ -2511,7 +2457,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         input.onPageDown = { [weak self] in self?.output.performPageDown() ?? false }
         input.onShowSettings = { [weak self] in
             guard let self else { return }
-            self.showInputWindowSettings(initialScope: self.textWindowIdentity.tabKey == nil ? .global : .tab)
+            self.showInputWindowSettings(initialScope: self.activeInputWindowSettingsScope)
         }
         input.onToggleUseGlobalSettings = { [weak self] in self?.toggleInputUseGlobalSettings() }
         input.onPreferredHeightChange = { [weak self] height in self?.resizeInput(to: height) }
@@ -4529,6 +4475,32 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         preferences.inputWindowSettings(for: textWindowIdentity)
     }
 
+    private var activeInputWindowSettingsScope: TextWindowSettingsEditorView.Scope {
+        activeInputWindowUsesGlobalSettings ? .global : .tab
+    }
+
+    private var activeTextWindowSettingsScope: TextWindowSettingsEditorView.Scope {
+        activeTextWindowUsesGlobalSettings ? .global : .tab
+    }
+
+    // Internal accessors keep routing and editor initialization directly testable
+    // without presenting an NSAlert.
+    var activeInputWindowSettingsScopeForTesting: TextWindowSettingsEditorView.Scope {
+        activeInputWindowSettingsScope
+    }
+
+    var activeTextWindowSettingsScopeForTesting: TextWindowSettingsEditorView.Scope {
+        activeTextWindowSettingsScope
+    }
+
+    func inputWindowSettingsEditorStatesForTesting() -> [TextWindowSettingsEditorView.Scope: InputWindowSettingsEditorView.State] {
+        inputWindowSettingsEditorStates()
+    }
+
+    func textWindowSettingsEditorStatesForTesting() -> [TextWindowSettingsEditorView.Scope: TextWindowSettingsEditorView.State] {
+        textWindowSettingsEditorStates()
+    }
+
     private var activeInputWindowUsesGlobalSettings: Bool {
         let identity = textWindowIdentity
         if let key = identity.tabKey, let entry = preferences.tabInputWindowSettings[key] {
@@ -4555,6 +4527,78 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             return entry.usesGlobalSettings
         }
         return true
+    }
+
+    private func inputWindowSettingsEditorStates() -> [TextWindowSettingsEditorView.Scope: InputWindowSettingsEditorView.State] {
+        let identity = textWindowIdentity
+        let global = preferences.globalInputWindowSettings
+        var states: [TextWindowSettingsEditorView.Scope: InputWindowSettingsEditorView.State] = [
+            .global: .init(
+                label: "Global",
+                override: .init(usesGlobalSettings: false, settings: global)
+            ),
+        ]
+        if let key = identity.worldKey {
+            states[.world] = .init(
+                label: "World — \(identity.world ?? "")",
+                override: preferences.worldInputWindowSettings[key]
+                    ?? .init(usesGlobalSettings: true, settings: global)
+            )
+        }
+        if let key = identity.characterKey {
+            states[.character] = .init(
+                label: "Character — \(identity.character ?? "")",
+                override: preferences.characterInputWindowSettings[key]
+                    ?? .init(usesGlobalSettings: true, settings: global)
+            )
+        }
+        if let key = identity.tabKey {
+            states[.tab] = .init(
+                label: "Tab — \(identity.tab ?? "")",
+                override: preferences.tabInputWindowSettings[key]
+                    ?? .init(
+                        usesGlobalSettings: activeInputWindowUsesGlobalSettings,
+                        settings: activeInputWindowSettings
+                    )
+            )
+        }
+        return states
+    }
+
+    private func textWindowSettingsEditorStates() -> [TextWindowSettingsEditorView.Scope: TextWindowSettingsEditorView.State] {
+        let identity = textWindowIdentity
+        let global = preferences.globalTextWindowSettings
+        var states: [TextWindowSettingsEditorView.Scope: TextWindowSettingsEditorView.State] = [
+            .global: .init(
+                label: "Global",
+                override: .init(usesGlobalSettings: false, settings: global)
+            ),
+        ]
+        if let key = identity.worldKey {
+            states[.world] = .init(
+                label: "World — \(identity.world ?? "")",
+                override: preferences.worldTextWindowSettings[key]
+                    ?? .init(usesGlobalSettings: true, settings: global)
+            )
+        }
+        if let key = identity.characterKey {
+            states[.character] = .init(
+                label: "Character — \(identity.character ?? "")",
+                override: preferences.characterTextWindowSettings[key]
+                    ?? .init(usesGlobalSettings: true, settings: global)
+            )
+        }
+        if let key = identity.tabKey {
+            states[.tab] = .init(
+                label: "Tab — \(identity.tab ?? "")",
+                override: preferences.tabTextWindowSettings[key]
+                    ?? .init(
+                        usesGlobalSettings: activeTextWindowUsesGlobalSettings,
+                        settings: activeTextWindowSettings
+                    )
+            )
+        }
+        return states
     }
 
     private func applyTextWindowSettings() {
