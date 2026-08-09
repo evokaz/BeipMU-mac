@@ -1929,7 +1929,9 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         alert.informativeText = "These Mac-native text workspace settings are saved automatically."
         alert.addButton(withTitle: "Apply")
         alert.addButton(withTitle: "Cancel")
-        let historyLimit = NSTextField(string: String(preferences.outputHistoryLimit))
+        let historyLimit = NSTextField()
+        historyLimit.formatter = historyLinesNumberFormatter()
+        historyLimit.integerValue = preferences.outputHistoryLimit
         historyLimit.alignment = .right
         let timestamps = NSButton(checkboxWithTitle: "Show timestamps", target: nil, action: nil)
         timestamps.state = preferences.showsTimestamps ? .on : .off

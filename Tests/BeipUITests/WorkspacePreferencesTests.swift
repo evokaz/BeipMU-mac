@@ -649,6 +649,40 @@ final class WorkspacePreferencesTests: XCTestCase {
         XCTAssertEqual(editor.states[.tab]?.override.settings.fontSize, 19)
     }
 
+    @MainActor
+    func testTextWindowSettingsEditorCommitsGroupedAndUngroupedHistoryLines() throws {
+        let editor = TextWindowSettingsEditorView(
+            states: [
+                .global: .init(
+                    label: "Global",
+                    override: .init(
+                        usesGlobalSettings: false,
+                        settings: .init(historyLimit: 10_000)
+                    )
+                ),
+            ],
+            initialScope: .global,
+            numberLocale: Locale(identifier: "de_DE")
+        )
+        let history = try XCTUnwrap(
+            recursiveSubviews(of: editor)
+                .compactMap { $0 as? NSTextField }
+                .first { $0.accessibilityIdentifier() == "textSettingsHistory" }
+        )
+
+        XCTAssertEqual(history.stringValue, "10.000")
+        editor.commit()
+        XCTAssertEqual(editor.states[.global]?.override.settings.historyLimit, 10_000)
+
+        history.stringValue = "10.0000"
+        editor.commit()
+        XCTAssertEqual(editor.states[.global]?.override.settings.historyLimit, 100_000)
+
+        history.stringValue = "12345"
+        editor.commit()
+        XCTAssertEqual(editor.states[.global]?.override.settings.historyLimit, 12_345)
+    }
+
     func testOlderPreferencesDecodeWithoutWorkspaceLayoutFields() throws {
         let suiteName = "WorkspacePreferencesTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

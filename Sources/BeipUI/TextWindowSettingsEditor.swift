@@ -1,5 +1,17 @@
 import AppKit
 
+func historyLinesNumberFormatter(locale: Locale = .current) -> NumberFormatter {
+    let formatter = NumberFormatter()
+    formatter.locale = locale
+    formatter.numberStyle = .decimal
+    formatter.allowsFloats = false
+    formatter.isLenient = true
+    formatter.usesGroupingSeparator = true
+    formatter.minimumFractionDigits = 0
+    formatter.maximumFractionDigits = 0
+    return formatter
+}
+
 @MainActor
 final class TextWindowSettingsEditorView: NSView {
     enum Scope: String, CaseIterable, Hashable {
@@ -52,7 +64,7 @@ final class TextWindowSettingsEditorView: NSView {
     private let newContentMarkers = NSButton(checkboxWithTitle: "New content markers", target: nil, action: nil)
     private var settingsControls: [NSControl] = []
 
-    init(states: [Scope: State], initialScope: Scope) {
+    init(states: [Scope: State], initialScope: Scope, numberLocale: Locale = .current) {
         self.states = states
         availableScopes = Scope.allCases.filter { states[$0] != nil }
         selectedScope = states[initialScope] == nil ? .global : initialScope
@@ -77,6 +89,7 @@ final class TextWindowSettingsEditorView: NSView {
         foreground.setAccessibilityIdentifier("textSettingsForeground")
         background.setAccessibilityIdentifier("textSettingsBackground")
         webLink.setAccessibilityIdentifier("textSettingsWebLink")
+        history.formatter = historyLinesNumberFormatter(locale: numberLocale)
         history.setAccessibilityIdentifier("textSettingsHistory")
         wrappedIndent.setAccessibilityIdentifier("textSettingsWrappedIndent")
         paragraphSpacing.setAccessibilityIdentifier("textSettingsParagraphSpacing")
