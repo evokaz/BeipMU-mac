@@ -1,5 +1,6 @@
 import AppKit
 import BeipCore
+import CoreText
 @testable import BeipUI
 import XCTest
 
@@ -343,6 +344,108 @@ final class VirtualizedOutputViewTests: XCTestCase {
         XCTAssertEqual(view.contentInsets.top, 20)
         XCTAssertEqual(view.contentInsets.bottom, 21)
         XCTAssertLessThan(view.effectiveContentWidthForTesting, 500)
+    }
+
+    func testOutputParagraphUsesEightConfiguredFontCellsForTabs() throws {
+        let output = OutputTextView()
+        let settings = TextWindowSettings(fontName: "Menlo", fontSize: 17)
+        output.applySettings(settings)
+        output.append(.init(text: "\t1tab"))
+
+        let rendered = try XCTUnwrap(output.primaryOutputViewForTesting.renderedAttributedTextForTesting(at: 0))
+        let paragraph = try XCTUnwrap(rendered.attribute(
+            .paragraphStyle,
+            at: 0,
+            effectiveRange: nil
+        ) as? NSParagraphStyle)
+        let font = try XCTUnwrap(NSFont(name: settings.fontName, size: settings.fontSize))
+        let cellWidth = ("M" as NSString).size(withAttributes: [.font: font]).width
+
+        XCTAssertTrue(paragraph.tabStops.isEmpty)
+        XCTAssertEqual(paragraph.defaultTabInterval, 8 * cellWidth, accuracy: 0.01)
+    }
+
+    func testCoreTextPlacesTabsOnEightColumnBoundaries() throws {
+        let output = OutputTextView()
+        let settings = TextWindowSettings(fontName: "Menlo", fontSize: 17)
+        output.applySettings(settings)
+        output.append(.init(text: "\t1tab"))
+        output.append(.init(text: "\t\t2tab"))
+        output.append(.init(text: "12\t1234\t123456\t12345678\tEnd"))
+
+        let font = try XCTUnwrap(NSFont(name: settings.fontName, size: settings.fontSize))
+        let interval = 8 * ("M" as NSString).size(withAttributes: [.font: font]).width
+
+        func offset(in item: Int, for substring: String) throws -> CGFloat {
+            let rendered = try XCTUnwrap(
+                output.primaryOutputViewForTesting.renderedAttributedTextForTesting(at: item)
+            )
+            let range = (rendered.string as NSString).range(of: substring)
+            XCTAssertNotEqual(range.location, NSNotFound)
+            let line = CTLineCreateWithAttributedString(rendered)
+            return CTLineGetOffsetForStringIndex(line, range.location, nil)
+        }
+
+        XCTAssertEqual(try offset(in: 0, for: "1tab"), interval, accuracy: 0.1)
+        XCTAssertEqual(try offset(in: 1, for: "2tab"), 2 * interval, accuracy: 0.1)
+
+        let fixture = try XCTUnwrap(
+            output.primaryOutputViewForTesting.renderedAttributedTextForTesting(at: 2)
+        )
+        let fixtureLine = CTLineCreateWithAttributedString(fixture)
+        let fixtureText = fixture.string as NSString
+        let tokenStarts = ["1234", "123456", "12345678", "End"].map {
+            fixtureText.range(of: $0).location
+        }
+        let expectedOffsets = [interval, 2 * interval, 3 * interval, 5 * interval]
+        for (index, expected) in zip(tokenStarts, expectedOffsets) {
+            XCTAssertNotEqual(index, NSNotFound)
+            XCTAssertEqual(CTLineGetOffsetForStringIndex(fixtureLine, index, nil), expected, accuracy: 0.1)
+        }
+    }
+
+    func testChangingOutputFontRecalculatesTabInterval() throws {
+        let output = OutputTextView()
+        output.append(.init(text: "\tretained text"))
+        output.toggleSplit()
+        let secondary = try XCTUnwrap(
+            output.secondaryScrollViewForTesting?.documentView as? VirtualizedOutputView
+        )
+
+        func tabInterval(fontName: String, size: Double) throws -> CGFloat {
+            output.applySettings(TextWindowSettings(fontName: fontName, fontSize: size))
+            let font = try XCTUnwrap(NSFont(name: fontName, size: size))
+            let expected = 8 * ("M" as NSString).size(withAttributes: [.font: font]).width
+            for view in [output.primaryOutputViewForTesting, secondary] {
+                let rendered = try XCTUnwrap(view.renderedAttributedTextForTesting(at: 0))
+                let paragraph = try XCTUnwrap(rendered.attribute(
+                    .paragraphStyle,
+                    at: 0,
+                    effectiveRange: nil
+                ) as? NSParagraphStyle)
+                XCTAssertEqual(paragraph.defaultTabInterval, expected, accuracy: 0.01)
+            }
+            return expected
+        }
+
+        let menloInterval = try tabInterval(fontName: "Menlo", size: 13)
+        let largerMenloInterval = try tabInterval(fontName: "Menlo", size: 21)
+        let monacoInterval = try tabInterval(fontName: "Monaco", size: 21)
+
+        XCTAssertNotEqual(menloInterval, largerMenloInterval, accuracy: 0.01)
+        XCTAssertNotEqual(largerMenloInterval, monacoInterval, accuracy: 0.01)
+    }
+
+    func testLiteralTabsRemainInCapturedAndSelectedPlainText() throws {
+        let output = OutputTextView()
+        let text = "12\t1234\tEnd"
+        output.append(.init(text: text))
+        output.selectAll()
+
+        XCTAssertEqual(output.capturedText(lineCount: 1, skipping: 0), text + "\n")
+        XCTAssertEqual(output.primaryOutputViewForTesting.selectedString(), text + "\n")
+        output.copySelectionAsPlainText()
+        XCTAssertEqual(NSPasteboard.general.string(forType: .string), text + "\n")
     }
 
     func testAutomaticWebLinksUseHTTPPrefixesAndExcludeTrailingPunctuation() throws {

@@ -773,6 +773,11 @@ final class OutputTextView: NSObject {
         paragraph.tailIndent = -CGFloat(line.paragraph.rightIndent)
         paragraph.paragraphSpacingBefore = CGFloat(line.paragraph.topPadding)
         paragraph.paragraphSpacing = CGFloat(line.paragraph.bottomPadding + Double(settings.paragraphSpacing))
+        paragraph.tabStops = []
+        paragraph.defaultTabInterval = 8 * max(
+            1,
+            ("M" as NSString).size(withAttributes: [.font: defaultFont]).width
+        )
         value.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: value.length))
         if let color = line.paragraph.background {
             value.addAttribute(.backgroundColor, value: NSColor(color), range: NSRange(location: 0, length: value.length))
