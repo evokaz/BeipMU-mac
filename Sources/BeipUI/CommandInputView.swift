@@ -135,7 +135,7 @@ final class CommandInputView: NSTextView {
 
         if onShowSettings != nil {
             let global = NSMenuItem(
-                title: "Use global settings",
+                title: "Inherit default settings",
                 action: #selector(toggleUseGlobalSettings(_:)),
                 keyEquivalent: ""
             )

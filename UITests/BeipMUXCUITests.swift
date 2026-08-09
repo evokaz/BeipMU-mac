@@ -72,7 +72,7 @@ final class BeipMUXCUITests: XCTestCase {
 
         app.menuBars.menuBarItems["Window"].click()
         for title in [
-            "Toggle Image Window", "Toggle Map Window", "Toggle Character Notes Window",
+            "Toggle Map Window", "Toggle Character Notes Window",
             "Copy all window settings", "Paste all window settings", "Show Hidden Captions",
         ] {
             XCTAssertTrue(app.menuItems[title].exists, "Missing native window-menu item: \(title)")
@@ -169,20 +169,20 @@ final class BeipMUXCUITests: XCTestCase {
         XCTAssertEqual(restored.splitGroups.matching(identifier: "workspaceSplit.second").count, 1)
     }
 
-    func testThemeDialogAccessibilityAndBaseline() throws {
+    func testSettingsAppearanceAccessibilityAndBaseline() throws {
         let app = launchApplication()
         defer { app.terminate() }
         app.menuBars.menuBarItems["BeipMU"].click()
         app.menuItems["Theme…"].click()
-        let sheet = app.sheets.firstMatch
-        XCTAssertTrue(sheet.waitForExistence(timeout: 3))
-        XCTAssertTrue(sheet.popUpButtons["themeMode"].exists)
-        XCTAssertEqual(sheet.colorWells.matching(identifier: "themeForeground").count, 1)
-        XCTAssertEqual(sheet.colorWells.matching(identifier: "themeBackground").count, 1)
-        XCTAssertEqual(sheet.colorWells.matching(identifier: "themeAccent").count, 1)
-        try assertScreenshotBaseline(named: "theme-dialog", element: sheet)
-        app.typeKey(.escape, modifierFlags: [])
-        XCTAssertTrue(sheet.waitForNonExistence(timeout: 3))
+        let settings = app.windows["settingsWindow"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 3))
+        XCTAssertTrue(settings.popUpButtons["themeMode"].exists)
+        XCTAssertEqual(settings.colorWells.matching(identifier: "themeForeground").count, 1)
+        XCTAssertEqual(settings.colorWells.matching(identifier: "themeBackground").count, 1)
+        XCTAssertEqual(settings.colorWells.matching(identifier: "themeAccent").count, 1)
+        try assertScreenshotBaseline(named: "settings-window", element: settings)
+        app.typeKey("w", modifierFlags: .command)
+        XCTAssertTrue(settings.waitForNonExistence(timeout: 3))
     }
 
     func testTextWindowContextMenuAndGlobalSettingsAreAccessible() {
@@ -192,7 +192,7 @@ final class BeipMUXCUITests: XCTestCase {
         output.rightClick()
         for title in [
             "Find…", "Pause", "Split", "Copy screen to clipboard", "Clear",
-            "Delete Line", "Use global settings", "Settings…",
+            "Delete Line", "Inherit default settings", "Settings…",
         ] {
             XCTAssertTrue(app.menuItems[title].exists, "Missing output context-menu command: \(title)")
         }
@@ -200,37 +200,33 @@ final class BeipMUXCUITests: XCTestCase {
 
         let input = app.windows["mainWindow"].descendants(matching: .textView)["Command input"]
         input.rightClick()
-        for title in ["Use global settings", "Settings…", "Conversion"] {
+        for title in ["Inherit default settings", "Settings…", "Conversion"] {
             XCTAssertTrue(app.menuItems[title].exists, "Missing input context-menu command: \(title)")
         }
         app.typeKey(.escape, modifierFlags: [])
 
         app.menuBars.menuBarItems["BeipMU"].click()
-        app.menuItems["Global Input Window Settings…"].click()
-        let inputSheet = app.sheets.firstMatch
-        XCTAssertTrue(inputSheet.waitForExistence(timeout: 3))
-        XCTAssertTrue(inputSheet.popUpButtons["inputSettingsFont"].exists)
-        XCTAssertTrue(inputSheet.textFields["inputSettingsFontSize"].exists)
-        XCTAssertTrue(inputSheet.checkBoxes["inputSettingsResizeToFit"].exists)
-        XCTAssertTrue(inputSheet.textFields["inputSettingsMinimumLines"].exists)
-        XCTAssertTrue(inputSheet.textFields["inputSettingsMaximumLines"].exists)
-        XCTAssertTrue(inputSheet.checkBoxes["inputSettingsKeepText"].exists)
-        XCTAssertTrue(inputSheet.checkBoxes["inputSettingsLocalEcho"].exists)
-        inputSheet.buttons["Cancel"].click()
-        XCTAssertTrue(inputSheet.waitForNonExistence(timeout: 3))
+        app.menuItems["Global Input Settings…"].click()
+        let inputWindow = app.windows["settingsWindow"]
+        XCTAssertTrue(inputWindow.waitForExistence(timeout: 3))
+        XCTAssertTrue(inputWindow.popUpButtons["inputSettingsFont"].exists)
+        XCTAssertTrue(inputWindow.textFields["inputSettingsFontSize"].exists)
+        XCTAssertTrue(inputWindow.checkBoxes["inputSettingsResizeToFit"].exists)
+        XCTAssertTrue(inputWindow.textFields["inputSettingsMinimumLines"].exists)
+        XCTAssertTrue(inputWindow.textFields["inputSettingsMaximumLines"].exists)
+        XCTAssertTrue(inputWindow.checkBoxes["inputSettingsKeepText"].exists)
+        XCTAssertTrue(inputWindow.checkBoxes["inputSettingsLocalEcho"].exists)
 
         app.menuBars.menuBarItems["BeipMU"].click()
-        app.menuItems["Global Text Window Settings…"].click()
-        let sheet = app.sheets.firstMatch
-        XCTAssertTrue(sheet.waitForExistence(timeout: 3))
-        XCTAssertTrue(sheet.popUpButtons["textSettingsScope"].exists)
-        XCTAssertTrue(sheet.popUpButtons["textSettingsFont"].exists)
-        XCTAssertTrue(sheet.textFields["textSettingsFontSize"].exists)
-        XCTAssertTrue(sheet.textFields["textSettingsHistory"].exists)
-        XCTAssertTrue(sheet.textFields["textSettingsWrappedIndent"].exists)
-        XCTAssertTrue(sheet.textFields["textSettingsFixedWidthCharacters"].exists)
-        sheet.buttons["Cancel"].click()
-        XCTAssertTrue(sheet.waitForNonExistence(timeout: 3))
+        app.menuItems["Global Output Settings…"].click()
+        let outputWindow = app.windows["settingsWindow"]
+        XCTAssertTrue(outputWindow.waitForExistence(timeout: 3))
+        XCTAssertTrue(outputWindow.popUpButtons["outputSettingsScope"].exists)
+        XCTAssertTrue(outputWindow.popUpButtons["outputSettingsFont"].exists)
+        XCTAssertTrue(outputWindow.textFields["outputSettingsFontSize"].exists)
+        XCTAssertTrue(outputWindow.textFields["outputSettingsHistory"].exists)
+        XCTAssertTrue(outputWindow.textFields["outputSettingsWrappedIndent"].exists)
+        XCTAssertTrue(outputWindow.textFields["outputSettingsFixedWidthCharacters"].exists)
     }
 
     func testStatisticsPanelAccessibilityAndBaseline() throws {

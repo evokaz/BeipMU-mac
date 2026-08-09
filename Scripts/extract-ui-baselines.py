@@ -14,7 +14,7 @@ EXPECTED_ATTACHMENTS = {
     "workspace-main",
     "workspace-command-error",
     "workspace-split-sidebars",
-    "theme-dialog",
+    "settings-window",
     "statistics-panel",
 }
 

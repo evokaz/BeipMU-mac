@@ -30,7 +30,7 @@ final class TextWindowSettingsEditorView: NSView {
     private let availableScopes: [Scope]
     private var selectedScope: Scope
     private let scope = NSPopUpButton()
-    private let useGlobal = NSButton(checkboxWithTitle: "Use global settings", target: nil, action: nil)
+    private let useGlobal = NSButton(checkboxWithTitle: "Inherit default settings", target: nil, action: nil)
     private let font = NSPopUpButton()
     private let fontSize = NSTextField()
     private let foreground = NSColorWell()

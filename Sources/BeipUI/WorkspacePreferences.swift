@@ -393,6 +393,21 @@ enum WorkspacePreferencesStore {
         defaults.set(data, forKey: key)
     }
 
+    /// Applies one preference edit to the latest stored snapshot. Settings is
+    /// a retained window, so keeping the read and write together prevents a
+    /// stale window snapshot from erasing a session layout written elsewhere.
+    @discardableResult
+    static func update(
+        defaults suppliedDefaults: UserDefaults? = nil,
+        _ mutation: (inout WorkspacePreferences) -> Void
+    ) -> WorkspacePreferences {
+        var latest = load(defaults: suppliedDefaults)
+        mutation(&latest)
+        latest = latest.normalizedForSettingsMutation
+        save(latest, defaults: suppliedDefaults)
+        return latest
+    }
+
     static func reset(defaults suppliedDefaults: UserDefaults? = nil) {
         let defaults = suppliedDefaults ?? activeDefaults
         defaults.removeObject(forKey: key)
@@ -434,6 +449,38 @@ enum WorkspacePreferencesStore {
 
     private static var activeDefaults: UserDefaults {
         RuntimeStateContext.current.defaults
+    }
+}
+
+extension WorkspacePreferences {
+    /// Normalization used after a live Settings edit. Compatibility mirrors
+    /// are synchronized by the typed Output/Input mutations that own them;
+    /// a theme or spelling edit must not rewrite unrelated legacy fields.
+    var normalizedForSettingsMutation: Self {
+        var result = self
+        result.inputHeight = max(30, min(1_000, result.inputHeight))
+        result.dockThickness = max(160, min(600, result.dockThickness))
+        result.globalTextWindowSettings = result.globalTextWindowSettings.normalized
+        result.worldTextWindowSettings = result.worldTextWindowSettings.mapValues {
+            .init(usesGlobalSettings: $0.usesGlobalSettings, settings: $0.settings.normalized)
+        }
+        result.characterTextWindowSettings = result.characterTextWindowSettings.mapValues {
+            .init(usesGlobalSettings: $0.usesGlobalSettings, settings: $0.settings.normalized)
+        }
+        result.tabTextWindowSettings = result.tabTextWindowSettings.mapValues {
+            .init(usesGlobalSettings: $0.usesGlobalSettings, settings: $0.settings.normalized)
+        }
+        result.globalInputWindowSettings = result.globalInputWindowSettings.normalized
+        result.worldInputWindowSettings = result.worldInputWindowSettings.mapValues {
+            .init(usesGlobalSettings: $0.usesGlobalSettings, settings: $0.settings.normalized)
+        }
+        result.characterInputWindowSettings = result.characterInputWindowSettings.mapValues {
+            .init(usesGlobalSettings: $0.usesGlobalSettings, settings: $0.settings.normalized)
+        }
+        result.tabInputWindowSettings = result.tabInputWindowSettings.mapValues {
+            .init(usesGlobalSettings: $0.usesGlobalSettings, settings: $0.settings.normalized)
+        }
+        return result
     }
 }
 

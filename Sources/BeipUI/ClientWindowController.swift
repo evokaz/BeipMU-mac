@@ -713,6 +713,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     var onQuickConnectProfile: ((ClientWindowController, ServerProfile, CharacterProfile?) -> Void)?
     var onThemeChange: ((WorkspaceThemeSettings) -> Void)?
     var onTextWindowSettingsChange: (() -> Void)?
+    var onWorkspacePreferencesChange: (() -> Void)?
+    var onSettingsRequest: ((SettingsSection, TextWindowSettingsEditorView.Scope?) -> Void)?
     var onInputHeightChange: ((Double) -> Void)?
     var timestampsEnabled: Bool {
         let settings = activeTextWindowSettings
@@ -726,6 +728,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     var dockPlacement: WorkspaceDockPlacement { dockController?.placement ?? preferences.dockPlacement }
     var legacyDockPlacement: WorkspaceDockPlacement? { dockController?.legacyPlacement }
     var activeLogCount: Int { logWriters.count }
+
+    var settingsIdentityForTesting: TextWindowSettingsIdentity { textWindowIdentity }
 
     var sessionTabTextForTabStrip: String { sessionTabText }
     var sessionTabTrailingIndicatorsForTabStrip: String { sessionTabTrailingIndicators }
@@ -1453,6 +1457,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         output.toggleSplit()
         preferences.outputSplit = output.isSplit
         savePreferences()
+        onWorkspacePreferencesChange?()
     }
     func smartPaste(_ sender: Any?) { input.paste(sender) }
     func toggleStickyInput() {
@@ -1462,6 +1467,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         preferences.checksSpelling.toggle()
         input.isContinuousSpellCheckingEnabled = preferences.checksSpelling
         savePreferences()
+        onWorkspacePreferencesChange?()
     }
 
     func toggleMute() {
@@ -1719,6 +1725,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         applyInputWindowSettings()
         savePreferences()
         onTextWindowSettingsChange?()
+        onWorkspacePreferencesChange?()
         appendClient("Pasted all window settings.")
     }
 
@@ -1787,7 +1794,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         let tabKey = textWindowIdentity.tabKey
         let usesGlobal = activeTextWindowUsesGlobalSettings
         add(
-            "Use global settings",
+            "Inherit default settings",
             #selector(contextUseGlobalSettings(_:)),
             enabled: tabKey != nil,
             state: usesGlobal ? .on : .off
@@ -1813,7 +1820,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     @objc private func contextClear(_ sender: Any?) { clearOutput() }
     @objc private func contextDeleteLine(_ sender: Any?) { output.removeSelectedLine() }
     @objc private func contextTextWindowSettings(_ sender: Any?) {
-        showTextWindowSettings(initialScope: activeTextWindowSettingsScope)
+        onSettingsRequest?(.output, activeTextWindowSettingsScope)
     }
 
     @objc private func contextUseGlobalSettings(_ sender: Any?) {
@@ -1826,43 +1833,11 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         applyTextWindowSettings()
         savePreferences()
         onTextWindowSettingsChange?()
+        onWorkspacePreferencesChange?()
     }
 
     private func showInputWindowSettings(initialScope: TextWindowSettingsEditorView.Scope) {
-        let identity = textWindowIdentity
-        let states = inputWindowSettingsEditorStates()
-        let editor = InputWindowSettingsEditorView(
-            states: states,
-            initialScope: states[initialScope] == nil ? .global : initialScope
-        )
-        let alert = NSAlert()
-        alert.messageText = initialScope == .global ? "Global Input Window Settings" : "Input Window Settings"
-        alert.informativeText = "Customize global defaults or override them for this world, character, or tab."
-        alert.addButton(withTitle: "Apply")
-        alert.addButton(withTitle: "Cancel")
-        alert.accessoryView = editor
-        let finish: (NSApplication.ModalResponse) -> Void = { [weak self] response in
-            guard response == .alertFirstButtonReturn, let self else { return }
-            editor.commit()
-            if let state = editor.states[.global] {
-                self.preferences.globalInputWindowSettings = state.override.settings.normalized
-            }
-            if let key = identity.worldKey, let state = editor.states[.world] {
-                self.preferences.worldInputWindowSettings[key] = state.override
-            }
-            if let key = identity.characterKey, let state = editor.states[.character] {
-                self.preferences.characterInputWindowSettings[key] = state.override
-            }
-            if let key = identity.tabKey, let state = editor.states[.tab] {
-                self.preferences.tabInputWindowSettings[key] = state.override
-            }
-            self.synchronizeLegacyGlobalInputSettings()
-            self.applyInputWindowSettings()
-            self.savePreferences()
-            self.onTextWindowSettingsChange?()
-        }
-        if let window { alert.beginSheetModal(for: window, completionHandler: finish) }
-        else { finish(alert.runModal()) }
+        onSettingsRequest?(.input, initialScope)
     }
 
     private func toggleInputUseGlobalSettings() {
@@ -1875,141 +1850,23 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         applyInputWindowSettings()
         savePreferences()
         onTextWindowSettingsChange?()
+        onWorkspacePreferencesChange?()
     }
 
     func showGlobalTextWindowSettings() {
-        showTextWindowSettings(initialScope: .global)
+        onSettingsRequest?(.output, .global)
     }
 
     func showGlobalInputWindowSettings() {
-        showInputWindowSettings(initialScope: .global)
+        onSettingsRequest?(.input, .global)
     }
 
     private func showTextWindowSettings(initialScope: TextWindowSettingsEditorView.Scope) {
-        let identity = textWindowIdentity
-        let states = textWindowSettingsEditorStates()
-
-        let editor = TextWindowSettingsEditorView(
-            states: states,
-            initialScope: states[initialScope] == nil ? .global : initialScope
-        )
-        let alert = NSAlert()
-        alert.messageText = initialScope == .global ? "Global Text Window Settings" : "Text Window Settings"
-        alert.informativeText = "Customize the global defaults or override them for this world, character, or tab."
-        alert.addButton(withTitle: "Apply")
-        alert.addButton(withTitle: "Cancel")
-        alert.accessoryView = editor
-        let finish: (NSApplication.ModalResponse) -> Void = { [weak self] response in
-            guard response == .alertFirstButtonReturn, let self else { return }
-            editor.commit()
-            if let state = editor.states[.global] {
-                self.preferences.globalTextWindowSettings = state.override.settings.normalized
-            }
-            if let key = identity.worldKey, let state = editor.states[.world] {
-                self.preferences.worldTextWindowSettings[key] = state.override
-            }
-            if let key = identity.characterKey, let state = editor.states[.character] {
-                self.preferences.characterTextWindowSettings[key] = state.override
-            }
-            if let key = identity.tabKey, let state = editor.states[.tab] {
-                self.preferences.tabTextWindowSettings[key] = state.override
-            }
-            self.synchronizeLegacyGlobalTextSettings()
-            self.applyTextWindowSettings()
-            self.savePreferences()
-            self.onTextWindowSettingsChange?()
-        }
-        if let window { alert.beginSheetModal(for: window, completionHandler: finish) }
-        else { finish(alert.runModal()) }
+        onSettingsRequest?(.output, initialScope)
     }
 
     func showWorkspaceSettings() {
-        let alert = NSAlert()
-        alert.messageText = "Workspace Settings"
-        alert.informativeText = "These Mac-native text workspace settings are saved automatically."
-        alert.addButton(withTitle: "Apply")
-        alert.addButton(withTitle: "Cancel")
-        let historyLimit = NSTextField()
-        historyLimit.formatter = historyLinesNumberFormatter()
-        historyLimit.integerValue = preferences.outputHistoryLimit
-        historyLimit.alignment = .right
-        let timestamps = NSButton(checkboxWithTitle: "Show timestamps", target: nil, action: nil)
-        timestamps.state = preferences.showsTimestamps ? .on : .off
-        let fanFold = NSButton(checkboxWithTitle: "Fan-fold backgrounds", target: nil, action: nil)
-        fanFold.state = preferences.usesFanFoldBackgrounds ? .on : .off
-        let inlineImages = NSButton(checkboxWithTitle: "Show inline image previews", target: nil, action: nil)
-        inlineImages.state = preferences.showsInlineImagePreviews ? .on : .off
-        inlineImages.setAccessibilityIdentifier("showInlineImagePreviews")
-        let sticky = NSButton(checkboxWithTitle: "Sticky input", target: nil, action: nil)
-        sticky.state = preferences.globalInputWindowSettings.keepsTextOnSubmit ? .on : .off
-        let spelling = NSButton(checkboxWithTitle: "Check spelling", target: nil, action: nil)
-        spelling.state = preferences.checksSpelling ? .on : .off
-        let startupScript = NSTextField(string: profileLibrary.workspace.projection.scripting.startupPath)
-        startupScript.placeholderString = "Optional JavaScript file path"
-        startupScript.setAccessibilityIdentifier("scriptStartupPath")
-        let scriptDebug = NSButton(checkboxWithTitle: "Enable script debugging", target: nil, action: nil)
-        scriptDebug.state = profileLibrary.workspace.projection.scripting.debugEnabled ? .on : .off
-        scriptDebug.setAccessibilityIdentifier("scriptDebugEnabled")
-        let voices = AVSpeechSynthesisVoice.speechVoices().sorted {
-            if $0.language == $1.language { return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-            return $0.language < $1.language
-        }
-        let speechVoice = NSPopUpButton()
-        speechVoice.addItem(withTitle: "System Default")
-        for voice in voices {
-            speechVoice.addItem(withTitle: "\(voice.name) — \(voice.language)")
-            speechVoice.lastItem?.representedObject = voice.identifier
-        }
-        if let identifier = preferences.speechVoiceIdentifier,
-           let index = speechVoice.itemArray.firstIndex(where: { $0.representedObject as? String == identifier }) {
-            speechVoice.selectItem(at: index)
-        }
-        speechVoice.setAccessibilityIdentifier("speechVoice")
-        let grid = NSGridView(views: [
-            [NSTextField(labelWithString: "History lines:"), historyLimit],
-            [NSView(), timestamps],
-            [NSView(), fanFold],
-            [NSView(), inlineImages],
-            [NSView(), sticky],
-            [NSView(), spelling],
-            [NSTextField(labelWithString: "Startup script:"), startupScript],
-            [NSView(), scriptDebug],
-            [NSTextField(labelWithString: "Speech voice:"), speechVoice],
-        ])
-        grid.column(at: 0).xPlacement = .trailing
-        grid.column(at: 1).width = 230
-        grid.rowSpacing = 8
-        grid.frame = NSRect(x: 0, y: 0, width: 440, height: 250)
-        alert.accessoryView = grid
-        let finish: (NSApplication.ModalResponse) -> Void = { [weak self] response in
-            guard response == .alertFirstButtonReturn, let self else { return }
-            self.preferences.outputHistoryLimit = max(100, historyLimit.integerValue)
-            self.preferences.showsTimestamps = timestamps.state == .on
-            self.preferences.usesFanFoldBackgrounds = fanFold.state == .on
-            self.preferences.showsInlineImagePreviews = inlineImages.state == .on
-            self.preferences.globalTextWindowSettings.historyLimit = self.preferences.outputHistoryLimit
-            self.preferences.globalTextWindowSettings.showsTime = self.preferences.showsTimestamps
-            self.preferences.globalTextWindowSettings.usesFanFoldBackgrounds = self.preferences.usesFanFoldBackgrounds
-            self.preferences.stickyInput = sticky.state == .on
-            self.preferences.globalInputWindowSettings.keepsTextOnSubmit = sticky.state == .on
-            self.preferences.checksSpelling = spelling.state == .on
-            self.preferences.speechVoiceIdentifier = speechVoice.selectedItem?.representedObject as? String
-            self.applyPreferences()
-            self.savePreferences()
-            self.onTextWindowSettingsChange?()
-            do {
-                try self.profileLibrary.mutate {
-                    $0.updateScripting {
-                        $0.startupPath = startupScript.stringValue
-                        $0.debugEnabled = scriptDebug.state == .on
-                    }
-                }
-            } catch {
-                self.appendError("Unable to save startup script setting: \(error.localizedDescription)")
-            }
-        }
-        if let window { alert.beginSheetModal(for: window, completionHandler: finish) }
-        else { finish(alert.runModal()) }
+        onSettingsRequest?(.appearance, nil)
     }
 
     func showEmbeddedHelp(topic: String? = nil) {
@@ -2153,52 +2010,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     func showThemeSettings() {
-        let alert = NSAlert()
-        alert.messageText = "Workspace Theme"
-        alert.informativeText = "Choose a native appearance or customize the text workspace palette."
-        alert.addButton(withTitle: "Apply")
-        alert.addButton(withTitle: "Cancel")
-
-        let mode = NSPopUpButton()
-        mode.addItems(withTitles: WorkspaceThemeMode.allCases.map(\.title))
-        mode.selectItem(at: WorkspaceThemeMode.allCases.firstIndex(of: preferences.theme.mode) ?? 0)
-        mode.setAccessibilityIdentifier("themeMode")
-        let foreground = NSColorWell()
-        foreground.color = NSColor(hexString: preferences.theme.foregroundHex) ?? .textColor
-        foreground.setAccessibilityIdentifier("themeForeground")
-        let background = NSColorWell()
-        background.color = NSColor(hexString: preferences.theme.backgroundHex) ?? .textBackgroundColor
-        background.setAccessibilityIdentifier("themeBackground")
-        let accent = NSColorWell()
-        accent.color = NSColor(hexString: preferences.theme.accentHex) ?? .controlAccentColor
-        accent.setAccessibilityIdentifier("themeAccent")
-        let grid = NSGridView(views: [
-            [NSTextField(labelWithString: "Appearance:"), mode],
-            [NSTextField(labelWithString: "Text:"), foreground],
-            [NSTextField(labelWithString: "Background:"), background],
-            [NSTextField(labelWithString: "Accent:"), accent],
-        ])
-        grid.column(at: 0).xPlacement = .trailing
-        grid.column(at: 1).width = 230
-        grid.rowSpacing = 8
-        grid.frame = NSRect(x: 0, y: 0, width: 340, height: 125)
-        alert.accessoryView = grid
-        let finish: (NSApplication.ModalResponse) -> Void = { [weak self] response in
-            guard response == .alertFirstButtonReturn, let self else { return }
-            let selectedMode = WorkspaceThemeMode.allCases[mode.indexOfSelectedItem]
-            let settings = WorkspaceThemeSettings(
-                mode: selectedMode,
-                foregroundHex: foreground.color.hexString,
-                backgroundHex: background.color.hexString,
-                accentHex: accent.color.hexString
-            )
-            self.preferences.theme = settings
-            self.applyThemeSettings(settings)
-            self.savePreferences()
-            self.onThemeChange?(settings)
-        }
-        if let window { alert.beginSheetModal(for: window, completionHandler: finish) }
-        else { finish(alert.runModal()) }
+        onSettingsRequest?(.appearance, nil)
     }
 
     func showLoggingControls() {
@@ -4641,6 +4453,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         applyInputWindowSettings()
         savePreferences()
         onTextWindowSettingsChange?()
+        onWorkspacePreferencesChange?()
     }
 
     private func synchronizeLegacyGlobalInputSettings() {
@@ -4753,6 +4566,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         applyTextWindowSettings()
         savePreferences()
         onTextWindowSettingsChange?()
+        onWorkspacePreferencesChange?()
     }
 
     private func synchronizeLegacyGlobalTextSettings() {
@@ -4764,6 +4578,14 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
 
     func reloadTextWindowPreferences() {
         let saved = WorkspacePreferencesStore.load()
+        preferences.theme = saved.theme
+        preferences.checksSpelling = saved.checksSpelling
+        preferences.speechVoiceIdentifier = saved.speechVoiceIdentifier
+        preferences.outputSplit = saved.outputSplit
+        preferences.outputHistoryLimit = saved.outputHistoryLimit
+        preferences.showsTimestamps = saved.showsTimestamps
+        preferences.usesFanFoldBackgrounds = saved.usesFanFoldBackgrounds
+        preferences.stickyInput = saved.stickyInput
         preferences.showsInlineImagePreviews = saved.showsInlineImagePreviews
         preferences.globalTextWindowSettings = saved.globalTextWindowSettings
         preferences.worldTextWindowSettings = saved.worldTextWindowSettings
@@ -4778,6 +4600,10 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         triggerSpawnWindows.values.forEach { $0.showsInlineImagePreviews = preferences.showsInlineImagePreviews }
         triggerSpawnTabGroups.values.forEach { $0.showsInlineImagePreviews = preferences.showsInlineImagePreviews }
         applyInputWindowSettings()
+        input.isContinuousSpellCheckingEnabled = preferences.checksSpelling
+        secondaryInputWindows.forEach { $0.input.isContinuousSpellCheckingEnabled = preferences.checksSpelling }
+        if output.isSplit != preferences.outputSplit { output.toggleSplit() }
+        applyThemeSettings(preferences.theme)
     }
 
     private var notesKey: String {

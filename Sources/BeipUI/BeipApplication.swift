@@ -41,6 +41,8 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
 
     private var windows: [ClientWindowController] = []
     private var aboutWindowController: AboutWindowController?
+    private var settingsWindowController: SettingsWindowController?
+    private var lastSettingsSection: SettingsSection = .appearance
     private let stateContext: RuntimeStateContext
     private let profileLibrary: ProfileLibrary
     private var configurationManager: ConfigurationManagerWindowController?
@@ -215,9 +217,17 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         }
         controller.onThemeChange = { [weak self] theme in
             self?.windows.forEach { $0.applyThemeSettings(theme) }
+            self?.settingsWindowController?.refreshFromExternalChange()
         }
         controller.onTextWindowSettingsChange = { [weak self] in
             self?.windows.forEach { $0.reloadTextWindowPreferences() }
+            self?.settingsWindowController?.refreshFromExternalChange()
+        }
+        controller.onWorkspacePreferencesChange = { [weak self] in
+            self?.workspacePreferencesDidChange()
+        }
+        controller.onSettingsRequest = { [weak self] section, scope in
+            self?.presentSettings(section: section, initialScope: scope)
         }
         controller.onInputHeightChange = { [weak self] height in
             self?.windows.forEach { $0.synchronizeInputHeight(height) }
@@ -538,10 +548,13 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     @objc func convertReturns(_ sender: Any?) { activeController?.applyInputConversion(.returns) }
     @objc func convertTabs(_ sender: Any?) { activeController?.applyInputConversion(.tabs) }
     @objc func convertSpaces(_ sender: Any?) { activeController?.applyInputConversion(.spaces) }
-    @objc func settings(_ sender: Any?) { activeController?.showWorkspaceSettings() }
-    @objc func globalTextWindowSettings(_ sender: Any?) { activeController?.showGlobalTextWindowSettings() }
-    @objc func globalInputWindowSettings(_ sender: Any?) { activeController?.showGlobalInputWindowSettings() }
-    @objc func themeSettings(_ sender: Any?) { activeController?.showThemeSettings() }
+    @objc func settings(_ sender: Any?) {
+        lastSettingsSection = settingsWindowController?.selectedSection ?? lastSettingsSection
+        presentSettings(section: lastSettingsSection)
+    }
+    @objc func globalTextWindowSettings(_ sender: Any?) { presentSettings(section: .output, initialScope: .global) }
+    @objc func globalInputWindowSettings(_ sender: Any?) { presentSettings(section: .input, initialScope: .global) }
+    @objc func themeSettings(_ sender: Any?) { presentSettings(section: .appearance) }
     @objc func toggleMute(_ sender: Any?) { activeController?.toggleMute() }
     @objc func toggleInputHistoryWindow(_ sender: Any?) { activeController?.toggleInputHistoryWindow() }
     @objc func toggleMapWindow(_ sender: Any?) { activeController?.toggleMapWindow() }
@@ -568,63 +581,60 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     @objc func toggleFullScreen(_ sender: Any?) { activeController?.toggleFullScreen() }
 
     @objc func configureKeyboardShortcuts(_ sender: Any?) {
-        let alert = NSAlert()
-        alert.messageText = "Keyboard Shortcuts"
-        alert.informativeText = "Enter shortcuts such as ⌘N, Command+Shift+P, F1, or Shift+F2."
-        alert.addButton(withTitle: "Apply")
-        alert.addButton(withTitle: "Cancel")
-        alert.addButton(withTitle: "Restore Defaults")
+        presentSettings(section: .shortcuts)
+    }
 
-        var fields: [ShortcutAction: NSTextField] = [:]
-        let rows = ShortcutAction.allCases.map { action -> [NSView] in
-            let field = NSTextField(string: keyboardShortcuts[action]?.displayString ?? action.defaultShortcut.displayString)
-            field.setAccessibilityIdentifier("shortcut.\(action.rawValue)")
-            fields[action] = field
-            return [NSTextField(labelWithString: action.title + ":"), field]
-        }
-        let grid = NSGridView(views: rows)
-        grid.column(at: 0).xPlacement = .trailing
-        grid.column(at: 1).width = 160
-        grid.rowSpacing = 7
-        grid.frame = NSRect(x: 0, y: 0, width: 380, height: CGFloat(rows.count * 31))
-        alert.accessoryView = grid
-
-        switch alert.runModal() {
-        case .alertFirstButtonReturn:
-            var parsed: [ShortcutAction: KeyboardShortcut] = [:]
-            for action in ShortcutAction.allCases {
-                guard let value = fields[action]?.stringValue,
-                      let shortcut = KeyboardShortcut.parse(value) else {
-                    showShortcutError("Invalid shortcut for \(action.title).")
-                    return
+    private func presentSettings(
+        section: SettingsSection,
+        initialScope: TextWindowSettingsEditorView.Scope? = nil
+    ) {
+        guard let controller = activeController else { return }
+        let context = SettingsPresentationContext(
+            section: section,
+            initialScope: initialScope,
+            identity: controller.settingsIdentityForTesting
+        )
+        if let settingsWindowController {
+            settingsWindowController.present(context: context)
+        } else {
+            let settings = SettingsWindowController(
+                profileLibrary: profileLibrary,
+                preferencesProvider: { WorkspacePreferencesStore.load() },
+                shortcutsProvider: { [weak self] in self?.keyboardShortcuts ?? KeyboardShortcutStore.load() },
+                context: context,
+                onPreferencesMutation: { [weak self] in self?.workspacePreferencesDidChange() },
+                onShortcutsMutation: { [weak self] values in
+                    guard let self else { return }
+                    keyboardShortcuts = values
+                    applyKeyboardShortcuts()
+                    workspacePreferencesDidChange()
+                },
+                nativeShortcutConflict: { [weak self] values in
+                    self?.nativeShortcutConflictMessage(for: values)
                 }
-                parsed[action] = shortcut
-            }
-            let collisions = Dictionary(grouping: parsed, by: { "\($0.value.keyEquivalent)|\($0.value.modifierRawValue)" })
-                .values.first { $0.count > 1 }
-            if let collisions {
-                showShortcutError("The shortcut \(collisions[0].value.displayString) is assigned more than once.")
-                return
-            }
-            if let conflict = nativeMenuConflict(for: parsed) {
-                showShortcutError(
-                    "The shortcut \(conflict.shortcut.displayString) conflicts with the native menu command \"\(conflict.item.title)\"."
-                )
-                return
-            }
-            do {
-                try profileLibrary.saveKeyEquivalents(KeyboardShortcutStore.serialized(parsed))
-                keyboardShortcuts = parsed
-                applyKeyboardShortcuts()
-            } catch { NSApplication.shared.presentError(error) }
-        case .alertThirdButtonReturn:
-            do {
-                try profileLibrary.saveKeyEquivalents([:])
-                keyboardShortcuts = KeyboardShortcutStore.load()
-                applyKeyboardShortcuts()
-            } catch { NSApplication.shared.presentError(error) }
-        default: break
+            )
+            settingsWindowController = settings
+            settings.showWindow(nil)
         }
+        if let settingsWindow = settingsWindowController?.window,
+           let ownerWindow = controller.window,
+           !(ownerWindow.childWindows ?? []).contains(settingsWindow) {
+            settingsWindow.parent?.removeChildWindow(settingsWindow)
+            ownerWindow.addChildWindow(settingsWindow, ordered: .above)
+        }
+        lastSettingsSection = section
+    }
+
+    private func workspacePreferencesDidChange() {
+        windows.forEach { $0.reloadTextWindowPreferences() }
+        settingsWindowController?.refreshFromExternalChange()
+    }
+
+    private func nativeShortcutConflictMessage(
+        for shortcuts: [ShortcutAction: KeyboardShortcut]
+    ) -> String? {
+        guard let conflict = nativeMenuConflict(for: shortcuts) else { return nil }
+        return "Conflicts with the native menu command \"\(conflict.item.title)\"."
     }
 
     private var activeController: ClientWindowController? {
@@ -732,12 +742,12 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         )
         settingsItem.keyEquivalentModifierMask = FixedShortcut.settings.modifiers
         appMenu.addItem(
-            withTitle: "Global Text Window Settings…",
+            withTitle: "Global Output Settings…",
             action: #selector(globalTextWindowSettings(_:)),
             keyEquivalent: ""
         )
         appMenu.addItem(
-            withTitle: "Global Input Window Settings…",
+            withTitle: "Global Input Settings…",
             action: #selector(globalInputWindowSettings(_:)),
             keyEquivalent: ""
         )

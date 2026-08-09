@@ -41,7 +41,9 @@ Useful default shortcuts include:
 | Logging | Command-L |
 
 BeipMU-specific shortcuts can be customized in **Keyboard Shortcuts…** and are
-saved in the macOS sidecar configuration. Standard macOS commands such as
+saved in the macOS sidecar configuration. Leave a shortcut field empty to
+disable it. Conflicts with another shortcut or a fixed native menu command are
+rejected with a prompt naming the conflict. Standard macOS commands such as
 Settings, Help, and Quit remain fixed.
 
 ## Client commands
@@ -98,7 +100,7 @@ before running them.
   rollover.
 - **Media:** MCP/GMCP media can display images, play audio, and speak text.
   Remote media URLs are restricted to HTTP and HTTPS.
-- **Inline image previews:** Workspace Settings includes **Show inline image previews**;
+- **Inline image previews:** Settings includes **Show inline image previews**;
   it is disabled by default. When enabled, Pueblo/GMCP images and visible HTTP/HTTPS
   image links are shown beneath their output line. Command-click a thumbnail to open
   its source in the browser.

@@ -433,11 +433,11 @@ final class WorkspacePreferencesTests: XCTestCase {
             menu.items.filter { !$0.isSeparatorItem }.map(\.title),
             [
                 "Find…", "Pause", "Split", "Copy screen to clipboard", "Clear",
-                "Delete Line", "Use global settings", "Settings…",
+                "Delete Line", "Inherit default settings", "Settings…",
             ]
         )
-        XCTAssertEqual(menu.item(withTitle: "Use global settings")?.state, .on)
-        XCTAssertFalse(try XCTUnwrap(menu.item(withTitle: "Use global settings")).isEnabled)
+        XCTAssertEqual(menu.item(withTitle: "Inherit default settings")?.state, .on)
+        XCTAssertFalse(try XCTUnwrap(menu.item(withTitle: "Inherit default settings")).isEnabled)
         XCTAssertEqual(controller.activeTextWindowSettingsScopeForTesting, .global)
     }
 
@@ -471,8 +471,8 @@ final class WorkspacePreferencesTests: XCTestCase {
 
         XCTAssertEqual(controller.activeTextWindowSettingsScopeForTesting, .tab)
         XCTAssertEqual(controller.activeInputWindowSettingsScopeForTesting, .tab)
-        XCTAssertEqual(controller.outputContextMenuForTesting().item(withTitle: "Use global settings")?.state, .off)
-        XCTAssertEqual(controller.inputContextMenuForTesting().item(withTitle: "Use global settings")?.state, .off)
+        XCTAssertEqual(controller.outputContextMenuForTesting().item(withTitle: "Inherit default settings")?.state, .off)
+        XCTAssertEqual(controller.inputContextMenuForTesting().item(withTitle: "Inherit default settings")?.state, .off)
         XCTAssertEqual(
             controller.textWindowSettingsEditorStatesForTesting()[.tab]?.override,
             .init(usesGlobalSettings: false, settings: .init(fontSize: 17))
@@ -500,8 +500,8 @@ final class WorkspacePreferencesTests: XCTestCase {
 
         XCTAssertEqual(inheritedController.activeTextWindowSettingsScopeForTesting, .global)
         XCTAssertEqual(inheritedController.activeInputWindowSettingsScopeForTesting, .global)
-        XCTAssertEqual(inheritedController.outputContextMenuForTesting().item(withTitle: "Use global settings")?.state, .on)
-        XCTAssertEqual(inheritedController.inputContextMenuForTesting().item(withTitle: "Use global settings")?.state, .on)
+        XCTAssertEqual(inheritedController.outputContextMenuForTesting().item(withTitle: "Inherit default settings")?.state, .on)
+        XCTAssertEqual(inheritedController.inputContextMenuForTesting().item(withTitle: "Inherit default settings")?.state, .on)
     }
 
     @MainActor
@@ -583,10 +583,10 @@ final class WorkspacePreferencesTests: XCTestCase {
 
         XCTAssertEqual(
             menu.items.filter { !$0.isSeparatorItem }.map(\.title),
-            ["Use global settings", "Settings…", "Conversion", "Cut"]
+            ["Inherit default settings", "Settings…", "Conversion", "Cut"]
         )
-        XCTAssertEqual(menu.item(withTitle: "Use global settings")?.state, .on)
-        XCTAssertFalse(try XCTUnwrap(menu.item(withTitle: "Use global settings")).isEnabled)
+        XCTAssertEqual(menu.item(withTitle: "Inherit default settings")?.state, .on)
+        XCTAssertFalse(try XCTUnwrap(menu.item(withTitle: "Inherit default settings")).isEnabled)
     }
 
     @MainActor
@@ -1401,23 +1401,47 @@ final class WorkspacePreferencesTests: XCTestCase {
         let serialized = KeyboardShortcutStore.serialized([
             .clearOutput: custom,
             .triggers: customTrigger,
+            .connect: .init(keyEquivalent: "[", modifiers: [.command]),
         ])
         XCTAssertEqual(serialized, [
             "clearOutput": "⌥K",
+            "connect": "⌘[",
             "triggers": "⇧⌘G",
         ])
         let loaded = KeyboardShortcutStore.load(from: serialized)
         XCTAssertEqual(loaded[.clearOutput], custom)
         XCTAssertEqual(loaded[.triggers], customTrigger)
+        XCTAssertEqual(loaded[.connect], .init(keyEquivalent: "[", modifiers: [.command]))
         XCTAssertEqual(loaded[.newWindow], ShortcutAction.newWindow.defaultShortcut)
         XCTAssertEqual(loaded[.toggleInputHistory], .init(keyEquivalent: "h", modifiers: [.control]))
         XCTAssertEqual(loaded[.macros], ShortcutAction.macros.defaultShortcut)
         XCTAssertEqual(loaded[.aliases], ShortcutAction.aliases.defaultShortcut)
         XCTAssertEqual(loaded[.smartPaste], ShortcutAction.smartPaste.defaultShortcut)
         XCTAssertEqual(KeyboardShortcutStore.load()[.clearOutput], ShortcutAction.clearOutput.defaultShortcut)
+        XCTAssertEqual(
+            KeyboardShortcut.parse(KeyboardShortcut(keyEquivalent: "[", modifiers: [.command]).displayString),
+            .init(keyEquivalent: "[", modifiers: [.command])
+        )
         XCTAssertEqual(FixedShortcut.settings, .init(keyEquivalent: ",", modifiers: [.command]))
         XCTAssertEqual(FixedShortcut.help, .init(keyEquivalent: "?", modifiers: [.command]))
         XCTAssertEqual(FixedShortcut.quit, .init(keyEquivalent: "q", modifiers: [.command]))
+    }
+
+    func testKeyboardShortcutCanBeClearedWithoutFallingBackToDefault() {
+        let loaded = KeyboardShortcutStore.load(from: ["newTab": ""])
+        XCTAssertEqual(loaded[.newTab], .unbound)
+        XCTAssertEqual(KeyboardShortcutStore.serialized([.newTab: .unbound]), ["newTab": ""])
+    }
+
+    @MainActor
+    func testClearedShortcutRemovesItsMenuAccelerator() throws {
+        let menu = ApplicationMenuBuilder.makeMenu(
+            shortcuts: KeyboardShortcutStore.load(from: ["newTab": ""])
+        )
+        let windowsMenu = try XCTUnwrap(menu.item(withTitle: "Windows")?.submenu)
+        let newTab = try XCTUnwrap(windowsMenu.item(withTitle: "New Tab"))
+        XCTAssertEqual(newTab.keyEquivalent, "")
+        XCTAssertEqual(newTab.keyEquivalentModifierMask, [])
     }
 
     func testKeyboardShortcutDefaultsCoverEveryAuthoritativeAction() {
