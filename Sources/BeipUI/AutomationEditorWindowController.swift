@@ -122,6 +122,11 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
     private let library: ProfileLibrary
     private let kind: Kind
     private let scope: LegacyConfigurationWorkspace.AutomationScope
+    private let promptDecisionProvider: SettingsPromptDecisionProvider?
+
+    private struct FormSnapshot: Equatable {
+        var values: [String: String]
+    }
     private let table = NSTableView()
     private let triggerOutline = NSOutlineView()
     private let triggerSamplesOutline = NSOutlineView()
@@ -148,6 +153,7 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
     private var selectedTriggerPath: [Int]?
     private var selectedTriggerIdentity: TriggerSelectionIdentity?
     private var triggerSampleSelected = false
+    private var aliasSampleSelected = false
     private var selectedAliasPath: [Int]?
     private var selectedAliasIdentity: AliasSelectionIdentity?
     private let macroOutline = MacroOutlineView()
@@ -174,6 +180,10 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
     private var stagedMacroWorkspace: LegacyConfigurationWorkspace?
     private var macroExpectedRevision: UInt64 = 0
     private var macroDidClose = false
+    private var formBaseline: FormSnapshot?
+    private var restoringSelection = false
+    private var isReloadingOutline = false
+    private var bypassClosePrompt = false
     var onClose: (() -> Void)?
 
     private final class TriggerOutlineNode {
@@ -372,10 +382,16 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
         }
     }
 
-    init(library: ProfileLibrary, kind: Kind, scope: LegacyConfigurationWorkspace.AutomationScope = .global) {
+    init(
+        library: ProfileLibrary,
+        kind: Kind,
+        scope: LegacyConfigurationWorkspace.AutomationScope = .global,
+        promptDecisionProvider: SettingsPromptDecisionProvider? = nil
+    ) {
         self.library = library
         self.kind = kind
         self.scope = scope
+        self.promptDecisionProvider = promptDecisionProvider
         let size: NSSize = switch kind {
         case .triggers: NSSize(width: 980, height: 700)
         case .aliases: NSSize(width: 1060, height: 680)
@@ -410,6 +426,20 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
         reload(selecting: nil)
     }
 
+    convenience init(
+        library: ProfileLibrary,
+        kind: Kind,
+        scope: LegacyConfigurationWorkspace.AutomationScope = .global,
+        promptDecisionProvider: @escaping @MainActor () -> SettingsPromptDecision
+    ) {
+        self.init(
+            library: library,
+            kind: kind,
+            scope: scope,
+            promptDecisionProvider: { _ in promptDecisionProvider() }
+        )
+    }
+
     required init?(coder: NSCoder) { nil }
 
     override func showWindow(_ sender: Any?) {
@@ -420,10 +450,25 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
     func windowWillClose(_ notification: Notification) { onClose?() }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        guard kind == .macros, !macroDidClose else { return true }
-        macroDidClose = true
-        stagedMacroWorkspace = nil
-        return true
+        if bypassClosePrompt {
+            bypassClosePrompt = false
+            return true
+        }
+        guard hasPendingFormChanges() else {
+            if kind == .macros { stagedMacroWorkspace = nil }
+            return true
+        }
+        switch promptDecision() {
+        case .save:
+            guard commitVisibleChanges(reloadAfter: false) else { return false }
+            if kind == .macros { stagedMacroWorkspace = nil }
+            return true
+        case .dontSave:
+            if kind == .macros { stagedMacroWorkspace = nil }
+            return true
+        case .cancel:
+            return false
+        }
     }
 
     private func configure(in window: NSWindow) {
@@ -1018,7 +1063,8 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
         guard kind == .macros,
               let value = info.draggingPasteboard.string(forType: Self.keyboardMacroPasteboardType),
               let payload = decodeMacroDragPayload(value),
-              let destination = macroDropDestination(item: item, index: index) else { return false }
+              let destination = macroDropDestination(item: item, index: index),
+              resolvePendingFormChanges() else { return false }
         stageMacroFormIfNeeded()
         do {
             var candidate = macroWorkspace
@@ -1137,6 +1183,107 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
         guard row >= 0 else { selectedIndex = nil; clearFields(); return }
         selectedIndex = row
         loadEntry(at: row)
+    }
+
+    private var detailRoot: NSView? {
+        switch kind {
+        case .aliases: aliasDetail
+        case .triggers: triggerDetail
+        case .macros: nil
+        }
+    }
+
+    private func currentFormSnapshot() -> FormSnapshot {
+        var values: [String: String] = [:]
+        if let detailRoot {
+            let ignored: Set<String> = [
+                "aliasTestResult", "aliasTestError", "aliasRegex101",
+                "triggerTestResult", "triggerTestError", "triggerActionTabs",
+                "triggerAppearancePreview", "triggerParagraphPreview",
+            ]
+            for view in descendants(of: detailRoot) {
+                let identifier = view.accessibilityIdentifier()
+                guard !identifier.isEmpty,
+                      !ignored.contains(identifier),
+                      let value = snapshotValue(of: view) else { continue }
+                values[identifier] = value
+            }
+        }
+        switch kind {
+        case .aliases:
+            values["scopeAfterCount"] = aliasAfterCount.stringValue
+        case .triggers:
+            values["scopeAfterCount"] = triggerScopeAfterCount.stringValue
+        case .macros:
+            values = macroFormSnapshot().values
+        }
+        return FormSnapshot(values: values)
+    }
+
+    private func updateScopeBaseline(afterCount: String) {
+        var values = formBaseline?.values ?? currentFormSnapshot().values
+        values["scopeAfterCount"] = afterCount
+        formBaseline = FormSnapshot(values: values)
+    }
+
+    private func descendants(of root: NSView) -> [NSView] {
+        [root] + root.subviews.flatMap { descendants(of: $0) }
+    }
+
+    private func snapshotValue(of view: NSView) -> String? {
+        if let textField = view as? NSTextField { return textField.stringValue }
+        if let textView = view as? NSTextView { return textView.string }
+        if let popup = view as? NSPopUpButton { return popup.titleOfSelectedItem ?? "" }
+        if let segmented = view as? NSSegmentedControl { return String(segmented.selectedSegment) }
+        if let button = view as? NSButton { return String(button.state.rawValue) }
+        if let colorWell = view as? NSColorWell {
+            let color = colorWell.color.usingColorSpace(.deviceRGB) ?? colorWell.color
+            var red: CGFloat = 0
+            var green: CGFloat = 0
+            var blue: CGFloat = 0
+            var alpha: CGFloat = 0
+            color.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+            return "\(red),\(green),\(blue),\(alpha)"
+        }
+        if let control = view as? NSControl, let value = control.accessibilityValue() {
+            return String(describing: value)
+        }
+        return nil
+    }
+
+    private func endActiveEditing() {
+        _ = window?.endEditing(for: nil)
+    }
+
+    private func hasPendingFormChanges() -> Bool {
+        endActiveEditing()
+        guard let formBaseline else { return false }
+        return formBaseline != currentFormSnapshot()
+    }
+
+    private func promptDecision() -> SettingsPromptDecision {
+        if let promptDecisionProvider {
+            return promptDecisionProvider(kind.title)
+        }
+        return SettingsPromptPresenter.present(window: window, editorTitle: kind.title)
+    }
+
+    @discardableResult
+    private func resolvePendingFormChanges() -> Bool {
+        guard hasPendingFormChanges() else { return true }
+        switch promptDecision() {
+        case .save:
+            return commitVisibleChanges(reloadAfter: false)
+        case .dontSave:
+            discardVisibleChanges()
+            return true
+        case .cancel:
+            return false
+        }
+    }
+
+    private func captureFormBaseline() {
+        formBaseline = currentFormSnapshot()
     }
 
     func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
@@ -1303,6 +1450,7 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
               let node = item as? MacroOutlineNode,
               case let .macro(scope, path, _) = node.kind,
               let existing = macroWorkspace.macro(at: path, in: scope) else { return }
+        let oldBaseline = formBaseline
         do {
             var candidate = macroWorkspace
             var updated = existing
@@ -1310,76 +1458,71 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
             try candidate.updateMacro(at: path, in: scope, macro: updated)
             stagedMacroWorkspace = candidate
             reloadMacroOutline(selecting: macroSelectionKey(scope: scope, path: path))
+            if !macroSampleSelected, selectedMacroScope == scope, selectedMacroPath == path {
+                formBaseline = oldBaseline
+            }
         } catch {
             present(error)
         }
     }
 
     func outlineViewSelectionDidChange(_ notification: Notification) {
+        guard !restoringSelection else { return }
         if kind == .macros {
-            if !isReloadingMacroOutline { stageMacroFormIfNeeded() }
-            if notification.object as? NSOutlineView === macroSamplesOutline {
-                guard macroSamplesOutline.selectedRow >= 0,
-                      let node = macroSamplesOutline.item(atRow: macroSamplesOutline.selectedRow) as? MacroOutlineNode,
-                      case let .sample(macro) = node.kind else { return }
-                macroSampleSelected = true
-                selectedMacroPath = nil
-                selectedMacroIdentity = nil
-                loadMacroSample(macro)
-                return
-            }
-            guard notification.object as? NSOutlineView === macroOutline else { return }
-            guard macroOutline.selectedRow >= 0,
-                  let node = macroOutline.item(atRow: macroOutline.selectedRow) as? MacroOutlineNode else {
-                selectedMacroScope = nil
-                selectedMacroPath = nil
-                selectedMacroIdentity = nil
-                clearFields()
-                return
-            }
-            switch node.kind {
-            case let .scope(scope):
-                macroSampleSelected = false
-                selectedMacroScope = scope
-                selectedMacroPath = nil
-                selectedMacroIdentity = nil
-                macroDestinationScope = scope
-                macroDestinationParentPath = []
-                loadMacroScope(scope)
-                clearFields()
-            case let .macro(scope, path, identity):
-                macroSampleSelected = false
-                selectedMacroScope = scope
-                selectedMacroPath = path
-                selectedMacroIdentity = identity
-                macroDestinationScope = scope
-                macroDestinationParentPath = macroWorkspace.macro(at: path, in: scope)?.folder == true
-                    ? path
-                    : Array(path.dropLast())
-                loadMacro(at: path, in: scope)
-            case .sample:
-                break
-            }
+            handleMacroSelectionChange(notification)
             return
         }
         if kind == .aliases {
-            guard notification.object as? NSOutlineView === triggerOutline else { return }
+            guard notification.object as? NSOutlineView === triggerOutline ||
+                notification.object as? NSOutlineView === aliasSamplesOutline else { return }
+            if notification.object as? NSOutlineView === aliasSamplesOutline {
+                let changed = !aliasSampleSelected
+                if changed, !isReloadingOutline, !resolvePendingFormChanges() {
+                    restoreAliasSelection()
+                    return
+                }
+                guard aliasSamplesOutline.selectedRow >= 0 else { return }
+                aliasSampleSelected = true
+                captureFormBaseline()
+                return
+            }
             guard triggerOutline.selectedRow >= 0,
                   let node = triggerOutline.item(atRow: triggerOutline.selectedRow) as? AliasOutlineNode else {
+                if !isReloadingOutline, !resolvePendingFormChanges() {
+                    restoreAliasSelection()
+                    return
+                }
+                aliasSampleSelected = false
                 selectedAliasScope = nil
                 selectedAliasPath = nil
                 selectedAliasIdentity = nil
                 clearFields()
+                captureFormBaseline()
                 return
             }
+            let target: (LegacyConfigurationWorkspace.AutomationScope, [Int]?, AliasSelectionIdentity?)? = switch node.kind {
+            case let .scope(scope): (scope, nil, nil)
+            case let .alias(scope, path, identity): (scope, path, identity)
+            case .sample: nil
+            }
+            guard let target else { return }
+            let changed = aliasSampleSelected || selectedAliasScope != target.0
+                || selectedAliasPath != target.1 || selectedAliasIdentity != target.2
+            if changed, !isReloadingOutline, !resolvePendingFormChanges() {
+                restoreAliasSelection()
+                return
+            }
+            if !changed, !isReloadingOutline { return }
             switch node.kind {
             case let .scope(scope):
+                aliasSampleSelected = false
                 selectedAliasScope = scope
                 selectedAliasPath = nil
                 selectedAliasIdentity = nil
                 loadAliasScopeSettings(scope)
                 clearFields()
             case let .alias(scope, path, identity):
+                aliasSampleSelected = false
                 selectedAliasScope = scope
                 selectedAliasPath = path
                 selectedAliasIdentity = identity
@@ -1388,23 +1531,48 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
             case .sample:
                 break
             }
+            captureFormBaseline()
             return
         }
         if notification.object as? NSOutlineView === triggerSamplesOutline {
+            let changed = !triggerSampleSelected
+            if changed, !isReloadingOutline, !resolvePendingFormChanges() {
+                restoreTriggerSelection()
+                return
+            }
             triggerSampleSelected = triggerSamplesOutline.selectedRow >= 0
+            captureFormBaseline()
             return
         }
         guard notification.object as? NSOutlineView === triggerOutline else { return }
         guard triggerOutline.selectedRow >= 0,
               let node = triggerOutline.item(atRow: triggerOutline.selectedRow) as? TriggerOutlineNode else {
+            if !isReloadingOutline, !resolvePendingFormChanges() {
+                restoreTriggerSelection()
+                return
+            }
             triggerSampleSelected = false
             selectedIndex = nil
             selectedTriggerScope = nil
             selectedTriggerPath = nil
             selectedTriggerIdentity = nil
             clearFields()
+            captureFormBaseline()
             return
         }
+        let target: (LegacyConfigurationWorkspace.AutomationScope, [Int]?, TriggerSelectionIdentity?)? = switch node.kind {
+        case let .scope(scope): (scope, nil, nil)
+        case let .trigger(scope, path, identity): (scope, path, identity)
+        case .sample: nil
+        }
+        guard let target else { return }
+        let changed = triggerSampleSelected || selectedTriggerScope != target.0
+            || selectedTriggerPath != target.1 || selectedTriggerIdentity != target.2
+        if changed, !isReloadingOutline, !resolvePendingFormChanges() {
+            restoreTriggerSelection()
+            return
+        }
+        if !changed, !isReloadingOutline { return }
         switch node.kind {
         case let .scope(scope):
             triggerSampleSelected = false
@@ -1425,9 +1593,137 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
         case .sample:
             break
         }
+        captureFormBaseline()
+    }
+
+    private func handleMacroSelectionChange(_ notification: Notification) {
+        if notification.object as? NSOutlineView === macroSamplesOutline {
+            guard macroSamplesOutline.selectedRow >= 0,
+                  let node = macroSamplesOutline.item(atRow: macroSamplesOutline.selectedRow) as? MacroOutlineNode,
+                  case let .sample(macro) = node.kind else { return }
+            if !macroSampleSelected, !isReloadingMacroOutline, !resolvePendingFormChanges() {
+                restoreMacroSelection()
+                return
+            }
+            macroSampleSelected = true
+            selectedMacroPath = nil
+            selectedMacroIdentity = nil
+            loadMacroSample(macro)
+            captureFormBaseline()
+            return
+        }
+        guard notification.object as? NSOutlineView === macroOutline else { return }
+        guard macroOutline.selectedRow >= 0,
+              let node = macroOutline.item(atRow: macroOutline.selectedRow) as? MacroOutlineNode else {
+            if !isReloadingMacroOutline, !resolvePendingFormChanges() {
+                restoreMacroSelection()
+                return
+            }
+            selectedMacroScope = nil
+            selectedMacroPath = nil
+            selectedMacroIdentity = nil
+            clearFields()
+            captureFormBaseline()
+            return
+        }
+        let target: (LegacyConfigurationWorkspace.AutomationScope, [Int]?, MacroSelectionIdentity?)? = switch node.kind {
+        case let .scope(scope): (scope, nil, nil)
+        case let .macro(scope, path, identity): (scope, path, identity)
+        case .sample: nil
+        }
+        guard let target else { return }
+        let changed = macroSampleSelected || selectedMacroScope != target.0
+            || selectedMacroPath != target.1 || selectedMacroIdentity != target.2
+        if changed, !isReloadingMacroOutline, !resolvePendingFormChanges() {
+            restoreMacroSelection()
+            return
+        }
+        if !changed, !isReloadingMacroOutline { return }
+        switch node.kind {
+        case let .scope(scope):
+            macroSampleSelected = false
+            selectedMacroScope = scope
+            selectedMacroPath = nil
+            selectedMacroIdentity = nil
+            macroDestinationScope = scope
+            macroDestinationParentPath = []
+            loadMacroScope(scope)
+            clearFields()
+        case let .macro(scope, path, identity):
+            macroSampleSelected = false
+            selectedMacroScope = scope
+            selectedMacroPath = path
+            selectedMacroIdentity = identity
+            macroDestinationScope = scope
+            macroDestinationParentPath = macroWorkspace.macro(at: path, in: scope)?.folder == true
+                ? path
+                : Array(path.dropLast())
+            loadMacro(at: path, in: scope)
+        case .sample:
+            break
+        }
+        captureFormBaseline()
+    }
+
+    private func restoreAliasSelection() {
+        restoringSelection = true
+        defer { restoringSelection = false }
+        guard let selectedAliasScope else {
+            aliasSamplesOutline.deselectAll(nil)
+            triggerOutline.deselectAll(nil)
+            return
+        }
+        aliasSamplesOutline.deselectAll(nil)
+        let selection = aliasSelectionKey(
+            scope: selectedAliasScope,
+            aliasPath: selectedAliasPath,
+            aliasIdentity: selectedAliasIdentity
+        )
+        if let row = rowForAliasSelection(selection) {
+            triggerOutline.selectRowIndexes(.init(integer: row), byExtendingSelection: false)
+        }
+    }
+
+    private func restoreTriggerSelection() {
+        restoringSelection = true
+        defer { restoringSelection = false }
+        guard let selectedTriggerScope else {
+            triggerSamplesOutline.deselectAll(nil)
+            triggerOutline.deselectAll(nil)
+            return
+        }
+        triggerSamplesOutline.deselectAll(nil)
+        let selection = triggerSelectionKey(
+            scope: selectedTriggerScope,
+            triggerPath: selectedTriggerPath,
+            triggerIdentity: selectedTriggerIdentity
+        )
+        if let row = rowForTriggerSelection(selection) {
+            triggerOutline.selectRowIndexes(.init(integer: row), byExtendingSelection: false)
+        }
+    }
+
+    private func restoreMacroSelection() {
+        restoringSelection = true
+        defer { restoringSelection = false }
+        guard let selectedMacroScope else {
+            macroSamplesOutline.deselectAll(nil)
+            macroOutline.deselectAll(nil)
+            return
+        }
+        macroSamplesOutline.deselectAll(nil)
+        let selection = macroSelectionKey(
+            scope: selectedMacroScope,
+            path: selectedMacroPath,
+            identity: selectedMacroIdentity
+        )
+        if let row = rowForMacroSelection(selection) {
+            macroOutline.selectRowIndexes(.init(integer: row), byExtendingSelection: false)
+        }
     }
 
     @objc private func addEntry(_ sender: Any?) {
+        guard resolvePendingFormChanges() else { return }
         if kind == .macros {
             stageMacroFormIfNeeded()
             let targetScope = macroDestinationScope ?? selectedMacroScope ?? macroEditingScope
@@ -1492,6 +1788,7 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
     }
 
     @objc private func removeEntry(_ sender: Any?) {
+        guard resolvePendingFormChanges() else { return }
         if kind == .macros {
             stageMacroFormIfNeeded()
             guard let selectedMacroPath, let selectedMacroScope else { NSSound.beep(); return }
@@ -1546,102 +1843,149 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
         } catch { present(error) }
     }
 
+    @discardableResult
+    private func commitVisibleChanges(reloadAfter: Bool) -> Bool {
+        switch kind {
+        case .aliases: return commitAliasChanges(reloadAfter: reloadAfter)
+        case .triggers: return commitTriggerChanges(reloadAfter: reloadAfter)
+        case .macros: return applyMacroChanges(reloadAfter: reloadAfter)
+        }
+    }
+
+    private func commitAliasChanges(reloadAfter: Bool) -> Bool {
+        guard let selectedAliasScope else { NSSound.beep(); return false }
+        do {
+            let group = library.workspace.aliasGroup(in: selectedAliasScope)
+            try library.mutate { workspace in
+                if let selectedAliasPath {
+                    guard let aliasDetail,
+                          let existing = workspace.alias(at: selectedAliasPath, in: selectedAliasScope) else {
+                        throw LegacyConfigurationWorkspace.WorkspaceError.automationEntryNotFound
+                    }
+                    try aliasDetail.validateForApply()
+                    try workspace.updateAlias(
+                        at: selectedAliasPath,
+                        in: selectedAliasScope,
+                        alias: aliasDetail.updatedAlias(preserving: existing)
+                    )
+                }
+                try workspace.updateAliasGroupSettings(
+                    in: selectedAliasScope,
+                    active: group.active,
+                    echo: group.echo,
+                    processCommands: group.processCommands,
+                    afterCount: max(0, aliasAfterCount.integerValue)
+                )
+            }
+            status.stringValue = "Applied and saved."
+            if reloadAfter {
+                reloadAliasOutline(selecting: aliasSelectionKey(scope: selectedAliasScope, aliasPath: selectedAliasPath))
+            } else {
+                reloadCurrentAliasForm()
+            }
+            return true
+        } catch {
+            status.stringValue = error.localizedDescription
+            NSSound.beep()
+            return false
+        }
+    }
+
+    private func commitTriggerChanges(reloadAfter: Bool) -> Bool {
+        guard let selectedTriggerScope else { NSSound.beep(); return false }
+        do {
+            let group = library.workspace.triggerGroup(in: selectedTriggerScope)
+            try library.mutate { workspace in
+                if let selectedTriggerPath {
+                    guard let triggerDetail,
+                          let existing = workspace.trigger(at: selectedTriggerPath, in: selectedTriggerScope) else {
+                        throw LegacyConfigurationWorkspace.WorkspaceError.automationEntryNotFound
+                    }
+                    try triggerDetail.validateForApply()
+                    try workspace.updateTrigger(
+                        at: selectedTriggerPath,
+                        in: selectedTriggerScope,
+                        trigger: triggerDetail.updatedTrigger(preserving: existing)
+                    )
+                }
+                try workspace.updateTriggerGroupSettings(
+                    in: selectedTriggerScope,
+                    active: group.active,
+                    afterCount: max(0, triggerScopeAfterCount.integerValue)
+                )
+            }
+            status.stringValue = "Applied and saved."
+            if reloadAfter {
+                reloadTriggerOutline(selecting: triggerSelectionKey(scope: selectedTriggerScope, triggerPath: selectedTriggerPath))
+            } else {
+                reloadCurrentTriggerForm()
+            }
+            return true
+        } catch {
+            status.stringValue = error.localizedDescription
+            NSSound.beep()
+            return false
+        }
+    }
+
+    private func reloadCurrentAliasForm() {
+        guard let selectedAliasScope else { clearFields(); captureFormBaseline(); return }
+        loadAliasScopeSettings(selectedAliasScope)
+        if let selectedAliasPath {
+            aliasDetail?.load(library.workspace.alias(at: selectedAliasPath, in: selectedAliasScope)
+                ?? .init(match: .init(text: ""), replacement: ""))
+        } else {
+            clearFields()
+        }
+        captureFormBaseline()
+    }
+
+    private func reloadCurrentTriggerForm() {
+        guard let selectedTriggerScope else { clearFields(); captureFormBaseline(); return }
+        loadTriggerScopeSettings(selectedTriggerScope)
+        if let selectedTriggerPath {
+            loadTrigger(at: selectedTriggerPath, in: selectedTriggerScope)
+        } else {
+            clearFields()
+        }
+        captureFormBaseline()
+    }
+
+    private func discardVisibleChanges() {
+        switch kind {
+        case .aliases: reloadCurrentAliasForm()
+        case .triggers: reloadCurrentTriggerForm()
+        case .macros:
+            guard let selectedMacroScope else { clearFields(); captureFormBaseline(); return }
+            if let selectedMacroPath {
+                loadMacro(at: selectedMacroPath, in: selectedMacroScope)
+            } else {
+                loadMacroScope(selectedMacroScope)
+                clearFields()
+            }
+            captureFormBaseline()
+        }
+    }
+
     @objc private func applyEntry(_ sender: Any?) {
         if kind == .macros {
-            _ = applyMacroChanges()
+            _ = applyMacroChanges(reloadAfter: true)
             return
         }
         if kind == .aliases {
-            guard let aliasDetail, let selectedAliasScope, let selectedAliasPath,
-                  let existing = library.workspace.alias(at: selectedAliasPath, in: selectedAliasScope) else {
-                NSSound.beep()
-                return
-            }
-            do {
-                try aliasDetail.validateForApply()
-                let updated = aliasDetail.updatedAlias(preserving: existing)
-                try library.mutate {
-                    try $0.updateAlias(at: selectedAliasPath, in: selectedAliasScope, alias: updated)
-                }
-                status.stringValue = "Applied and saved."
-                reloadAliasOutline(selecting: aliasSelectionKey(scope: selectedAliasScope, aliasPath: selectedAliasPath))
-            } catch {
-                status.stringValue = error.localizedDescription
-                NSSound.beep()
-            }
+            _ = commitAliasChanges(reloadAfter: true)
             return
         }
         if kind == .triggers {
-            guard let triggerDetail, let selectedTriggerScope, let selectedTriggerPath else { NSSound.beep(); return }
-            do {
-                try triggerDetail.validateForApply()
-                guard let existing = library.workspace.trigger(at: selectedTriggerPath, in: selectedTriggerScope) else {
-                    throw LegacyConfigurationWorkspace.WorkspaceError.automationEntryNotFound
-                }
-                let updated = triggerDetail.updatedTrigger(preserving: existing)
-                let selection = triggerSelectionKey(scope: selectedTriggerScope, triggerPath: selectedTriggerPath)
-                try library.mutate {
-                    try $0.updateTrigger(at: selectedTriggerPath, in: selectedTriggerScope, trigger: updated)
-                }
-                status.stringValue = "Applied and saved."
-                reloadTriggerOutline(selecting: selection)
-            } catch {
-                status.stringValue = error.localizedDescription
-                NSSound.beep()
-            }
+            _ = commitTriggerChanges(reloadAfter: true)
             return
         }
-        guard let selectedIndex else { NSSound.beep(); return }
-        if kind == .macros {
-            do {
-                try library.mutate {
-                    try $0.updateMacro(
-                        at: selectedIndex,
-                        in: scope,
-                        description: descriptionField.stringValue,
-                        key: matchField.stringValue,
-                        macro: actionField.stringValue,
-                        typeIntoInput: regex.state == .on
-                    )
-                }
-                status.stringValue = "Applied and saved."
-                reload(selecting: selectedIndex)
-            } catch { present(error) }
-            return
-        }
-        let existingMatch: MatchDefinition = switch kind {
-        case .aliases: library.workspace.aliases(in: scope)[selectedIndex].match
-        case .triggers: library.workspace.triggers(in: scope)[selectedIndex].match
-        case .macros: preconditionFailure("Macros are handled above.")
-        }
-        let match = MatchDefinition(
-            text: matchField.stringValue,
-            isRegularExpression: regex.state == .on,
-            matchCase: existingMatch.matchCase,
-            startsWith: existingMatch.startsWith,
-            endsWith: existingMatch.endsWith,
-            wholeWord: existingMatch.wholeWord
-        )
-        do {
-            try library.mutate {
-                switch kind {
-                case .aliases:
-                    try $0.updateAlias(at: selectedIndex, in: scope, description: descriptionField.stringValue, match: match, replacement: actionField.stringValue)
-                case .triggers:
-                    try $0.updateTrigger(at: selectedIndex, in: scope, description: descriptionField.stringValue, match: match, action: selectedTriggerAction)
-                case .macros:
-                    break
-                }
-            }
-            status.stringValue = "Applied and saved."
-            reload(selecting: selectedIndex)
-        } catch { present(error) }
     }
 
     @objc private func actionChanged(_ sender: Any?) { updateActionFieldState() }
 
     @objc private func copyAlias(_ sender: Any?) {
-        guard kind == .aliases else { return }
+        guard kind == .aliases, resolvePendingFormChanges() else { return }
         let sample: Alias? = {
             guard aliasSamplesOutline.selectedRow >= 0,
                   let node = aliasSamplesOutline.item(atRow: aliasSamplesOutline.selectedRow) as? AliasOutlineNode,
@@ -1680,7 +2024,7 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
     }
 
     @objc private func copyMacro(_ sender: Any?) {
-        guard kind == .macros else { return }
+        guard kind == .macros, resolvePendingFormChanges() else { return }
         stageMacroFormIfNeeded()
         let sample: KeyboardMacro? = {
             guard macroSamplesOutline.selectedRow >= 0,
@@ -1744,7 +2088,8 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
     }
 
     private func moveSelectedMacro(toParentPath destinationParentPath: [Int], index destinationIndex: Int) {
-        guard let sourcePath = selectedMacroPath, let selectedMacroScope else { NSSound.beep(); return }
+        guard resolvePendingFormChanges(),
+              let sourcePath = selectedMacroPath, let selectedMacroScope else { NSSound.beep(); return }
         stageMacroFormIfNeeded()
         do {
             var candidate = macroWorkspace
@@ -1790,7 +2135,8 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
     }
 
     private func moveSelectedAlias(toParentPath destinationParentPath: [Int], index destinationIndex: Int) {
-        guard let selectedAliasPath, let selectedAliasScope else { NSSound.beep(); return }
+        guard resolvePendingFormChanges(),
+              let selectedAliasPath, let selectedAliasScope else { NSSound.beep(); return }
         do {
             var moved: [Int] = []
             try library.mutate {
@@ -1825,16 +2171,13 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
                 )
             }
             status.stringValue = "Post count saved."
-            reloadAliasOutline(selecting: aliasSelectionKey(
-                scope: selectedAliasScope,
-                aliasPath: selectedAliasPath,
-                aliasIdentity: selectedAliasIdentity
-            ))
+            loadAliasScopeSettings(selectedAliasScope)
+            updateScopeBaseline(afterCount: aliasAfterCount.stringValue)
         } catch { present(error) }
     }
 
     @objc private func importAliases(_ sender: Any?) {
-        guard kind == .aliases else { return }
+        guard kind == .aliases, resolvePendingFormChanges() else { return }
         let targetScope = selectedAliasScope ?? scope
         let parentPath = selectedAliasPath ?? []
         let panel = NSOpenPanel()
@@ -1847,7 +2190,7 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
     }
 
     @objc private func importMacros(_ sender: Any?) {
-        guard kind == .macros else { return }
+        guard kind == .macros, resolvePendingFormChanges() else { return }
         stageMacroFormIfNeeded()
         let targetScope = macroDestinationScope ?? selectedMacroScope ?? macroEditingScope
         let parentPath = macroDestinationParentPath
@@ -1864,7 +2207,7 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
     }
 
     @objc private func exportMacros(_ sender: Any?) {
-        guard kind == .macros else { return }
+        guard kind == .macros, resolvePendingFormChanges() else { return }
         stageMacroFormIfNeeded()
         let targetScope = selectedMacroScope ?? macroEditingScope
         let targetPath = selectedMacroPath
@@ -1886,7 +2229,7 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
     }
 
     @objc private func exportAliases(_ sender: Any?) {
-        guard kind == .aliases else { return }
+        guard kind == .aliases, resolvePendingFormChanges() else { return }
         let targetScope = selectedAliasScope ?? scope
         let targetPath = selectedAliasPath
         let panel = NSSavePanel()
@@ -1917,11 +2260,8 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
                 )
             }
             status.stringValue = "Scope settings saved."
-            reloadTriggerOutline(selecting: triggerSelectionKey(
-                scope: selectedTriggerScope,
-                triggerPath: selectedTriggerPath,
-                triggerIdentity: selectedTriggerIdentity
-            ))
+            loadTriggerScopeSettings(selectedTriggerScope)
+            updateScopeBaseline(afterCount: triggerScopeAfterCount.stringValue)
         } catch { present(error) }
     }
 
@@ -2438,6 +2778,20 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
         macroShift.state = macroShift.state == .mixed ? .off : macroShift.state
     }
 
+    private func macroFormSnapshot() -> FormSnapshot {
+        FormSnapshot(values: [
+            "macroActive": String(macroActive.state.rawValue),
+            "macroDescription": descriptionField.stringValue,
+            "macroFolder": String(macroFolder.state.rawValue),
+            "macroText": macroTextView.string,
+            "macroKey": macroKeyCanonical,
+            "macroTypeIntoInput": String(macroTypeIntoInput.state.rawValue),
+            "macroControl": String(macroControl.state.rawValue),
+            "macroAlt": String(macroAlt.state.rawValue),
+            "macroShift": String(macroShift.state.rawValue),
+        ])
+    }
+
     private func macroFormValue(preserving existing: KeyboardMacro) -> KeyboardMacro {
         let oldComponents = KeyboardMacroKey.parse(existing.key)
         let parsedKey = KeyboardMacroKey.parse(macroKeyCanonical)
@@ -2463,9 +2817,8 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
         return updated
     }
 
-    /// Detail controls are intentionally staged as the user navigates the
-    /// tree. This keeps a tree action from discarding a form edit while still
-    /// keeping the live workspace untouched until Apply/OK.
+    /// Structural macro operations use the existing staged workspace. Form
+    /// navigation is resolved by the prompt flow before this helper is used.
     private func stageMacroFormIfNeeded() {
         guard kind == .macros,
               !macroSampleSelected,
@@ -2499,7 +2852,7 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
         }
     }
 
-    private func applyMacroChanges() -> Bool {
+    private func applyMacroChanges(reloadAfter: Bool) -> Bool {
         guard kind == .macros else { return false }
         guard let selectedMacroScope else { NSSound.beep(); return false }
         do {
@@ -2520,11 +2873,15 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
             stagedMacroWorkspace = library.workspace
             macroExpectedRevision = library.workspaceRevision
             status.stringValue = "Applied and saved."
-            reloadMacroOutline(selecting: macroSelectionKey(
-                scope: selectedMacroScope,
-                path: selectedMacroPath,
-                identity: selectedMacroPath.flatMap { macroWorkspace.macro(at: $0, in: selectedMacroScope) }.map(MacroSelectionIdentity.init)
-            ))
+            if reloadAfter {
+                reloadMacroOutline(selecting: macroSelectionKey(
+                    scope: selectedMacroScope,
+                    path: selectedMacroPath,
+                    identity: selectedMacroPath.flatMap { macroWorkspace.macro(at: $0, in: selectedMacroScope) }.map(MacroSelectionIdentity.init)
+                ))
+            } else {
+                discardVisibleChanges()
+            }
             return true
         } catch let error as ProfileLibrary.WorkspaceCommitError {
             let alert = NSAlert()
@@ -2546,8 +2903,9 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
     }
 
     @objc private func acceptMacroEditor(_ sender: Any?) {
-        guard applyMacroChanges() else { return }
+        guard applyMacroChanges(reloadAfter: true) else { return }
         macroDidClose = true
+        bypassClosePrompt = true
         window?.close()
     }
 
@@ -2555,6 +2913,7 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
         guard kind == .macros else { return }
         stagedMacroWorkspace = nil
         macroDidClose = true
+        bypassClosePrompt = true
         window?.close()
     }
 
@@ -2563,6 +2922,7 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
         into scope: LegacyConfigurationWorkspace.AutomationScope,
         parentPath: [Int]
     ) {
+        guard resolvePendingFormChanges() else { return }
         do {
             let source = try String(contentsOf: url, encoding: .utf8)
             let imported = try LegacyConfigurationDocument(source: source)
@@ -2592,6 +2952,8 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
     }
 
     private func reloadAliasOutline(selecting selection: AliasSelectionKey?) {
+        isReloadingOutline = true
+        defer { isReloadingOutline = false }
         aliasOutlineNodes = makeAliasOutlineNodes()
         aliasSampleNodes = makeAliasSampleNodes()
         triggerOutline.reloadData()
@@ -2745,6 +3107,8 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
     }
 
     private func reloadTriggerOutline(selecting selection: TriggerSelectionKey?) {
+        isReloadingOutline = true
+        defer { isReloadingOutline = false }
         triggerOutlineNodes = makeTriggerOutlineNodes()
         triggerSampleNodes = makeTriggerSampleNodes()
         triggerOutline.reloadData()
@@ -2984,6 +3348,7 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
     }
 
     private func performTriggerImport(from url: URL, into scope: LegacyConfigurationWorkspace.AutomationScope) {
+        guard resolvePendingFormChanges() else { return }
         do {
             let source = try String(contentsOf: url, encoding: .utf8)
             let imported = try LegacyConfigurationWorkspace(document: .init(source: source))
@@ -3010,6 +3375,7 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
         into scope: LegacyConfigurationWorkspace.AutomationScope,
         parentPath: [Int]
     ) {
+        guard resolvePendingFormChanges() else { return }
         do {
             let source = try String(contentsOf: url, encoding: .utf8)
             let imported = try LegacyConfigurationWorkspace(document: .init(source: source))

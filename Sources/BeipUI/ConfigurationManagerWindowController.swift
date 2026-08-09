@@ -21,7 +21,7 @@ private final class TabbableFormTextView: NSTextView {
 }
 
 @MainActor
-final class ConfigurationManagerWindowController: NSWindowController, NSOutlineViewDataSource, NSOutlineViewDelegate {
+final class ConfigurationManagerWindowController: NSWindowController, NSOutlineViewDataSource, NSOutlineViewDelegate, NSWindowDelegate {
     private enum Selection: Equatable {
         case server(UUID)
         case character(server: UUID, character: UUID)
@@ -61,6 +61,15 @@ final class ConfigurationManagerWindowController: NSWindowController, NSOutlineV
     private var libraryObserverID: UUID?
     private let onConnectProfile: ((ServerProfile, CharacterProfile?) -> Void)?
     private let onShowStatistics: (() -> Void)?
+    private let promptDecisionProvider: SettingsPromptDecisionProvider?
+
+    private struct FormSnapshot: Equatable {
+        var values: [String: String]
+    }
+
+    private var formBaseline: FormSnapshot?
+    private var restoringSelection = false
+    private var bypassClosePrompt = false
 
     private var nameField: NSTextField?
     private var hostField: NSTextField?
@@ -87,11 +96,13 @@ final class ConfigurationManagerWindowController: NSWindowController, NSOutlineV
     init(
         library: ProfileLibrary,
         onConnectProfile: ((ServerProfile, CharacterProfile?) -> Void)? = nil,
-        onShowStatistics: (() -> Void)? = nil
+        onShowStatistics: (() -> Void)? = nil,
+        promptDecisionProvider: SettingsPromptDecisionProvider? = nil
     ) {
         self.library = library
         self.onConnectProfile = onConnectProfile
         self.onShowStatistics = onShowStatistics
+        self.promptDecisionProvider = promptDecisionProvider
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 768, height: 654),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -103,12 +114,27 @@ final class ConfigurationManagerWindowController: NSWindowController, NSOutlineV
         window.setAccessibilityIdentifier("configurationManager")
         window.titlebarSeparatorStyle = .line
         super.init(window: window)
+        window.delegate = self
         RuntimeStateContext.setFrameAutosaveName("BeipMUWorlds", for: window)
         window.center()
         configureUI(in: window)
         loadSampleWorlds()
         libraryObserverID = library.addChangeObserver { [weak self] in self?.reload() }
         reload()
+    }
+
+    convenience init(
+        library: ProfileLibrary,
+        onConnectProfile: ((ServerProfile, CharacterProfile?) -> Void)? = nil,
+        onShowStatistics: (() -> Void)? = nil,
+        promptDecisionProvider: @escaping @MainActor () -> SettingsPromptDecision
+    ) {
+        self.init(
+            library: library,
+            onConnectProfile: onConnectProfile,
+            onShowStatistics: onShowStatistics,
+            promptDecisionProvider: { _ in promptDecisionProvider() }
+        )
     }
 
     required init?(coder: NSCoder) { nil }
@@ -403,6 +429,92 @@ final class ConfigurationManagerWindowController: NSWindowController, NSOutlineV
         window?.title = dirty.isEmpty ? "Worlds" : "Worlds & Characters\(dirty)"
     }
 
+    private func currentFormSnapshot() -> FormSnapshot {
+        var values: [String: String] = [:]
+        func add(_ identifier: String, _ value: String?) {
+            if let value { values[identifier] = value }
+        }
+        add("worldName", nameField?.stringValue)
+        add("worldHost", hostField?.stringValue)
+        add("worldPort", portField?.stringValue)
+        add("worldInfo", serverInfoField?.string)
+        add("worldCharacterExpiration", expirationField?.stringValue)
+        add("worldEncoding", encodingPopup?.titleOfSelectedItem)
+        add("worldWebViewPolicy", webViewPolicyPopup?.titleOfSelectedItem)
+        add("characterName", nameField?.stringValue)
+        add("characterPassword", passwordField?.stringValue)
+        add("characterConnectText", connectField?.string)
+        add("characterInfo", characterInfoField?.string)
+        add("characterIdleMinutes", idleMinutesField?.stringValue)
+        add("characterIdleText", idleTextField?.stringValue)
+        add("characterLogFilename", characterLogFilenameField?.stringValue)
+        add("puppetName", nameField?.stringValue)
+        add("puppetReceivePrefix", receivePrefixField?.stringValue)
+        add("puppetSendPrefix", sendPrefixField?.stringValue)
+        add("puppetLogFilename", puppetLogFilenameField?.stringValue)
+        add("puppetCharacterLogPrefix", puppetCharacterLogPrefixField?.stringValue)
+        for key in checks.keys.sorted() {
+            values["check.\(key)"] = checks[key]?.state == .on ? "on" : "off"
+        }
+        return FormSnapshot(values: values)
+    }
+
+    private func endActiveEditing() {
+        _ = window?.endEditing(for: nil)
+    }
+
+    private func hasPendingFormChanges() -> Bool {
+        endActiveEditing()
+        guard let formBaseline else { return false }
+        return formBaseline != currentFormSnapshot()
+    }
+
+    private func promptDecision() -> SettingsPromptDecision {
+        if let promptDecisionProvider {
+            return promptDecisionProvider("Worlds")
+        }
+        return SettingsPromptPresenter.present(window: window, editorTitle: "Worlds")
+    }
+
+    @discardableResult
+    private func resolvePendingFormChanges() -> Bool {
+        guard hasPendingFormChanges() else { return true }
+        switch promptDecision() {
+        case .save:
+            do {
+                try applyCurrentSelection()
+                return true
+            } catch {
+                present(error)
+                return false
+            }
+        case .dontSave:
+            rebuildDetails()
+            return true
+        case .cancel:
+            return false
+        }
+    }
+
+    private func restoreOutlineSelection() {
+        restoringSelection = true
+        defer { restoringSelection = false }
+        if activeList == .saved, let selection, let node = node(for: selection, in: profileNodes) {
+            samplesTable.deselectAll(nil)
+            table.selectRowIndexes(.init(integer: table.row(forItem: node)), byExtendingSelection: false)
+        } else if activeList == .samples, let sampleSelection,
+                  let node = node(for: sampleSelection, in: sampleNodes) {
+            table.deselectAll(nil)
+            samplesTable.selectRowIndexes(.init(integer: samplesTable.row(forItem: node)), byExtendingSelection: false)
+        } else if activeList == .saved {
+            samplesTable.deselectAll(nil)
+            table.deselectAll(nil)
+        } else {
+            table.deselectAll(nil)
+            samplesTable.deselectAll(nil)
+        }
+    }
+
     private func node(for selection: Selection, in nodes: [ProfileNode]) -> ProfileNode? {
         for node in nodes {
             if node.selection == selection { return node }
@@ -457,15 +569,37 @@ final class ConfigurationManagerWindowController: NSWindowController, NSOutlineV
     }
 
     func outlineViewSelectionDidChange(_ notification: Notification) {
+        guard !restoringSelection else { return }
         guard let outlineView = notification.object as? NSOutlineView,
               let node = outlineView.item(atRow: outlineView.selectedRow) as? ProfileNode else { return }
         if outlineView === table {
+            let changed = activeList != .saved || selection != node.selection
+            if changed, !resolvePendingFormChanges() {
+                restoreOutlineSelection()
+                return
+            }
+            if !changed { return }
             activeList = .saved
             selection = node.selection
             rebuildDetails()
+            if let refreshed = self.node(for: node.selection, in: profileNodes) {
+                restoringSelection = true
+                table.selectRowIndexes(.init(integer: table.row(forItem: refreshed)), byExtendingSelection: false)
+                restoringSelection = false
+            }
         } else {
+            let changed = activeList != .samples || sampleSelection != node.selection
+            if changed, !resolvePendingFormChanges() {
+                restoreOutlineSelection()
+                return
+            }
+            if !changed { return }
             activeList = .samples
             sampleSelection = node.selection
+            // Samples do not have editable stored values, but selecting one
+            // still leaves the current detail form visible for Copy/Connect.
+            // Rebuilding it establishes a fresh baseline after a discard.
+            rebuildDetails()
         }
         deleteButton?.isEnabled = activeList == .saved && selection != nil
     }
@@ -485,6 +619,7 @@ final class ConfigurationManagerWindowController: NSWindowController, NSOutlineV
         }
         clearControls()
         guard let selection else {
+            formBaseline = nil
             let empty = NSTextField(labelWithString: "Select a world or character to edit it.")
             empty.textColor = .secondaryLabelColor
             detailStack.addArrangedSubview(empty)
@@ -502,6 +637,7 @@ final class ConfigurationManagerWindowController: NSWindowController, NSOutlineV
         detailStack.addArrangedSubview(detailSpacer)
         resetDetailScrollPosition()
         refreshKeyViewLoop()
+        formBaseline = currentFormSnapshot()
     }
 
     private func resetDetailScrollPosition() {
@@ -885,6 +1021,7 @@ final class ConfigurationManagerWindowController: NSWindowController, NSOutlineV
     }
 
     @objc private func addWorld(_ sender: Any?) {
+        guard resolvePendingFormChanges() else { return }
         do {
             var newID: UUID!
             try library.mutate { newID = $0.addServer() }
@@ -893,6 +1030,7 @@ final class ConfigurationManagerWindowController: NSWindowController, NSOutlineV
     }
 
     @objc private func addCharacter(_ sender: Any?) {
+        guard resolvePendingFormChanges() else { return }
         guard let serverID = selectedServerID else { NSSound.beep(); return }
         do {
             var newID: UUID!
@@ -902,6 +1040,7 @@ final class ConfigurationManagerWindowController: NSWindowController, NSOutlineV
     }
 
     @objc private func addPuppet(_ sender: Any?) {
+        guard resolvePendingFormChanges() else { return }
         guard let ids = selectedCharacterIDs else { NSSound.beep(); return }
         do {
             var newID: UUID!
@@ -913,6 +1052,7 @@ final class ConfigurationManagerWindowController: NSWindowController, NSOutlineV
     }
 
     @objc private func deleteSelection(_ sender: Any?) {
+        guard resolvePendingFormChanges() else { return }
         guard let selection, activeList == .saved else { return }
         let alert = NSAlert()
         alert.messageText = "Delete this entry?"
@@ -952,6 +1092,7 @@ final class ConfigurationManagerWindowController: NSWindowController, NSOutlineV
     }
 
     @objc private func copySelection(_ sender: Any?) {
+        guard resolvePendingFormChanges() else { return }
         do {
             if activeList == .samples, let sampleSelection,
                let source = sampleServer(for: sampleSelection) {
@@ -1094,6 +1235,7 @@ final class ConfigurationManagerWindowController: NSWindowController, NSOutlineV
     }
 
     @objc private func importConfiguration(_ sender: Any?) {
+        guard resolvePendingFormChanges() else { return }
         let panel = NSOpenPanel()
         panel.title = "Import World Configuration"
         panel.allowedContentTypes = [.plainText]
@@ -1118,6 +1260,7 @@ final class ConfigurationManagerWindowController: NSWindowController, NSOutlineV
     @objc private func closeManager(_ sender: Any?) {
         do {
             try applyCurrentSelection()
+            bypassClosePrompt = true
             close()
         } catch { present(error) }
     }
@@ -1128,6 +1271,7 @@ final class ConfigurationManagerWindowController: NSWindowController, NSOutlineV
     }
 
     @objc private func cancelManager(_ sender: Any?) {
+        bypassClosePrompt = true
         close()
     }
 
@@ -1192,6 +1336,31 @@ final class ConfigurationManagerWindowController: NSWindowController, NSOutlineV
                     value.characterLogPrefix = puppetCharacterLogPrefixField?.stringValue ?? ""
                 }
             }
+        }
+        // Re-read the stored values so normalized inputs (for example a
+        // negative duration clamped to zero) become the new clean baseline.
+        rebuildDetails()
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if bypassClosePrompt {
+            bypassClosePrompt = false
+            return true
+        }
+        guard hasPendingFormChanges() else { return true }
+        switch promptDecision() {
+        case .save:
+            do {
+                try applyCurrentSelection()
+                return true
+            } catch {
+                present(error)
+                return false
+            }
+        case .dontSave:
+            return true
+        case .cancel:
+            return false
         }
     }
 

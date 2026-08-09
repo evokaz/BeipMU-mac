@@ -324,6 +324,91 @@ final class ConfigurationManagerWindowControllerTests: XCTestCase {
         XCTAssertTrue(isFirstResponder(connect, in: window))
     }
 
+    func testSelectionPromptSavePersistsWorldBeforeSwitching() throws {
+        var workspace = try LegacyConfigurationWorkspace.empty(isDirty: false)
+        _ = workspace.addServer(named: "First")
+        _ = workspace.addServer(named: "Second")
+        let library = ProfileLibrary(workspace: workspace)
+        var decisions: [SettingsPromptDecision] = [.save]
+        let controller = ConfigurationManagerWindowController(
+            library: library,
+            promptDecisionProvider: { _ in decisions.removeFirst() }
+        )
+        defer { controller.close() }
+
+        let content = try XCTUnwrap(controller.window?.contentView)
+        let table = try XCTUnwrap(
+            recursiveSubviews(of: content)
+                .compactMap { $0 as? NSOutlineView }
+                .first { $0.accessibilityIdentifier() == "configurationProfileList" }
+        )
+        let name = try XCTUnwrap(
+            recursiveSubviews(of: content)
+                .compactMap { $0 as? NSTextField }
+                .first { $0.accessibilityIdentifier() == "worldName" }
+        )
+        name.stringValue = "Edited First"
+        table.selectRowIndexes(.init(integer: 1), byExtendingSelection: false)
+        controller.tableViewSelectionDidChange(Notification(name: NSTableView.selectionDidChangeNotification))
+
+        XCTAssertEqual(library.workspace.servers.first?.profile.name, "Edited First")
+        XCTAssertEqual(table.selectedRow, 1)
+    }
+
+    func testSelectionPromptCancelRestoresWorldSelectionAndValues() throws {
+        var workspace = try LegacyConfigurationWorkspace.empty(isDirty: false)
+        _ = workspace.addServer(named: "First")
+        _ = workspace.addServer(named: "Second")
+        let library = ProfileLibrary(workspace: workspace)
+        var decisions: [SettingsPromptDecision] = [.cancel]
+        let controller = ConfigurationManagerWindowController(
+            library: library,
+            promptDecisionProvider: { _ in decisions.removeFirst() }
+        )
+        defer { controller.close() }
+
+        let content = try XCTUnwrap(controller.window?.contentView)
+        let table = try XCTUnwrap(
+            recursiveSubviews(of: content)
+                .compactMap { $0 as? NSOutlineView }
+                .first { $0.accessibilityIdentifier() == "configurationProfileList" }
+        )
+        let name = try XCTUnwrap(
+            recursiveSubviews(of: content)
+                .compactMap { $0 as? NSTextField }
+                .first { $0.accessibilityIdentifier() == "worldName" }
+        )
+        name.stringValue = "Edited First"
+        table.selectRowIndexes(.init(integer: 1), byExtendingSelection: false)
+        controller.tableViewSelectionDidChange(Notification(name: NSTableView.selectionDidChangeNotification))
+
+        XCTAssertEqual(table.selectedRow, 0)
+        XCTAssertEqual(name.stringValue, "Edited First")
+        XCTAssertEqual(library.workspace.servers.first?.profile.name, "First")
+    }
+
+    func testWindowClosePromptDontSaveLeavesWorldUnchanged() throws {
+        var workspace = try LegacyConfigurationWorkspace.empty(isDirty: false)
+        _ = workspace.addServer(named: "First")
+        let library = ProfileLibrary(workspace: workspace)
+        var decisions: [SettingsPromptDecision] = [.dontSave]
+        let controller = ConfigurationManagerWindowController(
+            library: library,
+            promptDecisionProvider: { _ in decisions.removeFirst() }
+        )
+        defer { controller.close() }
+
+        let name = try XCTUnwrap(
+            recursiveSubviews(of: controller.window?.contentView)
+                .compactMap { $0 as? NSTextField }
+                .first { $0.accessibilityIdentifier() == "worldName" }
+        )
+        name.stringValue = "Edited First"
+
+        XCTAssertTrue(controller.windowShouldClose(try XCTUnwrap(controller.window)))
+        XCTAssertEqual(library.workspace.servers.first?.profile.name, "First")
+    }
+
     private func isFirstResponder(_ view: NSView, in window: NSWindow) -> Bool {
         if window.firstResponder === view { return true }
         guard let editor = window.firstResponder as? NSTextView else { return false }
