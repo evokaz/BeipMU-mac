@@ -4,42 +4,54 @@ import AppKit
 /// native BeipMU menu-bar item.
 @MainActor
 enum ApplicationMenuBuilder {
-    static func makeMenu() -> NSMenu {
+    static func makeMenu(
+        shortcuts: [ShortcutAction: KeyboardShortcut] = KeyboardShortcutStore.load(),
+        registerShortcutItem: ((ShortcutAction, NSMenuItem) -> Void)? = nil
+    ) -> NSMenu {
         let menu = NSMenu(title: "BeipMU")
         menu.autoenablesItems = false
-        addWindowsSubmenu(to: menu)
-        addToolsSubmenu(to: menu)
-        addSettingsItems(to: menu)
+        addWindowsSubmenu(to: menu, shortcuts: shortcuts, registerShortcutItem: registerShortcutItem)
+        addToolsSubmenu(to: menu, shortcuts: shortcuts, registerShortcutItem: registerShortcutItem)
+        addSettingsItems(to: menu, shortcuts: shortcuts, registerShortcutItem: registerShortcutItem)
         addHelpSubmenu(to: menu)
         addQuitItem(to: menu)
         return menu
     }
 
-    static func makeToolsMenu() -> NSMenu {
+    static func makeToolsMenu(
+        shortcuts: [ShortcutAction: KeyboardShortcut] = KeyboardShortcutStore.load(),
+        registerShortcutItem: ((ShortcutAction, NSMenuItem) -> Void)? = nil
+    ) -> NSMenu {
         let menu = NSMenu(title: "Tools")
         menu.autoenablesItems = false
-        addToolsItems(to: menu)
+        addToolsItems(to: menu, shortcuts: shortcuts, registerShortcutItem: registerShortcutItem)
         return menu
     }
 
     static func addWindowItems(
         to menu: NSMenu,
         includeCreationItems: Bool = true,
-        includeInputHistory: Bool = true
+        includeInputHistory: Bool = true,
+        shortcuts: [ShortcutAction: KeyboardShortcut] = KeyboardShortcutStore.load(),
+        registerShortcutItem: ((ShortcutAction, NSMenuItem) -> Void)? = nil
     ) {
         if includeCreationItems {
-            menu.addItem(applicationMenuItem(
+            addShortcutItem(
+                to: menu,
                 title: "New Tab",
                 action: #selector(ApplicationDelegate.newTab(_:)),
-                keyEquivalent: "t",
-                modifiers: [.control]
-            ))
-            menu.addItem(applicationMenuItem(
+                shortcutAction: .newTab,
+                shortcuts: shortcuts,
+                registerShortcutItem: registerShortcutItem
+            )
+            addShortcutItem(
+                to: menu,
                 title: "New Window",
                 action: #selector(ApplicationDelegate.newWindow(_:)),
-                keyEquivalent: "n",
-                modifiers: [.control]
-            ))
+                shortcutAction: .newWindow,
+                shortcuts: shortcuts,
+                registerShortcutItem: registerShortcutItem
+            )
             menu.addItem(applicationMenuItem(
                 title: "New Input Window",
                 action: #selector(ApplicationDelegate.newInputWindow(_:))
@@ -51,12 +63,14 @@ enum ApplicationMenuBuilder {
             menu.addItem(.separator())
         }
         if includeInputHistory {
-            menu.addItem(applicationMenuItem(
+            addShortcutItem(
+                to: menu,
                 title: "Toggle Input History",
                 action: #selector(ApplicationDelegate.toggleInputHistoryWindow(_:)),
-                keyEquivalent: "h",
-                modifiers: [.control]
-            ))
+                shortcutAction: .toggleInputHistory,
+                shortcuts: shortcuts,
+                registerShortcutItem: registerShortcutItem
+            )
         }
         menu.addItem(applicationMenuItem(
             title: "Toggle Image Window",
@@ -86,37 +100,63 @@ enum ApplicationMenuBuilder {
         ))
     }
 
-    private static func addWindowsSubmenu(to menu: NSMenu) {
+    private static func addWindowsSubmenu(
+        to menu: NSMenu,
+        shortcuts: [ShortcutAction: KeyboardShortcut],
+        registerShortcutItem: ((ShortcutAction, NSMenuItem) -> Void)?
+    ) {
         let windowsMenu = NSMenu(title: "Windows")
-        addWindowItems(to: windowsMenu)
+        addWindowItems(
+            to: windowsMenu,
+            shortcuts: shortcuts,
+            registerShortcutItem: registerShortcutItem
+        )
         menu.addItem(submenuItem(title: "Windows", menu: windowsMenu))
     }
 
-    private static func addToolsSubmenu(to menu: NSMenu) {
+    private static func addToolsSubmenu(
+        to menu: NSMenu,
+        shortcuts: [ShortcutAction: KeyboardShortcut],
+        registerShortcutItem: ((ShortcutAction, NSMenuItem) -> Void)?
+    ) {
         let toolsMenu = NSMenu(title: "Tools")
-        addToolsItems(to: toolsMenu)
+        addToolsItems(
+            to: toolsMenu,
+            shortcuts: shortcuts,
+            registerShortcutItem: registerShortcutItem
+        )
         menu.addItem(submenuItem(title: "Tools", menu: toolsMenu))
     }
 
-    private static func addToolsItems(to menu: NSMenu) {
-        menu.addItem(applicationMenuItem(
+    private static func addToolsItems(
+        to menu: NSMenu,
+        shortcuts: [ShortcutAction: KeyboardShortcut],
+        registerShortcutItem: ((ShortcutAction, NSMenuItem) -> Void)?
+    ) {
+        addShortcutItem(
+            to: menu,
             title: "Triggers…",
             action: #selector(ApplicationDelegate.editTriggers(_:)),
-            keyEquivalent: "t",
-            modifiers: [.control, .shift]
-        ))
-        menu.addItem(applicationMenuItem(
+            shortcutAction: .triggers,
+            shortcuts: shortcuts,
+            registerShortcutItem: registerShortcutItem
+        )
+        addShortcutItem(
+            to: menu,
             title: "Macros…",
             action: #selector(ApplicationDelegate.editMacros(_:)),
-            keyEquivalent: "m",
-            modifiers: [.control, .shift]
-        ))
-        menu.addItem(applicationMenuItem(
+            shortcutAction: .macros,
+            shortcuts: shortcuts,
+            registerShortcutItem: registerShortcutItem
+        )
+        addShortcutItem(
+            to: menu,
             title: "Aliases…",
             action: #selector(ApplicationDelegate.editAliases(_:)),
-            keyEquivalent: "a",
-            modifiers: [.control, .shift]
-        ))
+            shortcutAction: .aliases,
+            shortcuts: shortcuts,
+            registerShortcutItem: registerShortcutItem
+        )
         menu.addItem(.separator())
         menu.addItem(applicationMenuItem(
             title: "Trigger Debugger",
@@ -130,25 +170,33 @@ enum ApplicationMenuBuilder {
             title: "Network Debugger",
             action: #selector(ApplicationDelegate.debugNetwork(_:))
         ))
-        menu.addItem(applicationMenuItem(
+        addShortcutItem(
+            to: menu,
             title: "Smart Paste…",
             action: #selector(ApplicationDelegate.smartPaste(_:)),
-            keyEquivalent: "v",
-            modifiers: [.control, .shift]
-        ))
+            shortcutAction: .smartPaste,
+            shortcuts: shortcuts,
+            registerShortcutItem: registerShortcutItem
+        )
     }
 
-    private static func addSettingsItems(to menu: NSMenu) {
-        menu.addItem(applicationMenuItem(
+    private static func addSettingsItems(
+        to menu: NSMenu,
+        shortcuts: [ShortcutAction: KeyboardShortcut],
+        registerShortcutItem: ((ShortcutAction, NSMenuItem) -> Void)?
+    ) {
+        addShortcutItem(
+            to: menu,
             title: "Logging…",
             action: #selector(ApplicationDelegate.logging(_:)),
-            keyEquivalent: "l",
-            modifiers: [.control]
-        ))
+            shortcutAction: .logging,
+            shortcuts: shortcuts,
+            registerShortcutItem: registerShortcutItem
+        )
         menu.addItem(applicationMenuItem(
             title: "Settings…",
             action: #selector(ApplicationDelegate.settings(_:)),
-            keyEquivalent: ","
+            shortcut: FixedShortcut.settings
         ))
         menu.addItem(applicationMenuItem(
             title: "Global Output Settings…",
@@ -165,7 +213,7 @@ enum ApplicationMenuBuilder {
         helpMenu.addItem(applicationMenuItem(
             title: "BeipMU Help",
             action: #selector(ApplicationDelegate.showHelp(_:)),
-            keyEquivalent: "?"
+            shortcut: FixedShortcut.help
         ))
         menu.addItem(submenuItem(title: "Help", menu: helpMenu))
     }
@@ -175,8 +223,9 @@ enum ApplicationMenuBuilder {
         let quit = NSMenuItem(
             title: "Close all Windows and Exit",
             action: #selector(NSApplication.terminate(_:)),
-            keyEquivalent: "q"
+            keyEquivalent: FixedShortcut.quit.keyEquivalent
         )
+        quit.keyEquivalentModifierMask = FixedShortcut.quit.modifiers
         quit.target = NSApplication.shared
         quit.isEnabled = true
         menu.addItem(quit)
@@ -192,13 +241,35 @@ enum ApplicationMenuBuilder {
     private static func applicationMenuItem(
         title: String,
         action: Selector,
-        keyEquivalent: String = "",
-        modifiers: NSEvent.ModifierFlags = []
+        shortcut: KeyboardShortcut? = nil
     ) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: action, keyEquivalent: keyEquivalent)
-        item.keyEquivalentModifierMask = modifiers
+        let item = NSMenuItem(
+            title: title,
+            action: action,
+            keyEquivalent: shortcut?.keyEquivalent ?? ""
+        )
+        if let shortcut {
+            item.keyEquivalentModifierMask = shortcut.modifiers
+        }
         item.target = NSApplication.shared.delegate
         item.isEnabled = NSApplication.shared.delegate != nil
         return item
+    }
+
+    private static func addShortcutItem(
+        to menu: NSMenu,
+        title: String,
+        action: Selector,
+        shortcutAction: ShortcutAction,
+        shortcuts: [ShortcutAction: KeyboardShortcut],
+        registerShortcutItem: ((ShortcutAction, NSMenuItem) -> Void)?
+    ) {
+        let item = applicationMenuItem(
+            title: title,
+            action: action,
+            shortcut: shortcuts[shortcutAction] ?? shortcutAction.defaultShortcut
+        )
+        menu.addItem(item)
+        registerShortcutItem?(shortcutAction, item)
     }
 }

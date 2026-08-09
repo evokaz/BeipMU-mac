@@ -420,10 +420,25 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
             ]
         )
         XCTAssertNotNil(menu.item(withTitle: "Help")?.submenu)
+        XCTAssertEqual(menu.item(withTitle: "Settings…")?.keyEquivalent, FixedShortcut.settings.keyEquivalent)
+        XCTAssertEqual(menu.item(withTitle: "Settings…")?.keyEquivalentModifierMask, FixedShortcut.settings.modifiers)
+        XCTAssertEqual(
+            menu.item(withTitle: "Help")?.submenu?.item(withTitle: "BeipMU Help")?.keyEquivalent,
+            FixedShortcut.help.keyEquivalent
+        )
+        XCTAssertEqual(
+            menu.item(withTitle: "Help")?.submenu?.item(withTitle: "BeipMU Help")?.keyEquivalentModifierMask,
+            FixedShortcut.help.modifiers
+        )
+        XCTAssertEqual(menu.item(withTitle: "Close all Windows and Exit")?.keyEquivalent, FixedShortcut.quit.keyEquivalent)
+        XCTAssertEqual(
+            menu.item(withTitle: "Close all Windows and Exit")?.keyEquivalentModifierMask,
+            FixedShortcut.quit.modifiers
+        )
         XCTAssertEqual(menu.item(withTitle: "Logging…")?.keyEquivalent, "l")
         XCTAssertEqual(
             menu.item(withTitle: "Logging…")?.keyEquivalentModifierMask,
-            [.control]
+            [.command]
         )
         XCTAssertEqual(
             menu.item(withTitle: "Global Output Settings…")?.action,
@@ -471,8 +486,8 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
         XCTAssertEqual(windowsMenu.item(withTitle: "New Tab")?.keyEquivalent, "t")
         XCTAssertEqual(windowsMenu.item(withTitle: "New Window")?.keyEquivalent, "n")
         XCTAssertEqual(windowsMenu.item(withTitle: "Toggle Input History")?.keyEquivalent, "h")
-        XCTAssertEqual(windowsMenu.item(withTitle: "New Tab")?.keyEquivalentModifierMask, [.control])
-        XCTAssertEqual(windowsMenu.item(withTitle: "New Window")?.keyEquivalentModifierMask, [.control])
+        XCTAssertEqual(windowsMenu.item(withTitle: "New Tab")?.keyEquivalentModifierMask, [.command])
+        XCTAssertEqual(windowsMenu.item(withTitle: "New Window")?.keyEquivalentModifierMask, [.command])
         XCTAssertEqual(windowsMenu.item(withTitle: "Toggle Input History")?.keyEquivalentModifierMask, [.control])
 
         let toolsMenu = try XCTUnwrap(menu.item(withTitle: "Tools")?.submenu)
@@ -503,6 +518,34 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
         XCTAssertEqual(toolsMenu.item(withTitle: "Macros…")?.keyEquivalentModifierMask, [.control, .shift])
         XCTAssertEqual(toolsMenu.item(withTitle: "Aliases…")?.keyEquivalentModifierMask, [.control, .shift])
         XCTAssertEqual(toolsMenu.item(withTitle: "Smart Paste…")?.keyEquivalentModifierMask, [.control, .shift])
+    }
+
+    @MainActor
+    func testApplicationButtonMenuUsesPersistedShortcutMapWhenOpened() throws {
+        let library = ProfileLibrary(workspace: try .empty(isDirty: false))
+        try library.saveKeyEquivalents(KeyboardShortcutStore.serialized([
+            .newTab: .init(keyEquivalent: "1", modifiers: [.option]),
+            .newWindow: .init(keyEquivalent: "2", modifiers: [.option]),
+            .toggleInputHistory: .init(keyEquivalent: "3", modifiers: [.option]),
+            .logging: .init(keyEquivalent: "4", modifiers: [.option]),
+            .triggers: .init(keyEquivalent: "5", modifiers: [.option]),
+        ]))
+        let controller = ClientWindowController(profileLibrary: library)
+        defer { controller.close() }
+
+        let menu = controller.tabBarApplicationMenuForTesting
+        let windowsMenu = try XCTUnwrap(menu.item(withTitle: "Windows")?.submenu)
+        XCTAssertEqual(windowsMenu.item(withTitle: "New Tab")?.keyEquivalent, "1")
+        XCTAssertEqual(windowsMenu.item(withTitle: "New Tab")?.keyEquivalentModifierMask, [.option])
+        XCTAssertEqual(windowsMenu.item(withTitle: "New Window")?.keyEquivalent, "2")
+        XCTAssertEqual(windowsMenu.item(withTitle: "New Window")?.keyEquivalentModifierMask, [.option])
+        XCTAssertEqual(windowsMenu.item(withTitle: "Toggle Input History")?.keyEquivalent, "3")
+        XCTAssertEqual(windowsMenu.item(withTitle: "Toggle Input History")?.keyEquivalentModifierMask, [.option])
+        XCTAssertEqual(menu.item(withTitle: "Logging…")?.keyEquivalent, "4")
+        XCTAssertEqual(menu.item(withTitle: "Logging…")?.keyEquivalentModifierMask, [.option])
+        let toolsMenu = try XCTUnwrap(menu.item(withTitle: "Tools")?.submenu)
+        XCTAssertEqual(toolsMenu.item(withTitle: "Triggers…")?.keyEquivalent, "5")
+        XCTAssertEqual(toolsMenu.item(withTitle: "Triggers…")?.keyEquivalentModifierMask, [.option])
     }
 
     @MainActor

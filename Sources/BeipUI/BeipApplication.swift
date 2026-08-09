@@ -594,6 +594,12 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
                 showShortcutError("The shortcut \(collisions[0].value.displayString) is assigned more than once.")
                 return
             }
+            if let conflict = nativeMenuConflict(for: parsed) {
+                showShortcutError(
+                    "The shortcut \(conflict.shortcut.displayString) conflicts with the native menu command \"\(conflict.item.title)\"."
+                )
+                return
+            }
             do {
                 try profileLibrary.saveKeyEquivalents(KeyboardShortcutStore.serialized(parsed))
                 keyboardShortcuts = parsed
@@ -624,6 +630,47 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         alert.messageText = "Shortcut Not Saved"
         alert.informativeText = message
         alert.runModal()
+    }
+
+    private struct NativeMenuShortcutConflict {
+        let shortcut: KeyboardShortcut
+        let item: NSMenuItem
+    }
+
+    private func nativeMenuConflict(
+        for shortcuts: [ShortcutAction: KeyboardShortcut]
+    ) -> NativeMenuShortcutConflict? {
+        let registeredItems = Set(shortcutItems.values.map(ObjectIdentifier.init))
+        let nativeItems = menuItems(in: NSApplication.shared.mainMenu)
+            .filter { !registeredItems.contains(ObjectIdentifier($0)) }
+
+        for action in ShortcutAction.allCases {
+            guard let shortcut = shortcuts[action] else { continue }
+            if let item = nativeItems.first(where: { menuItem in
+                guard !menuItem.keyEquivalent.isEmpty else { return false }
+                return shortcutIdentifier(shortcut) == shortcutIdentifier(menuItem)
+            }) {
+                return .init(shortcut: shortcut, item: item)
+            }
+        }
+        return nil
+    }
+
+    private func menuItems(in menu: NSMenu?) -> [NSMenuItem] {
+        guard let menu else { return [] }
+        return menu.items.flatMap { item in
+            [item] + menuItems(in: item.submenu)
+        }
+    }
+
+    private func shortcutIdentifier(_ shortcut: KeyboardShortcut) -> String {
+        let modifiers = shortcut.modifiers.intersection([.command, .control, .option, .shift])
+        return "\(shortcut.keyEquivalent.lowercased())|\(modifiers.rawValue)"
+    }
+
+    private func shortcutIdentifier(_ item: NSMenuItem) -> String {
+        let modifiers = item.keyEquivalentModifierMask.intersection([.command, .control, .option, .shift])
+        return "\(item.keyEquivalent.lowercased())|\(modifiers.rawValue)"
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
@@ -666,7 +713,12 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         appItem.submenu = appMenu
         appMenu.addItem(withTitle: "About BeipMU", action: #selector(showAbout(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Settings…", action: #selector(settings(_:)), keyEquivalent: ",")
+        let settingsItem = appMenu.addItem(
+            withTitle: "Settings…",
+            action: #selector(settings(_:)),
+            keyEquivalent: FixedShortcut.settings.keyEquivalent
+        )
+        settingsItem.keyEquivalentModifierMask = FixedShortcut.settings.modifiers
         appMenu.addItem(
             withTitle: "Global Text Window Settings…",
             action: #selector(globalTextWindowSettings(_:)),
@@ -680,7 +732,12 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         appMenu.addItem(withTitle: "Theme…", action: #selector(themeSettings(_:)), keyEquivalent: "")
         appMenu.addItem(withTitle: "Keyboard Shortcuts…", action: #selector(configureKeyboardShortcuts(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Quit BeipMU", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        let quitItem = appMenu.addItem(
+            withTitle: "Quit BeipMU",
+            action: #selector(NSApplication.terminate(_:)),
+            keyEquivalent: FixedShortcut.quit.keyEquivalent
+        )
+        quitItem.keyEquivalentModifierMask = FixedShortcut.quit.modifiers
 
         let fileItem = NSMenuItem()
         main.addItem(fileItem)
@@ -722,7 +779,12 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
 
         let toolsItem = NSMenuItem()
         main.addItem(toolsItem)
-        toolsItem.submenu = ApplicationMenuBuilder.makeToolsMenu()
+        toolsItem.submenu = ApplicationMenuBuilder.makeToolsMenu(
+            shortcuts: keyboardShortcuts,
+            registerShortcutItem: { [weak self] action, item in
+                self?.shortcutItems[action] = item
+            }
+        )
 
         let editItem = NSMenuItem()
         main.addItem(editItem)
@@ -820,7 +882,12 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         main.addItem(helpItem)
         let helpMenu = NSMenu(title: "Help")
         helpItem.submenu = helpMenu
-        helpMenu.addItem(withTitle: "BeipMU Help", action: #selector(showHelp(_:)), keyEquivalent: "?")
+        let helpMenuItem = helpMenu.addItem(
+            withTitle: "BeipMU Help",
+            action: #selector(showHelp(_:)),
+            keyEquivalent: FixedShortcut.help.keyEquivalent
+        )
+        helpMenuItem.keyEquivalentModifierMask = FixedShortcut.help.modifiers
         applyKeyboardShortcuts()
     }
 

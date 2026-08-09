@@ -31,7 +31,7 @@ Useful default shortcuts include:
 
 | Action | Shortcut |
 | --- | --- |
-| New tab | Control-T |
+| New tab | Command-T |
 | New window | Command-N |
 | Toggle input history | Control-H |
 | Edit triggers | Control-Shift-T |
@@ -40,7 +40,9 @@ Useful default shortcuts include:
 | Smart Paste | Control-Shift-V |
 | Logging | Command-L |
 
-Shortcuts can be customized and are saved in the macOS sidecar configuration.
+BeipMU-specific shortcuts can be customized in **Keyboard Shortcuts…** and are
+saved in the macOS sidecar configuration. Standard macOS commands such as
+Settings, Help, and Quit remain fixed.
 
 ## Client commands
 

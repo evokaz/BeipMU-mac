@@ -1242,7 +1242,9 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     private func tabBarApplicationMenu() -> NSMenu {
-        ApplicationMenuBuilder.makeMenu()
+        ApplicationMenuBuilder.makeMenu(
+            shortcuts: KeyboardShortcutStore.load(from: profileLibrary.keyEquivalents)
+        )
     }
 
     private final class QuickConnectTarget: NSObject {

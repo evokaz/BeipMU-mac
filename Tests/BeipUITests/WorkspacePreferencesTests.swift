@@ -1297,13 +1297,51 @@ final class WorkspacePreferencesTests: XCTestCase {
         XCTAssertNil(KeyboardShortcut.parse("Command+Many+P"))
 
         let custom = KeyboardShortcut.parse("Option+K")!
-        let serialized = KeyboardShortcutStore.serialized([.clearOutput: custom])
-        XCTAssertEqual(serialized, ["clearOutput": "⌥K"])
+        let customTrigger = KeyboardShortcut.parse("Command+Shift+G")!
+        let serialized = KeyboardShortcutStore.serialized([
+            .clearOutput: custom,
+            .triggers: customTrigger,
+        ])
+        XCTAssertEqual(serialized, [
+            "clearOutput": "⌥K",
+            "triggers": "⇧⌘G",
+        ])
         let loaded = KeyboardShortcutStore.load(from: serialized)
         XCTAssertEqual(loaded[.clearOutput], custom)
+        XCTAssertEqual(loaded[.triggers], customTrigger)
         XCTAssertEqual(loaded[.newWindow], ShortcutAction.newWindow.defaultShortcut)
         XCTAssertEqual(loaded[.toggleInputHistory], .init(keyEquivalent: "h", modifiers: [.control]))
+        XCTAssertEqual(loaded[.macros], ShortcutAction.macros.defaultShortcut)
+        XCTAssertEqual(loaded[.aliases], ShortcutAction.aliases.defaultShortcut)
+        XCTAssertEqual(loaded[.smartPaste], ShortcutAction.smartPaste.defaultShortcut)
         XCTAssertEqual(KeyboardShortcutStore.load()[.clearOutput], ShortcutAction.clearOutput.defaultShortcut)
+        XCTAssertEqual(FixedShortcut.settings, .init(keyEquivalent: ",", modifiers: [.command]))
+        XCTAssertEqual(FixedShortcut.help, .init(keyEquivalent: "?", modifiers: [.command]))
+        XCTAssertEqual(FixedShortcut.quit, .init(keyEquivalent: "q", modifiers: [.command]))
+    }
+
+    func testKeyboardShortcutDefaultsCoverEveryAuthoritativeAction() {
+        XCTAssertEqual(
+            KeyboardShortcutStore.load(),
+            [
+                .newWindow: .init(keyEquivalent: "n", modifiers: [.command]),
+                .newTab: .init(keyEquivalent: "t", modifiers: [.command]),
+                .connect: .init(keyEquivalent: "[", modifiers: [.command]),
+                .disconnect: .init(keyEquivalent: "]", modifiers: [.command]),
+                .logging: .init(keyEquivalent: "l", modifiers: [.command]),
+                .findOutput: .init(keyEquivalent: "f", modifiers: [.command]),
+                .clearOutput: .init(keyEquivalent: "k", modifiers: [.command]),
+                .pauseOutput: .init(keyEquivalent: "p", modifiers: [.command, .shift]),
+                .toggleInputHistory: .init(keyEquivalent: "h", modifiers: [.control]),
+                .triggers: .init(keyEquivalent: "t", modifiers: [.control, .shift]),
+                .macros: .init(keyEquivalent: "m", modifiers: [.control, .shift]),
+                .aliases: .init(keyEquivalent: "a", modifiers: [.control, .shift]),
+                .smartPaste: .init(keyEquivalent: "v", modifiers: [.control, .shift]),
+                .convertReturns: .functionKey(1),
+                .convertTabs: .functionKey(1, modifiers: [.shift]),
+                .convertSpaces: .functionKey(2, modifiers: [.shift]),
+            ]
+        )
     }
 
     @MainActor

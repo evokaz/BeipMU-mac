@@ -11,6 +11,10 @@ enum ShortcutAction: String, CaseIterable, Codable {
     case clearOutput
     case pauseOutput
     case toggleInputHistory
+    case triggers
+    case macros
+    case aliases
+    case smartPaste
     case convertReturns
     case convertTabs
     case convertSpaces
@@ -26,6 +30,10 @@ enum ShortcutAction: String, CaseIterable, Codable {
         case .clearOutput: "Clear Output"
         case .pauseOutput: "Pause Output"
         case .toggleInputHistory: "Toggle Input History"
+        case .triggers: "Triggers"
+        case .macros: "Macros"
+        case .aliases: "Aliases"
+        case .smartPaste: "Smart Paste"
         case .convertReturns: "Convert Returns to %R"
         case .convertTabs: "Convert Tabs to %T"
         case .convertSpaces: "Convert Spaces to %B"
@@ -43,11 +51,24 @@ enum ShortcutAction: String, CaseIterable, Codable {
         case .clearOutput: .init(keyEquivalent: "k", modifiers: [.command])
         case .pauseOutput: .init(keyEquivalent: "p", modifiers: [.command, .shift])
         case .toggleInputHistory: .init(keyEquivalent: "h", modifiers: [.control])
+        case .triggers: .init(keyEquivalent: "t", modifiers: [.control, .shift])
+        case .macros: .init(keyEquivalent: "m", modifiers: [.control, .shift])
+        case .aliases: .init(keyEquivalent: "a", modifiers: [.control, .shift])
+        case .smartPaste: .init(keyEquivalent: "v", modifiers: [.control, .shift])
         case .convertReturns: .functionKey(1)
         case .convertTabs: .functionKey(1, modifiers: [.shift])
         case .convertSpaces: .functionKey(2, modifiers: [.shift])
         }
     }
+}
+
+/// Standard macOS commands shared by the native menu and the tab-bar menu.
+/// These are intentionally not part of `ShortcutAction`: they are fixed
+/// commands and must not appear in the customization dialog.
+enum FixedShortcut {
+    static let settings = KeyboardShortcut(keyEquivalent: ",", modifiers: [.command])
+    static let help = KeyboardShortcut(keyEquivalent: "?", modifiers: [.command])
+    static let quit = KeyboardShortcut(keyEquivalent: "q", modifiers: [.command])
 }
 
 struct KeyboardShortcut: Codable, Equatable {
