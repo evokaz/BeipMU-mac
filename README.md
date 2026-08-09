@@ -1,28 +1,58 @@
 # BeipMU for Mac
 
-A native macOS MU* client targeting macOS 14 and later. The application is
-distributed directly as an ad-hoc-signed universal archive; Apple silicon is
-the supported architecture and the Intel slice is untested and unsupported.
+BeipMU is a native macOS client for MUDs and other MU* servers. It combines a
+multi-window AppKit workspace with Telnet and MUD protocol support, profile and
+automation editors, JavaScript scripting, maps, media, logging, and diagnostic
+tools.
 
-## Build and test
+This project is a native macOS reimplementation of
+[BeipMU](https://github.com/BeipDev/BeipMU), the Windows MU* client created by
+Bennet. It aims to preserve compatibility with BeipMU's configuration format
+and core functionality while providing a native AppKit interface.
 
-Building requires macOS 14 or later, Xcode 26 with Swift 6.2, and XcodeGen.
-The complete test and profiling workflow also requires Python 3 for its fixture,
-baseline, and verification scripts.
+The current app targets macOS 14 or later. Releases are built as universal
+macOS applications, although Apple silicon is the supported and tested
+architecture; the Intel slice is currently untested.
 
-To compile a Release app for normal use, only run:
+> [!CAUTION]
+> This project contains features that have not been fully tested. Keep backups
+> of important configuration and use the client with appropriate caution.
+
+## Highlights
+
+- Native AppKit windows, tabs, split sidebars, dockable tools, themes, keyboard
+  customization, and accessibility-aware display behavior.
+- Telnet negotiation, GMCP, MCP, Pueblo, ANSI/256/true color, NAWS, TLS, and
+  multiple text encodings.
+- Worlds, characters, and puppets backed by a lossless BeipMU v331-compatible
+  `Config.txt` workspace.
+- Scoped aliases, triggers, macros, variables, delayed commands, spawn windows,
+  and automation diagnostics.
+- JavaScriptCore scripting in an XPC service with a watchdog/reset boundary.
+- Atlas maps, WebViews, images, audio, speech, session logging, restore logs,
+  connection statistics, and network debugging.
+- Virtualized output with dedicated scale, UI, performance, and leak checks.
+
+## Build the app
+
+You need:
+
+- macOS 14 or later
+- Xcode 26 with Swift 6.2
+- [XcodeGen](https://github.com/yonaskolb/XcodeGen)
+- Python 3 for fixture, UI-baseline, and verification scripts
+
+Create a release build and a ZIP under `dist/`:
 
 ```sh
 ./Scripts/package-release.sh
 ```
 
-The script generates the Xcode project, builds and ad-hoc signs the universal
-Release app, and creates a ZIP and SHA-256 checksum under `dist`. The compiled
-app is also available at `DerivedData/Build/Products/Release/BeipMU.app` and can
-be launched from Finder. No separate Xcode build is required.
+The built application is also available at
+`DerivedData/Build/Products/Release/BeipMU.app`. To create a DMG or both
+archive formats, use `--format dmg` or `--format both`.
 
-For development and local verification, generate the project before running
-the Xcode-based build or test scripts:
+For day-to-day development:
 
 ```sh
 ./Scripts/generate-project.sh
@@ -30,29 +60,55 @@ the Xcode-based build or test scripts:
 xcodebuild -project BeipMU.xcodeproj -scheme BeipMU \
   -configuration Debug -derivedDataPath DerivedData build
 ./Scripts/test-ui.sh
-./Scripts/profile-app-soak.sh
 ```
 
-Pass `--format dmg` to `Scripts/package-release.sh` for a DMG instead, or
-`--format both` to create both formats. The default format is ZIP. Releases are
-intentionally not notarized.
+`BeipMU.xcodeproj` is generated from `project.yml`; edit the specification and
+regenerate instead of treating the generated project as the source of truth.
 
-## Included functionality
+## First run
 
-The app includes native AppKit workspace and docking, profiles and lossless
-legacy configuration editing, Telnet/GMCP/MCP/Pueblo/ANSI processing,
-aliases/macros/triggers, JavaScriptCore scripting, Atlas maps, media, WebViews,
-logging, accessibility accommodations, notifications, diagnostics, and
-performance-tested output virtualization.
+1. Open BeipMU and choose **Connection → Connect…**.
+2. Enter a host and port, or create a saved world and character in **Settings…**.
+3. Type server commands in the input field. Client-side commands begin with
+   `/`; use `/help` for the built-in list and `//text` to send text beginning
+   with a slash.
 
-The local test suite covers protocol parsing, persistence round trips,
-automation, scripting, WebView/media resilience, accessibility-facing UI,
-large-workspace scale, performance, and release packaging.
+BeipMU stores its live configuration in
+`~/Library/Application Support/BeipMU/`. The portable `Config.txt` format may
+contain character passwords and AI endpoint settings in plaintext. Treat the
+file, its automatic backup, and exported copies as secrets.
 
-> **Note:** Not all features have been fully tested. Use with appropriate caution.
+See the [user guide](Documentation/USER_GUIDE.md) for profiles, automation,
+scripting, logs, and data locations.
 
-## Distribution
+## Project layout
 
-See `Documentation/DISTRIBUTION.md` for installation, signing, supported
-architectures, and plaintext configuration-backup password warnings. Release
-highlights are in `Documentation/RELEASE_NOTES.md`.
+| Path | Responsibility |
+| --- | --- |
+| `App/` | Minimal application entry point and asset catalog |
+| `ScriptService/` | Embedded XPC service hosting JavaScriptCore |
+| `Sources/BeipCore/` | Shared models, session actor, output history, logging, media, and GMCP state |
+| `Sources/BeipProtocols/` | Network transport and Telnet/ANSI/MCP/Pueblo pipeline |
+| `Sources/BeipAutomation/` | Aliases, triggers, macros, matching, delays, and slash commands |
+| `Sources/BeipPersistence/` | Lossless legacy configuration, restore logs, sidecar state, and Atlas files |
+| `Sources/BeipScriptRuntime/` | JavaScript host API and XPC client contract |
+| `Sources/BeipUI/` | AppKit application, workspace, editors, tools, and rendering |
+| `Tests/` | Swift package unit, integration, resilience, scale, and performance tests |
+| `UITests/` | XCUITest flows and screenshot baselines |
+| `Benchmarks/` | Standalone output-workspace benchmark |
+| `Scripts/` | Project generation, tests, profiling, fixtures, and release packaging |
+
+The [architecture guide](Documentation/ARCHITECTURE.md) explains how these
+modules interact. The [development guide](Documentation/DEVELOPMENT.md) covers
+the complete verification workflow.
+
+## Documentation
+
+- [User guide](Documentation/USER_GUIDE.md)
+- [Architecture](Documentation/ARCHITECTURE.md)
+- [Development and testing](Documentation/DEVELOPMENT.md)
+- [Distribution and installation](Documentation/DISTRIBUTION.md)
+
+## License
+
+BeipMU is available under the [MIT License](LICENSE).
