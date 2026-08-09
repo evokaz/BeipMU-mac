@@ -2304,9 +2304,15 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         applyThemeSettings(preferences.theme)
     }
 
-    @objc private func localCalendarDidChange(_ notification: Notification) {
-        rollOverLogsIfNeeded()
-        scheduleDailyLogRollover()
+    @objc nonisolated private func localCalendarDidChange(_ notification: Notification) {
+        // NSCalendarDayChanged can be posted from a system background queue.
+        // Cross the actor boundary explicitly instead of letting the generated
+        // Objective-C thunk enforce MainActor isolation on the posting thread.
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            rollOverLogsIfNeeded()
+            scheduleDailyLogRollover()
+        }
     }
 
     func showInputPrefixDialog() {

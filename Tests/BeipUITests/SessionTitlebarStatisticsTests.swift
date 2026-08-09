@@ -15,6 +15,52 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
         XCTAssertEqual(SessionTitlebarStatisticsFormatter.duration(-1), "0s")
     }
 
+    @MainActor
+    func testCalendarDayChangeNotificationCanArriveFromBackgroundQueue() async throws {
+        let library = ProfileLibrary(workspace: try .empty(isDirty: false))
+        let controller = ClientWindowController(profileLibrary: library)
+        defer { controller.close() }
+
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                NotificationCenter.default.post(name: .NSCalendarDayChanged, object: nil)
+                continuation.resume()
+            }
+        }
+        await Task.yield()
+    }
+
+    @MainActor
+    func testDailyHTMLLogRollsOverToNewTokenizedFile() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("DailyLogRolloverTests-\(UUID().uuidString)", isDirectory: true)
+        let template = directory
+            .appendingPathComponent("%server% - %character% - %date%.html")
+            .path
+        let controller = ClientWindowController(
+            profileLibrary: ProfileLibrary(workspace: try .empty(isDirty: false))
+        )
+        defer {
+            controller.close()
+            try? FileManager.default.removeItem(at: directory)
+        }
+
+        controller.startDailyLogForTesting(template: template)
+        XCTAssertEqual(controller.activeLogURLsForTesting.count, 1)
+        let originalURL = try XCTUnwrap(controller.activeLogURLsForTesting.first)
+        let tomorrow = try XCTUnwrap(Calendar.current.date(byAdding: .day, value: 1, to: Date()))
+
+        controller.rollOverLogsForTesting(at: tomorrow)
+
+        XCTAssertEqual(controller.activeLogURLsForTesting.count, 1)
+        let replacementURL = try XCTUnwrap(controller.activeLogURLsForTesting.first)
+        XCTAssertNotEqual(replacementURL, originalURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: replacementURL.path))
+        XCTAssertTrue(try String(contentsOf: originalURL, encoding: .utf8).contains("Logging stopped"))
+        XCTAssertTrue(try String(contentsOf: replacementURL, encoding: .utf8).contains("Logging started"))
+        XCTAssertTrue(controller.hasDailyLogRolloverTimerForTesting)
+    }
+
     func testWorldTabDragInsertionUsesTabMidpoints() {
         XCTAssertEqual(WorldTabDragInsertion.index(midpoints: [40, 100, 160], x: 10), 0)
         XCTAssertEqual(WorldTabDragInsertion.index(midpoints: [40, 100, 160], x: 100), 2)
