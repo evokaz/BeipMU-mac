@@ -23,6 +23,11 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         var isEmpty: Bool { lower == upper }
     }
 
+    private struct HoveredLink: Equatable {
+        var itemID: UUID
+        var range: NSRange
+    }
+
     static let blinkAttribute = NSAttributedString.Key("BeipMUBlink")
 
     var onLink: ((URL) -> Void)?
@@ -42,6 +47,8 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     private var anchor: Position?
     private var focus: Position?
     private var mouseDownPosition: Position?
+    private var hoveredLink: HoveredLink?
+    private var trackingArea: NSTrackingArea?
     private var markedItems: Set<UUID> = []
     private var newContentBoundaryItemID: UUID?
     private var blinkTimer: Timer?
@@ -90,6 +97,24 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     func renderedAttributedTextForTesting(at index: Int) -> NSAttributedString? {
         item(at: index).map(attributedTextForLayout(_:))
     }
+    func drawnAttributedTextForTesting(at index: Int) -> NSAttributedString? {
+        item(at: index).map { attributedTextForDrawing($0, itemIndex: index) }
+    }
+    func setHoveredLinkForTesting(itemID: UUID?, range: NSRange = .init()) {
+        setHoveredLink(itemID.map { HoveredLink(itemID: $0, range: range) })
+    }
+    func activateLinkForTesting(
+        itemID: UUID,
+        at offset: Int,
+        modifierFlags: NSEvent.ModifierFlags
+    ) {
+        guard let physicalIndex = itemIndices[itemID],
+              let value = item(at: physicalIndex - head),
+              offset >= 0,
+              offset < value.attributedText.length,
+              let url = value.attributedText.attribute(.link, at: offset, effectiveRange: nil) as? URL else { return }
+        activateLink(url, modifierFlags: modifierFlags)
+    }
     func measuredHeightForTesting(at index: Int) -> Double? {
         item(at: index).map(measuredHeight(for:))
     }
@@ -111,6 +136,16 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         head = 0
         anchor = nil
         focus = nil
+        if let hoveredLink,
+           let item = items.first(where: { $0.id == hoveredLink.itemID }),
+           hoveredLink.range.location >= 0,
+           hoveredLink.range.length > 0,
+           NSMaxRange(hoveredLink.range) <= item.attributedText.length,
+           item.attributedText.attribute(.link, at: hoveredLink.range.location, effectiveRange: nil) != nil {
+            self.hoveredLink = hoveredLink
+        } else {
+            self.hoveredLink = nil
+        }
         markedItems.formIntersection(items.map(\.id))
         newContentBoundaryItemID = boundaryID.flatMap { id in items.contains(where: { $0.id == id }) ? id : nil }
         blinkingItemCount = items.reduce(0) { $0 + (hasBlink($1) ? 1 : 0) }
@@ -134,6 +169,11 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     func removeFirst(_ count: Int) {
         let removed = min(max(0, count), itemCount)
         guard removed > 0 else { return }
+        if let hoveredLink,
+           let physicalIndex = itemIndices[hoveredLink.itemID],
+           physicalIndex - head < removed {
+            self.hoveredLink = nil
+        }
         let removedHeight = layoutIndex.yOffset(for: removed) ?? 0
         for index in 0..<removed {
             if let removedItem = item(at: index) {
@@ -165,6 +205,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     func removeLast() -> Item? {
         guard itemCount > 0 else { return nil }
         let item = storage.removeLast()
+        if hoveredLink?.itemID == item.id { hoveredLink = nil }
         if hasBlink(item) { blinkingItemCount -= 1 }
         markedItems.remove(item.id)
         if newContentBoundaryItemID == item.id { newContentBoundaryItemID = nil }
@@ -185,6 +226,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         layoutIndex.removeAll(keepingCapacity: true)
         anchor = nil
         focus = nil
+        hoveredLink = nil
         markedItems.removeAll()
         newContentBoundaryItemID = nil
         blinkingItemCount = 0
@@ -309,6 +351,30 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         rebuildMeasurements()
     }
 
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let next = NSTrackingArea(
+            rect: bounds,
+            options: [.activeInKeyWindow, .inVisibleRect, .mouseEnteredAndExited, .mouseMoved],
+            owner: self
+        )
+        addTrackingArea(next)
+        trackingArea = next
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        updateHoveredLink(at: convert(event.locationInWindow, from: nil))
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        updateHoveredLink(at: convert(event.locationInWindow, from: nil))
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        setHoveredLink(nil)
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         canvasBackgroundColor.setFill()
         dirtyRect.fill()
@@ -396,6 +462,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         let point = convert(event.locationInWindow, from: nil)
+        updateHoveredLink(at: point)
         guard let position = textPosition(at: point) else { return }
         mouseDownPosition = position
         switch event.clickCount {
@@ -438,7 +505,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
               let value = item(at: position.item),
               position.offset < value.attributedText.length,
               let url = value.attributedText.attribute(.link, at: position.offset, effectiveRange: nil) as? URL else { return }
-        onLink?(url)
+        activateLink(url, modifierFlags: event.modifierFlags)
     }
 
     override func resetCursorRects() {
@@ -578,10 +645,18 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
                 .foregroundColor: NSColor.selectedTextColor,
             ], range: range)
         }
-        guard !blinkVisible else { return result }
-        result.enumerateAttribute(Self.blinkAttribute, in: NSRange(location: 0, length: result.length)) { value, range, _ in
-            guard value != nil else { return }
-            result.addAttribute(.foregroundColor, value: NSColor.clear, range: range)
+        if !blinkVisible {
+            result.enumerateAttribute(Self.blinkAttribute, in: NSRange(location: 0, length: result.length)) { value, range, _ in
+                guard value != nil else { return }
+                result.addAttribute(.foregroundColor, value: NSColor.clear, range: range)
+            }
+        }
+        if let hoveredLink, hoveredLink.itemID == item.id {
+            result.addAttribute(
+                .underlineStyle,
+                value: NSUnderlineStyle.single.rawValue,
+                range: hoveredLink.range
+            )
         }
         return result
     }
@@ -609,6 +684,53 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         )
         result.addAttribute(.paragraphStyle, value: existing, range: range)
         return result
+    }
+
+    private func updateHoveredLink(at point: NSPoint) {
+        guard let position = textPosition(at: point),
+              let value = item(at: position.item),
+              position.offset >= 0,
+              position.offset < value.attributedText.length else {
+            setHoveredLink(nil)
+            return
+        }
+
+        var range = NSRange(location: 0, length: 0)
+        guard value.attributedText.attribute(.link, at: position.offset, effectiveRange: &range) as? URL != nil else {
+            setHoveredLink(nil)
+            return
+        }
+        setHoveredLink(.init(itemID: value.id, range: range))
+    }
+
+    private func setHoveredLink(_ next: HoveredLink?) {
+        let normalized = next.flatMap { candidate -> HoveredLink? in
+            guard let physicalIndex = itemIndices[candidate.itemID],
+                  let value = item(at: physicalIndex - head),
+                  candidate.range.location >= 0,
+                  candidate.range.length > 0,
+                  NSMaxRange(candidate.range) <= value.attributedText.length,
+                  value.attributedText.attribute(.link, at: candidate.range.location, effectiveRange: nil) != nil else {
+                return nil
+            }
+            return candidate
+        }
+        guard normalized != hoveredLink else { return }
+        let previous = hoveredLink
+        hoveredLink = normalized
+        for itemID in Set([previous?.itemID, normalized?.itemID].compactMap { $0 }) {
+            guard let physicalIndex = itemIndices[itemID] else { continue }
+            setNeedsDisplay(itemRect(at: physicalIndex - head))
+        }
+    }
+
+    private func isBrowserLink(_ url: URL) -> Bool {
+        url.scheme?.lowercased() != "beipmu-action"
+    }
+
+    private func activateLink(_ url: URL, modifierFlags: NSEvent.ModifierFlags) {
+        guard !isBrowserLink(url) || modifierFlags.contains(.command) else { return }
+        onLink?(url)
     }
 
     private func drawCoreText(

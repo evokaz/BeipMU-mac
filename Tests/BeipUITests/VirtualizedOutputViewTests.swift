@@ -345,6 +345,90 @@ final class VirtualizedOutputViewTests: XCTestCase {
         XCTAssertLessThan(view.effectiveContentWidthForTesting, 500)
     }
 
+    func testAutomaticWebLinksUseHTTPPrefixesAndExcludeTrailingPunctuation() throws {
+        let output = OutputTextView()
+        output.applySettings(TextWindowSettings(webLinkHex: "#ABCDEF"))
+        let text = "Visit https://example.com/path, then http://example.org! www.example.net email@example.net ftp://example.org"
+        output.append(.init(text: text))
+        output.selectAll()
+
+        let selected = try XCTUnwrap(output.primaryOutputViewForTesting.selectedAttributedString())
+        let linkRange = (selected.string as NSString).range(of: "https://example.com/path")
+        let attributes = selected.attributes(at: linkRange.location, effectiveRange: nil)
+        XCTAssertEqual((attributes[.link] as? URL)?.absoluteString, "https://example.com/path")
+        XCTAssertTrue((attributes[.cursor] as? NSCursor) === NSCursor.pointingHand)
+        XCTAssertEqual((attributes[.foregroundColor] as? NSColor)?.hexString, "#ABCDEF")
+        XCTAssertNil(selected.attribute(.link, at: NSMaxRange(linkRange), effectiveRange: nil))
+
+        for value in ["www.example.net", "email@example.net", "ftp://example.org"] {
+            let range = (selected.string as NSString).range(of: value)
+            XCTAssertNotEqual(range.location, NSNotFound)
+            XCTAssertNil(selected.attribute(.link, at: range.location, effectiveRange: nil), value)
+        }
+    }
+
+    func testAutomaticWebLinksUnderlineOnlyWhileHovered() throws {
+        let output = OutputTextView()
+        output.append(.init(text: "Visit https://example.com/path"))
+
+        let view = output.primaryOutputViewForTesting
+        view.selectAllContent()
+        let selected = try XCTUnwrap(view.selectedAttributedString())
+        let linkRange = (selected.string as NSString).range(of: "https://example.com/path")
+        let lineID = try XCTUnwrap(output.retainedLines.first?.id)
+
+        let beforeHover = try XCTUnwrap(view.drawnAttributedTextForTesting(at: 0))
+        XCTAssertNil(beforeHover.attribute(.underlineStyle, at: linkRange.location, effectiveRange: nil))
+
+        view.setHoveredLinkForTesting(itemID: lineID, range: linkRange)
+        let whileHovered = try XCTUnwrap(view.drawnAttributedTextForTesting(at: 0))
+        XCTAssertEqual(
+            whileHovered.attribute(.underlineStyle, at: linkRange.location, effectiveRange: nil) as? Int,
+            NSUnderlineStyle.single.rawValue
+        )
+
+        view.setHoveredLinkForTesting(itemID: nil)
+        let afterHover = try XCTUnwrap(view.drawnAttributedTextForTesting(at: 0))
+        XCTAssertNil(afterHover.attribute(.underlineStyle, at: linkRange.location, effectiveRange: nil))
+    }
+
+    func testBrowserLinksRequireCommandClick() throws {
+        let output = OutputTextView()
+        output.append(.init(text: "https://example.com"))
+        let view = output.primaryOutputViewForTesting
+        view.selectAllContent()
+        let selected = try XCTUnwrap(view.selectedAttributedString())
+        let linkRange = (selected.string as NSString).range(of: "https://example.com")
+        let lineID = try XCTUnwrap(output.retainedLines.first?.id)
+        var openedURL: URL?
+        view.onLink = { openedURL = $0 }
+
+        view.activateLinkForTesting(itemID: lineID, at: linkRange.location, modifierFlags: [])
+        XCTAssertNil(openedURL)
+
+        view.activateLinkForTesting(itemID: lineID, at: linkRange.location, modifierFlags: [.command])
+        XCTAssertEqual(openedURL?.absoluteString, "https://example.com")
+    }
+
+    func testExplicitLinkActionsTakePrecedenceOverAutomaticWebLinks() throws {
+        let output = OutputTextView()
+        let text = "https://example.com"
+        let run = StyleRun(
+            range: 0..<text.utf16.count,
+            style: TextStyle(link: .send("look", hints: ["urgent"]))
+        )
+        output.append(.init(text: text, runs: [run]))
+        output.selectAll()
+
+        let selected = try XCTUnwrap(output.primaryOutputViewForTesting.selectedAttributedString())
+        let link = try XCTUnwrap(selected.attribute(.link, at: 0, effectiveRange: nil) as? URL)
+        let components = try XCTUnwrap(URLComponents(url: link, resolvingAgainstBaseURL: false))
+        XCTAssertEqual(link.scheme, "beipmu-action")
+        XCTAssertEqual(components.host, "send")
+        XCTAssertEqual(components.queryItems?.first(where: { $0.name == "value" })?.value, "look")
+        XCTAssertEqual(components.queryItems?.first(where: { $0.name == "hint" })?.value, "urgent")
+    }
+
     func testTextWindowSettingsNormalizeUnsafeNumericValues() {
         let normalized = TextWindowSettings(
             fontSize: -20,

@@ -66,6 +66,9 @@ final class OutputTextView: NSObject {
     private var programmaticScrollGeneration = 0
     private var isPerformingProgrammaticScroll = false
     private weak var observedWindow: NSWindow?
+    private lazy var webURLDetector: NSDataDetector = {
+        try! NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
+    }()
 
     private static let boundaryDismissalInterval: TimeInterval = 60
 
@@ -693,6 +696,7 @@ final class OutputTextView: NSObject {
             ], range: NSRange(location: 0, length: timestamp.utf16.count))
         }
         let textOffset = timestamp.utf16.count
+        var explicitLinkRanges: [NSRange] = []
         for run in line.runs where run.range.lowerBound >= 0 && run.range.upperBound <= line.text.utf16.count {
             let range = NSRange(location: textOffset + run.range.lowerBound, length: run.range.count)
             var attributes: [NSAttributedString.Key: Any] = [:]
@@ -728,6 +732,7 @@ final class OutputTextView: NSObject {
             if run.style.strikeout { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
             if run.style.blink != .none { attributes[VirtualizedOutputView.blinkAttribute] = run.style.blink.rawValue }
             if let action = run.style.link {
+                explicitLinkRanges.append(NSRange(location: run.range.lowerBound, length: run.range.count))
                 attributes[.link] = Self.url(for: action)
                 attributes[.cursor] = NSCursor.pointingHand
                 if run.style.foreground == nil {
@@ -737,6 +742,13 @@ final class OutputTextView: NSObject {
             }
             value.addAttributes(attributes, range: range)
         }
+
+        applyAutomaticWebLinks(
+            to: value,
+            lineText: line.text,
+            textOffset: textOffset,
+            excluding: explicitLinkRanges
+        )
 
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = switch line.paragraph.alignment {
@@ -778,6 +790,72 @@ final class OutputTextView: NSObject {
             assets: line.assets.map { ($0, textOffset + $0.characterOffset) },
             paragraph: line.paragraph
         )
+    }
+
+    private func applyAutomaticWebLinks(
+        to value: NSMutableAttributedString,
+        lineText: String,
+        textOffset: Int,
+        excluding explicitLinkRanges: [NSRange]
+    ) {
+        guard !lineText.isEmpty else { return }
+        let source = lineText as NSString
+        let sourceRange = NSRange(location: 0, length: source.length)
+        let linkColor = NSColor(hexString: settings.webLinkHex) ?? .linkColor
+        let displayedLinkColor = settings.invertBrightness ? linkColor.invertingBrightness : linkColor
+
+        for match in webURLDetector.matches(in: lineText, options: [], range: sourceRange) {
+            guard match.resultType == .link,
+                  let url = match.url,
+                  url.scheme?.lowercased() == "http" || url.scheme?.lowercased() == "https",
+                  match.range.location >= 0,
+                  match.range.length > 0,
+                  NSMaxRange(match.range) <= source.length else { continue }
+
+            let matchedText = source.substring(with: match.range).lowercased()
+            guard matchedText.hasPrefix("http://") || matchedText.hasPrefix("https://") else { continue }
+
+            let valueRange = NSRange(
+                location: textOffset + match.range.location,
+                length: match.range.length
+            )
+            for uncoveredRange in ranges(in: valueRange, excluding: explicitLinkRanges.map {
+                NSRange(location: textOffset + $0.location, length: $0.length)
+            }) {
+                value.addAttributes([
+                    .link: url,
+                    .cursor: NSCursor.pointingHand,
+                    .foregroundColor: displayedLinkColor,
+                ], range: uncoveredRange)
+            }
+        }
+    }
+
+    private func ranges(in range: NSRange, excluding excludedRanges: [NSRange]) -> [NSRange] {
+        var remaining = [range]
+        for excluded in excludedRanges {
+            remaining = remaining.flatMap { candidate in
+                let intersectionStart = max(candidate.location, excluded.location)
+                let intersectionEnd = min(NSMaxRange(candidate), NSMaxRange(excluded))
+                guard intersectionStart < intersectionEnd else { return [candidate] }
+
+                var result: [NSRange] = []
+                if candidate.location < intersectionStart {
+                    result.append(NSRange(
+                        location: candidate.location,
+                        length: intersectionStart - candidate.location
+                    ))
+                }
+                if intersectionEnd < NSMaxRange(candidate) {
+                    result.append(NSRange(
+                        location: intersectionEnd,
+                        length: NSMaxRange(candidate) - intersectionEnd
+                    ))
+                }
+                return result
+            }
+        }
+        return remaining
     }
 
     private func currentItems() -> [VirtualizedOutputView.Item] {
