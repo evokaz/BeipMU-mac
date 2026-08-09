@@ -204,6 +204,32 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
     }
 
     @MainActor
+    func testLastTabReplacementOnlyAppliesToLastOpenClientWindow() throws {
+        let library = ProfileLibrary(workspace: try .empty(isDirty: false))
+        let first = ClientWindowController(profileLibrary: library)
+        let second = ClientWindowController(profileLibrary: library)
+        defer {
+            first.closeForTabReplacement()
+            second.closeForTabReplacement()
+        }
+
+        XCTAssertTrue(
+            ClientWindowClosePolicy.shouldReplaceLastTab(first, among: [first])
+        )
+        XCTAssertFalse(
+            ClientWindowClosePolicy.shouldReplaceLastTab(first, among: [first, second])
+        )
+
+        first.onRequestCloseLastTab = { controller in
+            ClientWindowClosePolicy.shouldReplaceLastTab(
+                controller,
+                among: [first, second]
+            )
+        }
+        XCTAssertTrue(first.windowShouldClose(try XCTUnwrap(first.window)))
+    }
+
+    @MainActor
     func testPermanentTabBarControlsLeadTheSessionTabs() throws {
         let library = ProfileLibrary(workspace: try .empty(isDirty: false))
         let controller = ClientWindowController(profileLibrary: library)

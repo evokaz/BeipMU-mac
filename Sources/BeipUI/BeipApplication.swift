@@ -3,6 +3,16 @@ import BeipCore
 import BeipPersistence
 
 @MainActor
+enum ClientWindowClosePolicy {
+    static func shouldReplaceLastTab(
+        _ controller: ClientWindowController,
+        among openControllers: [ClientWindowController]
+    ) -> Bool {
+        openControllers.count == 1 && openControllers.first === controller
+    }
+}
+
+@MainActor
 public enum BeipApplication {
     private static var retainedDelegate: ApplicationDelegate?
 
@@ -174,7 +184,12 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
             self.saveOpenTabs()
         }
         controller.onRequestCloseLastTab = { [weak self] controller in
-            guard let self, !self.isTerminating else { return false }
+            guard let self,
+                  !self.isTerminating,
+                  ClientWindowClosePolicy.shouldReplaceLastTab(
+                      controller,
+                      among: self.windows
+                  ) else { return false }
             DispatchQueue.main.async { [weak self, weak controller] in
                 guard let self, let controller else { return }
                 self.replaceLastTab(controller)

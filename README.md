@@ -32,6 +32,8 @@ The local test suite covers protocol parsing, persistence round trips,
 automation, scripting, WebView/media resilience, accessibility-facing UI,
 large-workspace scale, performance, and release packaging.
 
+> **Note:** Not all features have been fully tested. Use with appropriate caution.
+
 ## Distribution
 
 See `Documentation/DISTRIBUTION.md` for installation, signing, supported
