@@ -57,18 +57,15 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
         public var profile: ServerProfile
         public var characters: [CharacterProfile]
         public var automation: Automation
-        public var restoreLogAssignments: [Int: String]
 
         public init(
             profile: ServerProfile,
             characters: [CharacterProfile],
-            automation: Automation = .init(),
-            restoreLogAssignments: [Int: String] = [:]
+            automation: Automation = .init()
         ) {
             self.profile = profile
             self.characters = characters
             self.automation = automation
-            self.restoreLogAssignments = restoreLogAssignments
         }
     }
 
@@ -246,7 +243,6 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
                     logFilename: properties.value("LogFileName") ?? "",
                     logAppendsDate: (properties.value("LogFileNameTimeFormat").flatMap(Int.init) ?? 0) & 0b110 != 0,
                     restoreLog: properties.bool("RestoreLog") ?? true,
-                    restoreLogIndex: properties.value("RestoreLogIndex").flatMap(Int.init) ?? -1,
                     bytesSent: properties.value("BytesSent").flatMap(UInt64.init) ?? 0,
                     bytesReceived: properties.value("BytesReceived").flatMap(UInt64.init) ?? 0,
                     secondsConnected: properties.value("SecondsConnected").flatMap(UInt64.init) ?? 0,
@@ -264,15 +260,10 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
                     serverAutomation.puppets[Automation.puppetKey(characterName, puppetName)] = Self.scope(from: puppetProperties)
                 }
             }
-            let restoreLogAssignments: [Int: String] = Dictionary(uniqueKeysWithValues: namedCharacters.compactMap { characterName, properties in
-                guard let index = properties.value("RestoreLogIndex").flatMap(Int.init), index >= 0 else { return nil }
-                return (index, "\(name) - \(characterName)")
-            })
             return Server(
                 profile: profile,
                 characters: characters,
-                automation: serverAutomation,
-                restoreLogAssignments: restoreLogAssignments
+                automation: serverAutomation
             )
         }
     }
@@ -399,6 +390,14 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
             Self.flag(scripting.debugEnabled), default: "false",
             at: ["ScriptDebug"], quoted: false, in: &result
         )
+        try Self.upsert(
+            Self.flag(logging.restoreLogs), default: "true",
+            at: ["Connections", "Logging", "RestoreLogs"], quoted: false, in: &result
+        )
+        try Self.upsert(
+            String(max(4 * 1_024, logging.restoreBufferSize) / 1_024), default: "10240",
+            at: ["Connections", "Logging", "RestoreBufferSize"], quoted: false, in: &result
+        )
 
         for server in servers {
             let base = ["Connections", "Shortcuts", server.profile.name]
@@ -486,10 +485,6 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
                 try Self.upsert(
                     Self.flag(character.restoreLog), default: "true",
                     at: characterBase + ["RestoreLog"], quoted: false, in: &result
-                )
-                try Self.upsert(
-                    String(character.restoreLogIndex), default: "-1",
-                    at: characterBase + ["RestoreLogIndex"], quoted: false, in: &result
                 )
                 try Self.upsert(
                     String(character.bytesSent), default: "0",
@@ -658,6 +653,8 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
         let wraps = nodes.bool("Wrap") ?? false
         let hanging = nodes.bool("HangingIndent") ?? false
         return .init(
+            restoreLogs: nodes.bool("RestoreLogs") ?? true,
+            restoreBufferSize: (nodes.value("RestoreBufferSize").flatMap(Int.init) ?? 10 * 1_024) * 1_024,
             defaultLogFilename: nodes.value("DefaultLogFileName") ?? "",
             fileDateFormat: nodes.value("FileDateFormat") ?? "yyyy-MM-dd",
             logsSentText: nodes.bool("LogSent") ?? false,

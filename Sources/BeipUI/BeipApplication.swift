@@ -45,7 +45,9 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     private var lastSettingsSection: SettingsSection = .appearance
     private let stateContext: RuntimeStateContext
     private let profileLibrary: ProfileLibrary
+    private let recoveryStore: SessionRecoveryStore
     private var configurationManager: ConfigurationManagerWindowController?
+    private var recoveryReview: RecoveryReviewWindowController?
     private var keyboardShortcuts = KeyboardShortcutStore.load()
     private var shortcutItems: [ShortcutAction: NSMenuItem] = [:]
     private var isRestoringTabs = false
@@ -64,6 +66,10 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
             storageDirectory: context.configurationDirectory,
             allowsExternalConfigurationMigration: context.configuration == .release
         )
+        recoveryStore = try! SessionRecoveryStore(
+            url: context.configurationDirectory.appendingPathComponent("Recovery.dat"),
+            capacity: profileLibrary.workspace.projection.logging.restoreBufferSize
+        )
         super.init()
     }
 
@@ -76,6 +82,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         if shouldResetUITestState || !restoreOpenTabs() {
             newWindow(nil)
         }
+        presentRecoveryReviewIfNeeded()
         NSApplication.shared.activate(ignoringOtherApps: true)
         activeController?.startPerformanceSoakIfRequested()
         activeController?.startM10ScaleIfRequested()
@@ -92,6 +99,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         saveOpenTabs()
         isTerminating = true
         windows.forEach { $0.prepareForApplicationTermination() }
+        try? recoveryStore.flush()
         return .terminateNow
     }
 
@@ -191,7 +199,10 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     @objc func newEditWindow(_ sender: Any?) { activeController?.showNewEditWindow() }
 
     private func makeController() -> ClientWindowController {
-        let controller = ClientWindowController(profileLibrary: profileLibrary)
+        let controller = ClientWindowController(
+            profileLibrary: profileLibrary,
+            recoveryStore: recoveryStore
+        )
         windows.append(controller)
         controller.onClose = { [weak self, weak controller] in
             guard let self, let controller else { return }
@@ -417,6 +428,67 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         return !windows.isEmpty
     }
 
+    private func presentRecoveryReviewIfNeeded() {
+        guard profileLibrary.workspace.projection.logging.restoreLogs else { return }
+        let candidates = recoveryStore.sessions.filter { session in
+            guard let server = recoveryServer(for: session) else { return false }
+            guard let characterName = session.characterName else { return true }
+            return recoveryCharacter(for: session, server: server)?.restoreLog == true
+                || server.characters.first(where: { $0.name == characterName }) == nil
+        }
+        guard !candidates.isEmpty else { return }
+
+        let review = RecoveryReviewWindowController(candidates: candidates)
+        review.onRestore = { [weak self, weak review] ids in
+            guard let self else { return }
+            for id in ids {
+                guard let snapshot = recoveryStore.session(id: id),
+                      let server = recoveryServer(for: snapshot) else { continue }
+                let character = recoveryCharacter(for: snapshot, server: server)
+                let controller = windows.first(where: {
+                    $0.representsSavedProfile(server.profile, character: character)
+                        && $0.isDisconnectedSavedProfileForQuickConnect
+                }) ?? makeController()
+                controller.restoreOpenTab(server: server.profile, character: character)
+                controller.restoreRecoverySession(snapshot)
+                controller.showWindow(nil)
+                controller.window?.makeKeyAndOrderFront(nil)
+            }
+            review?.close()
+            self.recoveryReview = nil
+            saveOpenTabs()
+        }
+        review.onDiscard = { [weak self, weak review] ids in
+            guard let self else { return }
+            for id in ids { try? recoveryStore.remove(sessionID: id) }
+            review?.close()
+            self.recoveryReview = nil
+        }
+        review.onSkip = { [weak self] in self?.recoveryReview = nil }
+        recoveryReview = review
+        review.showWindow(nil)
+        review.window?.center()
+        review.window?.makeKeyAndOrderFront(nil)
+    }
+
+    private func recoveryServer(for snapshot: SessionRecoverySession) -> LegacyConfigurationProjection.Server? {
+        profileLibrary.workspace.servers.first {
+            $0.profile.id == snapshot.serverID
+                || $0.profile.name.caseInsensitiveCompare(snapshot.serverName) == .orderedSame
+        }
+    }
+
+    private func recoveryCharacter(
+        for snapshot: SessionRecoverySession,
+        server: LegacyConfigurationProjection.Server
+    ) -> CharacterProfile? {
+        guard let name = snapshot.characterName else { return nil }
+        return server.characters.first {
+            $0.id == snapshot.characterID
+                || $0.name.caseInsensitiveCompare(name) == .orderedSame
+        }
+    }
+
     private func saveOpenTabs() {
         guard !isRestoringTabs, !isTerminating, !windows.isEmpty else { return }
         var seenGroups: Set<ObjectIdentifier> = []
@@ -531,7 +603,6 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     @objc func debugTriggers(_ sender: Any?) { activeController?.showAutomationDebugger(.triggers) }
     @objc func debugTimers(_ sender: Any?) { activeController?.showAutomationDebugger(.timers) }
     @objc func debugScripts(_ sender: Any?) { activeController?.showScriptDebugger() }
-    @objc func inspectRestoreLog(_ sender: Any?) { activeController?.showRestoreInformation() }
     @objc func clear(_ sender: Any?) { activeController?.clearOutput() }
     @objc func find(_ sender: Any?) { activeController?.showFindDialog() }
     @objc func pauseOutput(_ sender: Any?) { activeController?.toggleOutputPause() }
@@ -791,8 +862,6 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         debuggers.addItem(withTitle: "Triggers…", action: #selector(debugTriggers(_:)), keyEquivalent: "")
         debuggers.addItem(withTitle: "Timers…", action: #selector(debugTimers(_:)), keyEquivalent: "")
         debuggers.addItem(withTitle: "Scripts…", action: #selector(debugScripts(_:)), keyEquivalent: "")
-        debuggers.addItem(.separator())
-        debuggers.addItem(withTitle: "Inspect Restore.dat", action: #selector(inspectRestoreLog(_:)), keyEquivalent: "")
         let debuggersItem = NSMenuItem(title: "Debuggers", action: nil, keyEquivalent: "")
         debuggersItem.submenu = debuggers
         connectionMenu.addItem(debuggersItem)

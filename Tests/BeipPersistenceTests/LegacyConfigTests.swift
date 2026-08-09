@@ -5,39 +5,6 @@ import Foundation
 import XCTest
 
 final class LegacyConfigTests: XCTestCase {
-    private struct PlaybackProcessor: ByteStreamProcessor {
-        var resetCount = 0
-        mutating func reset() { resetCount += 1 }
-        mutating func consume(_ data: Data) -> [ProtocolOutput] {
-            [.line(.init(text: String(decoding: data.dropLast(), as: UTF8.self)))]
-        }
-        mutating func encode(_ text: String) throws -> Data { Data(text.utf8) }
-    }
-
-    func testRestorePlaybackResetsParserRestoresTimestampsGMCPAndSentHistory() {
-        let unixEpochFileTime: UInt64 = 116_444_736_000_000_000
-        let records: [RestoreLogRecord] = [
-            .init(kind: .received, windowsFileTime: unixEpochFileTime, payload: Data("old".utf8)),
-            .init(kind: .start, windowsFileTime: unixEpochFileTime, payload: Data()),
-            .init(kind: .received, windowsFileTime: unixEpochFileTime + 10_000_000, payload: Data("room".utf8)),
-            .init(kind: .receivedGMCP, windowsFileTime: unixEpochFileTime, payload: Data("Char.Status {\"hp\":100}".utf8)),
-            .init(kind: .sent, windowsFileTime: unixEpochFileTime + 20_000_000, payload: Data("look".utf8)),
-        ]
-        var processor = PlaybackProcessor()
-        let playback = RestoreLogPlayback.replay(records, through: &processor)
-
-        XCTAssertEqual(processor.resetCount, 1)
-        XCTAssertEqual(playback.sentHistory, ["look"])
-        guard case let .renderedLine(room) = playback.events[1] else { return XCTFail("missing restored line") }
-        XCTAssertEqual(room.text, "room")
-        XCTAssertEqual(room.source, .replay)
-        XCTAssertEqual(room.timestamp, Date(timeIntervalSince1970: 1))
-        XCTAssertEqual(playback.events[2], .gmcp(.init(package: "Char.Status", payload: "{\"hp\":100}")))
-        guard case let .renderedLine(echo) = playback.events[3] else { return XCTFail("missing sent echo") }
-        XCTAssertEqual(echo.text, "look")
-        XCTAssertEqual(echo.timestamp, Date(timeIntervalSince1970: 2))
-    }
-
     private let fixture = """
     // Keep this comment byte-for-byte
     Version=265
@@ -1780,119 +1747,6 @@ final class LegacyConfigTests: XCTestCase {
         XCTAssertEqual(atlas.maps.first?.rooms.first?.name, "Inside")
     }
 
-    func testRestoreLogRoundTripPreservesMultipleBuffers() throws {
-        let logs: [[RestoreLogRecord]] = [
-            [.init(kind: .start, windowsFileTime: 1, payload: Data()), .init(kind: .received, windowsFileTime: 2, payload: Data("hello".utf8))],
-            [.init(kind: .sent, windowsFileTime: 3, payload: Data("say hi".utf8))],
-        ]
-        let encoded = try RestoreLogCodec.write(logs, bufferSize: 64)
-        XCTAssertEqual(try RestoreLogCodec.read(encoded, bufferSize: 64), logs)
-    }
-
-    func testRestoreLogEvictsOldestRecordsWhenRingWraps() throws {
-        let records = [
-            RestoreLogRecord(kind: .received, windowsFileTime: 1, payload: Data("first".utf8)),
-            RestoreLogRecord(kind: .received, windowsFileTime: 2, payload: Data("second".utf8)),
-            RestoreLogRecord(kind: .sent, windowsFileTime: 3, payload: Data("third".utf8)),
-        ]
-        let encoded = try RestoreLogCodec.write([records], bufferSize: 56)
-        XCTAssertEqual(try RestoreLogCodec.read(encoded, bufferSize: 56), [[records[1], records[2]]])
-    }
-
-    func testRestoreLogDropsRecordThatCannotFitInItsBuffer() throws {
-        let oversized = RestoreLogRecord(kind: .received, windowsFileTime: 1, payload: Data(repeating: 1, count: 29))
-        let encoded = try RestoreLogCodec.write([[oversized]], bufferSize: 40)
-        XCTAssertEqual(try RestoreLogCodec.read(encoded, bufferSize: 40), [[]])
-    }
-
-    func testRestoreLogStoreSavesAndLoadsAtomically() throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let url = directory.appendingPathComponent("Restore.dat")
-        let logs = [[RestoreLogRecord(kind: .receivedGMCP, windowsFileTime: 42, payload: Data("Char.Status {\"hp\":100}".utf8))]]
-
-        try RestoreLogStore.save(logs, to: url, bufferSize: 128)
-        XCTAssertEqual(try RestoreLogStore.load(from: url, bufferSize: 128), logs)
-    }
-
-    func testRestoreLogRejectsTrailingPartialRecord() throws {
-        var encoded = try RestoreLogCodec.write([[
-            .init(kind: .received, windowsFileTime: 1, payload: Data("ok".utf8)),
-        ]], bufferSize: 64)
-        // Extend the logical byte count by one without adding a complete record.
-        encoded[4] += 1
-        XCTAssertThrowsError(try RestoreLogCodec.read(encoded, bufferSize: 64)) { error in
-            guard case RestoreLogError.corruptRecord = error else {
-                return XCTFail("unexpected error: \(error)")
-            }
-        }
-    }
-
-    func testRestoreLogRepairSalvagesValidPrefixAndRewritesCorruptTail() throws {
-        let records = [
-            RestoreLogRecord(kind: .received, windowsFileTime: 1, payload: Data("valid".utf8)),
-            RestoreLogRecord(kind: .sent, windowsFileTime: 2, payload: Data("tail".utf8)),
-        ]
-        var encoded = try RestoreLogCodec.write([records], bufferSize: 80)
-        // Make the second record claim a payload longer than the remaining data.
-        let secondRecordOffset = 8 + 12 + records[0].payload.count
-        encoded[secondRecordOffset + 1] = 0xff
-
-        let repaired = try RestoreLogCodec.repair(encoded, bufferSize: 80)
-        XCTAssertEqual(repaired.logs, [[records[0]]])
-        XCTAssertEqual(repaired.repairedBufferIndices, [0])
-        XCTAssertEqual(try RestoreLogCodec.read(repaired.repairedData, bufferSize: 80), [[records[0]]])
-    }
-
-    func testRestoreLogInspectionReportsUsageAndAtomicallyRepairsCorruption() throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("RestoreInspection-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let url = directory.appendingPathComponent("Restore.dat")
-        let record = RestoreLogRecord(kind: .received, windowsFileTime: 1, payload: Data("valid".utf8))
-        var data = try RestoreLogCodec.write([[record], []], bufferSize: 80)
-        data[80 + 4] = 1 // Claim one trailing byte in the second empty ring buffer.
-        try data.write(to: url)
-
-        let inspection = try RestoreLogStore.inspectRepairing(from: url, bufferSize: 80)
-
-        XCTAssertEqual(inspection.bufferSize, 80)
-        XCTAssertEqual(inspection.buffers.count, 2)
-        XCTAssertEqual(inspection.buffers[0].recordCount, 1)
-        XCTAssertEqual(inspection.buffers[0].usedBytes, 17)
-        XCTAssertFalse(inspection.buffers[0].wasRepaired)
-        XCTAssertTrue(inspection.buffers[1].wasRepaired)
-        XCTAssertEqual(try RestoreLogStore.load(from: url, bufferSize: 80), [[record], []])
-    }
-
-    func testSeededCorruptRestorePropertyAlwaysRepairsToReadableBuffers() throws {
-        let records = (0..<12).map { index in
-            RestoreLogRecord(
-                kind: index.isMultiple(of: 2) ? .received : .sent,
-                windowsFileTime: UInt64(index + 1),
-                payload: Data("record-\(index)".utf8)
-            )
-        }
-        let pristine = try RestoreLogCodec.write(
-            [Array(records[0..<4]), Array(records[4..<8]), Array(records[8..<12])],
-            bufferSize: 128
-        )
-        var random = PersistenceSeededRandom(seed: 0x331_BADC_0DE)
-        for iteration in 0..<192 {
-            var damaged = pristine
-            for _ in 0..<(random.nextInt(upperBound: 12) + 1) {
-                let index = random.nextInt(upperBound: damaged.count)
-                damaged[index] = damaged[index] ^ UInt8(truncatingIfNeeded: random.next())
-            }
-            let repaired = try RestoreLogCodec.repair(damaged, bufferSize: 128)
-            XCTAssertNoThrow(try RestoreLogCodec.read(repaired.repairedData, bufferSize: 128), "iteration \(iteration)")
-            let stable = try RestoreLogCodec.repair(repaired.repairedData, bufferSize: 128)
-            XCTAssertTrue(stable.repairedBufferIndices.isEmpty, "iteration \(iteration)")
-        }
-    }
-
     private static func fixtureURL(_ name: String) -> URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -1905,9 +1759,7 @@ final class LegacyConfigTests: XCTestCase {
 private struct PersistenceSeededRandom {
     private var state: UInt64
 
-    init(seed: UInt64) {
-        state = seed
-    }
+    init(seed: UInt64) { state = seed }
 
     mutating func next() -> UInt64 {
         state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407

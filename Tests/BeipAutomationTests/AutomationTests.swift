@@ -858,7 +858,6 @@ final class AutomationTests: XCTestCase {
         XCTAssertEqual(registry.parse("/debugtriggers", variables: [:]), .debugAutomation(.triggers))
         XCTAssertEqual(registry.parse("/debugtimers", variables: [:]), .debugAutomation(.timers))
         XCTAssertEqual(registry.parse("/debugnetwork", variables: [:]), .debugNetwork)
-        XCTAssertEqual(registry.parse("/restoreinfo", variables: [:]), .restoreInfo)
         guard case let .display(help) = registry.parse("/help", variables: [:]) else {
             return XCTFail("missing command help")
         }

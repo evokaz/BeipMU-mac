@@ -93,7 +93,6 @@ public enum CommandOutcome: Sendable, Equatable {
     case cancelCapture
     case debugAutomation(DebugAutomationKind)
     case debugNetwork
-    case restoreInfo
     case invoke(name: String, arguments: [String], rawArguments: String)
     case unimplemented(String)
     case notACommand
@@ -128,7 +127,7 @@ public struct CommandRegistry: Sendable {
         "lizards", "logall", "logtop", "makali", "map_addexit", "map_addroom", "map_guesslocation", "map_look",
         "mcmp", "naws", "new", "newedit", "newinput", "newtab", "opendialog", "ping", "printenv",
         "puppet", "puppets", "recall", "receive", "receivegmcp", "reconnect", "removelast", "repeat",
-        "resetconfig", "resetscript", "restoreinfo", "roll", "rolltest", "script", "set", "setinput",
+        "resetconfig", "resetscript", "roll", "rolltest", "script", "set", "setinput",
         "shelp", "silence", "slist", "stats", "stoplogs", "switchtab", "tabcolor", "test", "tilemap",
         "ttype", "unset", "wall", "webview", "world",
     ]
@@ -348,7 +347,6 @@ public struct CommandRegistry: Sendable {
         case "debugtriggers": return .debugAutomation(.triggers)
         case "debugtimers": return .debugAutomation(.timers)
         case "debugnetwork": return .debugNetwork
-        case "restoreinfo": return .restoreInfo
         case "roll": return roll(arguments.first)
         case "help", "?":
             if arguments.count == 1 { return .openCommandHelp(arguments[0]) }

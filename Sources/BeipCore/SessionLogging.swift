@@ -9,6 +9,9 @@ public enum SessionLogFormat: String, Sendable, Codable {
 }
 
 public struct SessionLogOptions: Sendable, Codable, Equatable {
+    /// Config.txt names retained as the Mac recovery configuration surface.
+    public var restoreLogs: Bool
+    public var restoreBufferSize: Int
     public var autoLogEnabled: Bool
     public var defaultLogFilename: String
     public var appendsDateToFilename: Bool
@@ -26,6 +29,8 @@ public struct SessionLogOptions: Sendable, Codable, Equatable {
     public var doubleSpaces: Bool
 
     public init(
+        restoreLogs: Bool = true,
+        restoreBufferSize: Int = 10 * 1_024 * 1_024,
         autoLogEnabled: Bool = false,
         defaultLogFilename: String = "",
         appendsDateToFilename: Bool = false,
@@ -42,6 +47,8 @@ public struct SessionLogOptions: Sendable, Codable, Equatable {
         wrapsAtWords: Bool = true,
         doubleSpaces: Bool = false
     ) {
+        self.restoreLogs = restoreLogs
+        self.restoreBufferSize = max(4 * 1_024, restoreBufferSize)
         self.autoLogEnabled = autoLogEnabled
         self.defaultLogFilename = defaultLogFilename
         self.appendsDateToFilename = appendsDateToFilename
@@ -60,6 +67,7 @@ public struct SessionLogOptions: Sendable, Codable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
+        case restoreLogs, restoreBufferSize
         case autoLogEnabled, defaultLogFilename, appendsDateToFilename, fileDateFormat
         case logsSentText, sentPrefix, logsTypedText, typedPrefix
         case includesTime, includesDate, uses24HourTime, wrapWidth, hangingIndent, wrapsAtWords, doubleSpaces
@@ -68,6 +76,8 @@ public struct SessionLogOptions: Sendable, Codable, Equatable {
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         self.init(
+            restoreLogs: try values.decodeIfPresent(Bool.self, forKey: .restoreLogs) ?? true,
+            restoreBufferSize: try values.decodeIfPresent(Int.self, forKey: .restoreBufferSize) ?? 10 * 1_024 * 1_024,
             autoLogEnabled: try values.decodeIfPresent(Bool.self, forKey: .autoLogEnabled) ?? false,
             defaultLogFilename: try values.decodeIfPresent(String.self, forKey: .defaultLogFilename) ?? "",
             appendsDateToFilename: try values.decodeIfPresent(Bool.self, forKey: .appendsDateToFilename) ?? false,

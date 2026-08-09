@@ -140,7 +140,7 @@ final class RuntimeStateContextTests: XCTestCase {
             at: context.configurationDirectory,
             withIntermediateDirectories: true
         )
-        for name in ["Config.txt", "Config.backup.txt", "Config.mac.json", "Restore.dat"] {
+        for name in ["Config.txt", "Config.backup.txt", "Config.mac.json", "Recovery.dat"] {
             try Data("state".utf8).write(
                 to: context.configurationDirectory.appendingPathComponent(name)
             )
@@ -150,7 +150,7 @@ final class RuntimeStateContextTests: XCTestCase {
         try context.resetUITestState()
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: context.configurationDirectory.path))
-        for name in ["Config.txt", "Config.backup.txt", "Config.mac.json", "Restore.dat"] {
+        for name in ["Config.txt", "Config.backup.txt", "Config.mac.json", "Recovery.dat"] {
             XCTAssertFalse(FileManager.default.fileExists(
                 atPath: context.configurationDirectory.appendingPathComponent(name).path
             ))

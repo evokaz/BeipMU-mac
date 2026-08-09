@@ -61,24 +61,6 @@ final class PersistenceResilienceTests: XCTestCase {
         }
     }
 
-    func testTruncatedAndCorruptRestoreBuffersAreRejectedWithoutMutation() throws {
-        let directory = try temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let url = directory.appendingPathComponent("Restore.dat")
-        let record = RestoreLogRecord(
-            kind: .received,
-            windowsFileTime: 1,
-            payload: Data("readable".utf8)
-        )
-        let valid = try RestoreLogCodec.write([[record]], bufferSize: 64)
-
-        for damaged in [Data(valid.dropLast()), corruptRestoreHeader(valid)] {
-            try damaged.write(to: url)
-            XCTAssertThrowsError(try RestoreLogStore.load(from: url, bufferSize: 64))
-            XCTAssertEqual(try Data(contentsOf: url), damaged)
-        }
-    }
-
     func testAllPersistenceStoresPreservePrimaryAtBothAtomicFailureBoundaries() async throws {
         for stage in AtomicFileWriter.Stage.allCases {
             let directory = try temporaryDirectory()
@@ -118,24 +100,6 @@ final class PersistenceResilienceTests: XCTestCase {
                 writer: writer
             ))
             XCTAssertEqual(try AtlasReader.readArchive(from: atlasURL), originalAtlas)
-
-            let restoreURL = directory.appendingPathComponent("Restore.dat")
-            let originalLogs = [[RestoreLogRecord(
-                kind: .received,
-                windowsFileTime: 1,
-                payload: Data("original".utf8)
-            )]]
-            try RestoreLogStore.save(originalLogs, to: restoreURL, bufferSize: 64)
-            XCTAssertThrowsError(try RestoreLogStore.save(
-                [[.init(kind: .sent, windowsFileTime: 2, payload: Data("edited".utf8))]],
-                to: restoreURL,
-                bufferSize: 64,
-                writer: writer
-            ))
-            XCTAssertEqual(
-                try RestoreLogStore.load(from: restoreURL, bufferSize: 64),
-                originalLogs
-            )
 
             XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: directory.path)
                 .contains(where: { $0.hasSuffix(".tmp") }))
@@ -245,11 +209,6 @@ final class PersistenceResilienceTests: XCTestCase {
         }
     }
 
-    private func corruptRestoreHeader(_ data: Data) -> Data {
-        var result = data
-        result[4] = 0xff
-        return result
-    }
 }
 
 private func XCTAssertThrowsErrorAsync<T>(

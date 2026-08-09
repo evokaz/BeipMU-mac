@@ -605,6 +605,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     private let profileLibrary: ProfileLibrary
+    private let recoveryStore: SessionRecoveryStore?
     private let output = OutputTextView()
     private let input = CommandInputView()
     private let inputSplitView = NSSplitView()
@@ -636,6 +637,9 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private var keyboardMacroGroups: [KeyboardMacroGroup] = []
     private var session: SessionActor?
     private var sessionTask: Task<Void, Never>?
+    private var recoverySessionID: UUID?
+    private var resumesRecoveredSessionOnReconnect = false
+    private var replayingRecovery = false
     private var activeCharacterProfile: ActiveCharacterProfile?
     private var persistedSessionStatistics = ConnectionStatistics()
     private var currentServer: ServerProfile?
@@ -703,6 +707,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private var tracksInputHeight = false
     private var inputHistoryHeight: CGFloat = 84
     private var isRestoringInputSplitLayout = false
+    private var applicationTerminationPrepared = false
     private static var didRunStartupScript = false
     private static let minimumOutputHeight: CGFloat = 80
     private static let minimumInputHistoryHeight: CGFloat = 22
@@ -796,10 +801,12 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
 
     init(
         profileLibrary: ProfileLibrary,
+        recoveryStore: SessionRecoveryStore? = nil,
         runsScriptServices: Bool = true,
         initialPreferences: WorkspacePreferences = WorkspacePreferencesStore.load()
     ) {
         self.profileLibrary = profileLibrary
+        self.recoveryStore = recoveryStore
         self.runsScriptServices = runsScriptServices
         self.preferences = initialPreferences
         let window = NSWindow(
@@ -927,6 +934,12 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             Task { [scriptService] in await scriptService.stopAsyncOutputDelivery() }
         }
         stopCurrentSessionAndPersistStatistics()
+        if !applicationTerminationPrepared, let recoverySessionID {
+            try? recoveryStore?.remove(sessionID: recoverySessionID)
+        } else {
+            try? recoveryStore?.flush()
+        }
+        recoverySessionID = nil
         onClose?()
     }
 
@@ -1498,11 +1511,17 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     func prepareForApplicationTermination() {
+        applicationTerminationPrepared = true
         dockController?.prepareForOwnerClose()
         saveSpawnSurfacePreferences()
         saveAtlasSurfacePreferences()
         mediaController.flush()
         stopAllLogs(announcing: false)
+        if let recoverySessionID {
+            try? recoveryStore?.remove(sessionID: recoverySessionID)
+            self.recoverySessionID = nil
+        }
+        try? recoveryStore?.flush()
     }
 
     func startPerformanceSoakIfRequested() {
@@ -1966,49 +1985,6 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         controller.focusInitialControl()
     }
 
-    func showRestoreInformation() {
-        appendClient("Live Restore.dat information… running CheckAndRepair first")
-        guard let configurationURL = profileLibrary.workspace.sourceURL else {
-            appendError("Restore.dat is unavailable until a Config.txt file is open.")
-            return
-        }
-        let restoreURL = configurationURL.deletingLastPathComponent().appendingPathComponent("Restore.dat")
-        guard FileManager.default.fileExists(atPath: restoreURL.path) else {
-            appendClient("CheckAndRepair complete\nBuffer Size: 0kb   Total Buffers: 0\nSummary complete.")
-            return
-        }
-        let document = profileLibrary.workspace.document
-        let sizeInKB = document.value(at: ["Connections", "Logging", "RestoreBufferSizeCurrent"])
-            .flatMap(Int.init)
-            ?? document.value(at: ["Connections", "Logging", "RestoreBufferSize"]).flatMap(Int.init)
-            ?? 64
-        let bufferSize = sizeInKB * 1_024
-        guard bufferSize >= 20 else {
-            appendError("Restore.dat has an invalid configured buffer size: \(sizeInKB)kb.")
-            return
-        }
-        do {
-            let inspection = try RestoreLogStore.inspectRepairing(from: restoreURL, bufferSize: bufferSize)
-            let assignments = profileLibrary.workspace.projection.servers.reduce(into: [Int: String]()) {
-                $0.merge($1.restoreLogAssignments) { current, _ in current }
-            }
-            var lines = [
-                "CheckAndRepair complete",
-                "Buffer Size: \(inspection.bufferSize / 1_024)kb   Total Buffers: \(inspection.buffers.count)",
-            ]
-            lines += inspection.buffers.map { buffer in
-                let owner = assignments[buffer.index] ?? "Unassigned"
-                let percent = inspection.bufferSize == 0 ? 0 : buffer.usedBytes * 100 / inspection.bufferSize
-                let repaired = buffer.wasRepaired ? "   Repaired" : ""
-                return "\(buffer.index)  \(owner) - Used: \(buffer.usedBytes)  \(percent)% - Records: \(buffer.recordCount)\(repaired)"
-            }
-            lines.append("Summary complete.")
-            appendClient(lines.joined(separator: "\n"))
-        } catch {
-            appendError("Unable to inspect Restore.dat: \(error.localizedDescription)")
-        }
-    }
-
     func showThemeSettings() {
         onSettingsRequest?(.appearance, nil)
     }
@@ -2279,6 +2255,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         input.onHistoryChange = { [weak self] entries in
             guard let self else { return }
             self.inputHistoryPane.update(entries)
+            self.recordRecovery(.inputHistory(entries))
         }
         output.onAction = { [weak self] action in self?.perform(action) }
         output.onContextMenu = { [weak self] _ in self?.outputContextMenu() }
@@ -2431,20 +2408,49 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         master: ClientWindowController? = nil,
         policy: ConnectionPolicy = .init()
     ) {
+        let recoveryEnabled = master == nil
+            && profileLibrary.workspace.projection.logging.restoreLogs
+            && (character?.restoreLog ?? true)
+        let canResumeRecoveredSession = resumesRecoveredSessionOnReconnect
+            && recoveryEnabled
+            && currentServer?.id == server.id
+            && currentCharacter?.id == character?.id
+            && recoverySessionID != nil
+        resumesRecoveredSessionOnReconnect = false
         preferences.workspaceLayouts[notesKey] = dockController.currentLayout
         savePreferences()
         saveSpawnSurfacePreferences()
-        closeSpawnSurfaces()
+        if !canResumeRecoveredSession {
+            closeSpawnSurfaces()
+        }
         saveAtlasSurfacePreferences()
         closeAtlasSurface(preservingDockPlacement: true)
         closeWebViews()
         closeAIWindow(preservingDockPlacement: true)
         stopCurrentSessionAndPersistStatistics()
+        if !canResumeRecoveredSession, let recoverySessionID {
+            try? recoveryStore?.remove(sessionID: recoverySessionID)
+            self.recoverySessionID = nil
+        }
         isSessionConnected = false
         currentServer = server
         currentCharacter = character
         currentPuppet = puppet
         puppetMaster = master
+        if recoveryEnabled, let recoveryStore {
+            if canResumeRecoveredSession,
+               let recoverySessionID,
+               recoveryStore.session(id: recoverySessionID) != nil {
+                self.recoverySessionID = recoverySessionID
+            } else {
+                self.recoverySessionID = try? recoveryStore.beginSession(
+                    serverID: server.id,
+                    characterID: character?.id,
+                    serverName: server.name,
+                    characterName: character?.name
+                )
+            }
+        }
         applyTextWindowSettings()
         applyInputWindowSettings()
         variables = profileLibrary.workspace.projection.variables(for: server, character: character, puppet: puppet)
@@ -2498,7 +2504,9 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
                 color: Self.rgbColor(hex: inputSettings.localEchoHex)
             )
         }
-        output.clear()
+        if !canResumeRecoveredSession {
+            output.clear()
+        }
         sessionTask = Task { [weak self] in
             let events = await next.events()
             for await event in events {
@@ -2695,6 +2703,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             if routeMasterLineToPuppet(line, isPrompt: true) { return }
             await presentIncoming(line, isPrompt: true)
         case let .gmcp(message):
+            recordRecovery(.gmcp(message))
             guard !suppressSessionData else { return }
             webViewWindows.values.forEach { $0.observeGMCP(message) }
             let raw = message.payload.isEmpty ? message.package : "\(message.package) \(message.payload)"
@@ -2765,9 +2774,54 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         await presentIncoming(.init(text: text), isPrompt: false)
     }
 
+    func restoreRecoverySession(_ snapshot: SessionRecoverySession) {
+        if let recoverySessionID, recoverySessionID != snapshot.id {
+            try? recoveryStore?.remove(sessionID: recoverySessionID)
+        }
+        recoverySessionID = recoveryStore?.session(id: snapshot.id) == nil ? nil : snapshot.id
+        resumesRecoveredSessionOnReconnect = recoverySessionID != nil
+        replayingRecovery = true
+        defer { replayingRecovery = false }
+        output.clear()
+        closeSpawnSurfaces()
+        gmcpState.reset()
+        mediaState.reset()
+        input.restoreHistory(
+            snapshot.records.reversed().compactMap { record in
+                if case let .inputHistory(values) = record.event { return values }
+                return nil
+            }.first ?? []
+        )
+        for record in snapshot.records {
+            switch record.event {
+            case let .renderedLine(line):
+                output.append(Self.replayed(line, timestamp: record.timestamp))
+            case let .prompt(line):
+                output.append(Self.replayed(line, timestamp: record.timestamp), terminator: "")
+            case let .spawnOutput(title, tabGroup, line):
+                restoreSpawnOutput(
+                    title: title,
+                    tabGroup: tabGroup,
+                    line: Self.replayed(line, timestamp: record.timestamp)
+                )
+            case .sentInput, .inputHistory:
+                break
+            case let .gmcp(message):
+                handleAdvancedGMCP(message)
+            }
+        }
+        appendInformationalNotice("Session restored from a crash. Please reconnect.")
+        refreshDiagnostics()
+        updateWindowTitle()
+    }
+
     func testingSpawnLines(named title: String) -> [String] {
         triggerSpawnWindows[title]?.retainedLines.map(\.text) ?? []
     }
+
+    func testingOutputLines() -> [String] { output.retainedLines.map(\.text) }
+    func testingInputHistory() -> [String] { input.historyEntriesForDisplay }
+    func testingGMCPRoom() -> GMCPRoomInfo? { gmcpState.currentRoom }
 
     func testingSpawnSurfaceState() -> (
         standalone: [String: Bool],
@@ -2900,12 +2954,14 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             suppressNextSessionActivity = presentation.suppressActivity
             if hasPendingPrompt { output.removeLastLine(); hasPendingPrompt = false }
             if !presentation.gagDisplay, !webViewGag {
+                recordRecovery(.renderedLine(presentation.line), at: presentation.line.timestamp)
                 output.append(presentation.line)
             }
             return
         }
         if hasPendingPrompt { output.removeLastLine() }
         if !presentation.gagDisplay, !webViewGag {
+            recordRecovery(.prompt(presentation.line), at: presentation.line.timestamp)
             output.append(presentation.line, terminator: "")
             hasPendingPrompt = true
         } else {
@@ -3004,6 +3060,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     private func transmitToSession(_ text: String, session explicitSession: SessionActor? = nil) {
+        recordRecovery(.sentInput(text))
         appendSentToLogs(text)
         webViewWindows.values.forEach { $0.observeSent(text) }
         if let puppet = currentPuppet, let master = puppetMaster {
@@ -4130,8 +4187,6 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             showAutomationDebugger(kind)
         case .debugNetwork:
             showNetworkDebugger()
-        case .restoreInfo:
-            showRestoreInformation()
         case let .invoke(name, arguments, _):
             switch name {
             case "tabcolor": setTabColor(arguments.first)
@@ -4787,7 +4842,11 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private static let connectionAddressColor = BeipCore.RGBColor(red: 80, green: 80, blue: 255)
     private static let connectionErrorColor = BeipCore.RGBColor(red: 255, green: 0, blue: 0)
 
-    private func appendClient(_ text: String) { output.append(.init(text: text, source: .client)) }
+    private func appendClient(_ text: String) {
+        let line = RenderedLine(text: text, source: .client)
+        recordRecovery(.renderedLine(line), at: line.timestamp)
+        output.append(line)
+    }
 
     private func appendInformationalNotice(_ text: String) {
         appendClient(text, color: Self.connectionInfoColor)
@@ -4804,7 +4863,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             let text = prefix + address + suffix
             let prefixEnd = prefix.utf16.count
             let addressEnd = prefixEnd + address.utf16.count
-            output.append(.init(
+            let line = RenderedLine(
                 text: text,
                 runs: [
                     .init(range: 0..<prefixEnd, style: .init(foreground: Self.connectionSuccessColor)),
@@ -4812,7 +4871,9 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
                     .init(range: addressEnd..<text.utf16.count, style: .init(foreground: Self.connectionSuccessColor)),
                 ],
                 source: .client
-            ))
+            )
+            recordRecovery(.renderedLine(line), at: line.timestamp)
+            output.append(line)
         case .connected:
             appendClient("Connected", color: Self.connectionSuccessColor)
         case let .retryScheduled(seconds):
@@ -4830,22 +4891,26 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         let prefix = "Error: "
         let text = prefix + message
         let boundary = prefix.utf16.count
-        output.append(.init(
+        let line = RenderedLine(
             text: text,
             runs: [
                 .init(range: 0..<boundary, style: .init(foreground: Self.connectionErrorColor)),
                 .init(range: boundary..<text.utf16.count, style: .init(foreground: Self.connectionInfoColor)),
             ],
             source: .client
-        ))
+        )
+        recordRecovery(.renderedLine(line), at: line.timestamp)
+        output.append(line)
     }
 
     private func appendClient(_ text: String, color: BeipCore.RGBColor) {
-        output.append(.init(
+        let line = RenderedLine(
             text: text,
             runs: [.init(range: 0..<text.utf16.count, style: .init(foreground: color))],
             source: .client
-        ))
+        )
+        recordRecovery(.renderedLine(line), at: line.timestamp)
+        output.append(line)
     }
 
     private var scriptHostSnapshot: ScriptHostSnapshot {
@@ -5092,6 +5157,14 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         let title = action.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? "Trigger Spawn" : action.title
         let group = action.tabGroup.trimmingCharacters(in: .whitespacesAndNewlines)
+        recordRecovery(
+            .spawnOutput(
+                title: title,
+                tabGroup: group.isEmpty ? nil : group,
+                line: line
+            ),
+            at: line.timestamp
+        )
         if group.isEmpty {
             let controller = spawnWindow(named: title)
             if startsCapture, action.clear { controller.clear() }
@@ -5110,6 +5183,48 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         if startsCapture, !action.captureUntil.isEmpty {
             spawnCapture = .init(title: title, action: action, children: children)
         }
+    }
+
+    private func restoreSpawnOutput(
+        title: String,
+        tabGroup: String?,
+        line: RenderedLine
+    ) {
+        if let tabGroup, !tabGroup.isEmpty {
+            let controller = spawnTabGroup(named: tabGroup)
+            controller.deliver(
+                line,
+                to: title,
+                clear: false,
+                showTab: false,
+                highlight: false
+            )
+            presentSpawnTabGroup(controller, title: tabGroup)
+        } else {
+            let controller = spawnWindow(named: title)
+            controller.append(line)
+            presentSpawnWindow(controller, title: title)
+        }
+    }
+
+    private func recordRecovery(
+        _ event: SessionRecoveryEvent,
+        at timestamp: Date = Date()
+    ) {
+        guard !replayingRecovery,
+              let recoverySessionID,
+              let recoveryStore else { return }
+        try? recoveryStore.append(event, to: recoverySessionID, at: timestamp)
+    }
+
+    private static func replayed(_ line: RenderedLine, timestamp: Date) -> RenderedLine {
+        var line = line
+        line.timestamp = timestamp
+        line.source = .replay
+        // Recovery replay is text/state-only. Do not let retained image or
+        // other inline assets initiate media work while rebuilding the view.
+        line.assets.removeAll(keepingCapacity: false)
+        return line
     }
 
     private func spawnWindow(named title: String) -> TriggerSpawnWindowController {
@@ -5409,6 +5524,10 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     private func handleAdvancedGMCP(_ message: GMCPMessage) {
+        if replayingRecovery {
+            _ = try? gmcpState.consume(message)
+            return
+        }
         activityLabel.stringValue = "GMCP: \(message.package)"
         if gmcpDumpEnabled {
             appendClient("GMCP \(message.package) \(message.payload)")
@@ -5843,7 +5962,13 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
 
     private func appendError(_ text: String) {
         let style = TextStyle(foreground: .init(red: 255, green: 80, blue: 80))
-        output.append(.init(text: text, runs: [.init(range: 0..<text.utf16.count, style: style)], source: .client))
+        let line = RenderedLine(
+            text: text,
+            runs: [.init(range: 0..<text.utf16.count, style: style)],
+            source: .client
+        )
+        recordRecovery(.renderedLine(line), at: line.timestamp)
+        output.append(line)
     }
 }
 

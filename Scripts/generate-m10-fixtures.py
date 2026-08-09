@@ -21,7 +21,7 @@ def large_configuration() -> bytes:
         "M10UnknownRoot=preserve-root",
         "Connections",
         "{",
-        "  Logging.RestoreBufferSizeCurrent=10000",
+        "  Logging.RestoreBufferSize=10000",
         "  Shortcuts",
         "  {",
     ]

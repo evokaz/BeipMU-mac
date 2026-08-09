@@ -2,7 +2,7 @@ Version=331
 M10UnknownRoot=preserve-root
 Connections
 {
-  Logging.RestoreBufferSizeCurrent=10000
+  Logging.RestoreBufferSize=10000
   Shortcuts
   {
     "M10 World 00"

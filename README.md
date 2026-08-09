@@ -29,7 +29,7 @@ architecture; the Intel slice is currently untested.
 - Scoped aliases, triggers, macros, variables, delayed commands, spawn windows,
   and automation diagnostics.
 - JavaScriptCore scripting in an XPC service with a watchdog/reset boundary.
-- Atlas maps, WebViews, images, audio, speech, session logging, restore logs,
+- Atlas maps, WebViews, images, audio, speech, session logging, crash recovery,
   connection statistics, and network debugging.
 - Virtualized output with dedicated scale, UI, performance, and leak checks.
 
@@ -57,9 +57,9 @@ For day-to-day development:
 ```sh
 ./Scripts/generate-project.sh
 ./Scripts/test.sh
+./Scripts/test-ui.sh
 xcodebuild -project BeipMU.xcodeproj -scheme BeipMU \
   -configuration Debug -derivedDataPath DerivedData build
-./Scripts/test-ui.sh
 ```
 
 `BeipMU.xcodeproj` is generated from `project.yml`; edit the specification and
@@ -90,7 +90,7 @@ scripting, logs, and data locations.
 | `Sources/BeipCore/` | Shared models, session actor, output history, logging, media, and GMCP state |
 | `Sources/BeipProtocols/` | Network transport and Telnet/ANSI/MCP/Pueblo pipeline |
 | `Sources/BeipAutomation/` | Aliases, triggers, macros, matching, delays, and slash commands |
-| `Sources/BeipPersistence/` | Lossless legacy configuration, restore logs, sidecar state, and Atlas files |
+| `Sources/BeipPersistence/` | Lossless configuration, session recovery, sidecar state, and Atlas files |
 | `Sources/BeipScriptRuntime/` | JavaScript host API and XPC client contract |
 | `Sources/BeipUI/` | AppKit application, workspace, editors, tools, and rendering |
 | `Tests/` | Swift package unit, integration, resilience, scale, and performance tests |

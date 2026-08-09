@@ -84,7 +84,6 @@ public struct CharacterProfile: Identifiable, Sendable, Hashable, Codable {
     public var logFilename: String
     public var logAppendsDate: Bool
     public var restoreLog: Bool
-    public var restoreLogIndex: Int
     public var bytesSent: UInt64
     public var bytesReceived: UInt64
     public var secondsConnected: UInt64
@@ -113,7 +112,6 @@ public struct CharacterProfile: Identifiable, Sendable, Hashable, Codable {
         logFilename: String = "",
         logAppendsDate: Bool = false,
         restoreLog: Bool = false,
-        restoreLogIndex: Int = -1,
         bytesSent: UInt64 = 0,
         bytesReceived: UInt64 = 0,
         secondsConnected: UInt64 = 0,
@@ -134,7 +132,6 @@ public struct CharacterProfile: Identifiable, Sendable, Hashable, Codable {
         self.logFilename = logFilename
         self.logAppendsDate = logAppendsDate
         self.restoreLog = restoreLog
-        self.restoreLogIndex = restoreLogIndex
         self.bytesSent = bytesSent
         self.bytesReceived = bytesReceived
         self.secondsConnected = secondsConnected

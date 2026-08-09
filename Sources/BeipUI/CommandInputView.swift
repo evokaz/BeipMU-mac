@@ -181,6 +181,13 @@ final class CommandInputView: NSTextView {
         onHistoryChange?(commandHistory.entries)
     }
 
+    func restoreHistory(_ values: [String]) {
+        commandHistory = InputHistory(limit: commandHistory.limit)
+        values.forEach { commandHistory.record($0) }
+        commandHistory.resetNavigation()
+        onHistoryChange?(commandHistory.entries)
+    }
+
     override func paste(_ sender: Any?) {
         guard let pasted = NSPasteboard.general.string(forType: .string) else { return }
         let normalized = pasted.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")

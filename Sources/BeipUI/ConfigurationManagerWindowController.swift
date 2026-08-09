@@ -1126,7 +1126,6 @@ final class ConfigurationManagerWindowController: NSWindowController, NSOutlineV
             try workspace.updateCharacter(id: newCharacterID, inServerID: newServerID) { target in
                 target = character
                 target.id = newCharacterID
-                target.restoreLogIndex = -1
             }
             for puppet in character.puppets {
                 let newPuppetID = try workspace.addPuppet(
@@ -1183,7 +1182,6 @@ final class ConfigurationManagerWindowController: NSWindowController, NSOutlineV
                 target = character
                 target.id = newID
                 target.name = newCharacterName ?? copiedName(character.name)
-                target.restoreLogIndex = -1
             }
             return .character(server: serverID, character: newID)
         case let (.puppet(puppet), .puppet(serverID, characterID, _)):
