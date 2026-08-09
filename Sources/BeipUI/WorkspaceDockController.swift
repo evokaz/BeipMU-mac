@@ -387,7 +387,7 @@ final class WorkspaceDockController: NSObject, NSWindowDelegate, NSSplitViewDele
               case let .split(_, _, _, second) = node,
               second.panes.contains(.atlas) else { return proposedMaximumPosition }
         let total = splitView.isVertical ? splitView.bounds.width : splitView.bounds.height
-        return max(proposedMaximumPosition, total - 240)
+        return max(proposedMaximumPosition, total - splitView.dividerThickness - 240)
     }
 
     private func setPlacement(_ placement: WorkspaceDockPlacement, notify: Bool) {

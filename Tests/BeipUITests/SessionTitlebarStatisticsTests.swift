@@ -473,7 +473,7 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
         XCTAssertEqual(windowsMenu.item(withTitle: "Toggle Input History")?.keyEquivalent, "h")
         XCTAssertEqual(windowsMenu.item(withTitle: "New Tab")?.keyEquivalentModifierMask, [.control])
         XCTAssertEqual(windowsMenu.item(withTitle: "New Window")?.keyEquivalentModifierMask, [.control])
-        XCTAssertEqual(windowsMenu.item(withTitle: "Toggle Input History")?.keyEquivalentModifierMask, [.command])
+        XCTAssertEqual(windowsMenu.item(withTitle: "Toggle Input History")?.keyEquivalentModifierMask, [.control])
 
         let toolsMenu = try XCTUnwrap(menu.item(withTitle: "Tools")?.submenu)
         XCTAssertEqual(

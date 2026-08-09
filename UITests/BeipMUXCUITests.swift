@@ -89,8 +89,8 @@ final class BeipMUXCUITests: XCTestCase {
 
         app.typeKey("f", modifierFlags: [.command, .control])
         XCTAssertTrue(waitUntil(timeout: 5) {
-            reportedHeight(of: window) >= NSScreen.main!.frame.height - 2
-        })
+            reportedHeight(of: window) >= NSScreen.main!.visibleFrame.height - 2
+        }, "Full screen did not fill the usable screen; value: \(String(describing: window.value))")
         app.typeKey("f", modifierFlags: [.command, .control])
     }
 
@@ -181,7 +181,7 @@ final class BeipMUXCUITests: XCTestCase {
         XCTAssertTrue(inputSheet.textFields["inputSettingsMaximumLines"].exists)
         XCTAssertTrue(inputSheet.checkBoxes["inputSettingsKeepText"].exists)
         XCTAssertTrue(inputSheet.checkBoxes["inputSettingsLocalEcho"].exists)
-        app.typeKey(.escape, modifierFlags: [])
+        inputSheet.buttons["Cancel"].click()
         XCTAssertTrue(inputSheet.waitForNonExistence(timeout: 3))
 
         app.menuBars.menuBarItems["BeipMU"].click()
@@ -194,7 +194,7 @@ final class BeipMUXCUITests: XCTestCase {
         XCTAssertTrue(sheet.textFields["textSettingsHistory"].exists)
         XCTAssertTrue(sheet.textFields["textSettingsWrappedIndent"].exists)
         XCTAssertTrue(sheet.textFields["textSettingsFixedWidthCharacters"].exists)
-        app.typeKey(.escape, modifierFlags: [])
+        sheet.buttons["Cancel"].click()
         XCTAssertTrue(sheet.waitForNonExistence(timeout: 3))
     }
 

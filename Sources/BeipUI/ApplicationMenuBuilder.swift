@@ -55,7 +55,7 @@ enum ApplicationMenuBuilder {
                 title: "Toggle Input History",
                 action: #selector(ApplicationDelegate.toggleInputHistoryWindow(_:)),
                 keyEquivalent: "h",
-                modifiers: [.command]
+                modifiers: [.control]
             ))
         }
         menu.addItem(applicationMenuItem(

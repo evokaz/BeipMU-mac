@@ -735,7 +735,7 @@ final class WorkspacePreferencesTests: XCTestCase {
             recursiveSubviews(of: dock.hostView).compactMap { $0 as? NSSplitView }.first
         )
         XCTAssertTrue(split.isVertical)
-        split.setPosition(split.bounds.width - 240, ofDividerAt: 0)
+        split.setPosition(split.bounds.width - split.dividerThickness - 240, ofDividerAt: 0)
         dock.hostView.layoutSubtreeIfNeeded()
 
         XCTAssertEqual(atlasContent.frame.width, 240, accuracy: 2)
@@ -1302,7 +1302,7 @@ final class WorkspacePreferencesTests: XCTestCase {
         let loaded = KeyboardShortcutStore.load(from: serialized)
         XCTAssertEqual(loaded[.clearOutput], custom)
         XCTAssertEqual(loaded[.newWindow], ShortcutAction.newWindow.defaultShortcut)
-        XCTAssertEqual(loaded[.toggleInputHistory], .init(keyEquivalent: "h", modifiers: [.command]))
+        XCTAssertEqual(loaded[.toggleInputHistory], .init(keyEquivalent: "h", modifiers: [.control]))
         XCTAssertEqual(KeyboardShortcutStore.load()[.clearOutput], ShortcutAction.clearOutput.defaultShortcut)
     }
 

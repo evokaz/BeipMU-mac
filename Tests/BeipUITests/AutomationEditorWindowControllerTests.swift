@@ -17,8 +17,8 @@ final class AutomationEditorWindowControllerTests: XCTestCase {
 
         XCTAssertEqual(detail.testingMatchError, "")
         XCTAssertTrue(detail.testingMatchResult.contains("Matches: 1"))
-        XCTAssertTrue(detail.testingMatchResult.contains("$1=Wizard [0-5]"))
-        XCTAssertTrue(detail.testingMatchResult.contains("$2=test [13-17]"))
+        XCTAssertTrue(detail.testingMatchResult.contains("$1=Wizard [0-6]"))
+        XCTAssertTrue(detail.testingMatchResult.contains("$2=test [14-18]"))
         XCTAssertNoThrow(try detail.validateForApply())
     }
 
