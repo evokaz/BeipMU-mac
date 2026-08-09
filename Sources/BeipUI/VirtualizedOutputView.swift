@@ -1,14 +1,26 @@
 import AppKit
 import BeipCore
 import CoreText
+import Foundation
 
 @MainActor
 final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToolTipOwner {
+    struct InlinePreview: Equatable {
+        var source: URL
+        var altText: String
+
+        init(source: URL, altText: String = "Image") {
+            self.source = source
+            self.altText = altText
+        }
+    }
+
     struct Item {
         var id: UUID
         var attributedText: NSAttributedString
         var contentRange: NSRange
         var assets: [(asset: InlineAsset, displayOffset: Int)]
+        var previews: [InlinePreview] = []
         var paragraph: ParagraphStyle = .init()
     }
 
@@ -26,6 +38,17 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     private struct HoveredLink: Equatable {
         var itemID: UUID
         var range: NSRange
+    }
+
+    private struct PreviewHit: Equatable {
+        var itemID: UUID
+        var source: URL
+        var rect: NSRect
+    }
+
+    private enum PreviewLoadState: Equatable {
+        case loading
+        case failed
     }
 
     static let blinkAttribute = NSAttributedString.Key("BeipMUBlink")
@@ -48,6 +71,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     private var focus: Position?
     private var mouseDownPosition: Position?
     private var hoveredLink: HoveredLink?
+    private var mouseDownPreview: PreviewHit?
     private var trackingArea: NSTrackingArea?
     private var markedItems: Set<UUID> = []
     private var newContentBoundaryItemID: UUID?
@@ -56,8 +80,19 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     private var blinkingItemCount = 0
     private var imageCache: [URL: NSImage] = [:]
     private var imageTasks: [URL: Task<Void, Never>] = [:]
+    private var previewTasks: [URL: Task<Void, Never>] = [:]
+    private var previewStates: [URL: PreviewLoadState] = [:]
+    private(set) var previewDownloadCount = 0
     private var animationTimer: Timer?
     private var displayOptions = AccessibilityDisplayOptions.current
+    var showsInlineImagePreviews = false {
+        didSet {
+            guard showsInlineImagePreviews != oldValue else { return }
+            if !showsInlineImagePreviews { cancelPreviewLoads() }
+            rebuildMeasurements()
+            needsDisplay = true
+        }
+    }
     var contentInsets = NSEdgeInsets(top: 7, left: 9, bottom: 7, right: 9) {
         didSet { rebuildMeasurements() }
     }
@@ -91,6 +126,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     var itemCount: Int { storage.count - head }
     var isBlinkTimerActive: Bool { blinkTimer != nil }
     var isAnimationTimerActive: Bool { animationTimer != nil }
+    var previewDownloadCountForTesting: Int { previewDownloadCount }
     var selectedRangeIsEmpty: Bool { anchor == nil || anchor == focus }
     var newContentBoundaryItemIDForTesting: UUID? { newContentBoundaryItemID }
     var effectiveContentWidthForTesting: CGFloat { contentWidth }
@@ -114,6 +150,31 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
               offset < value.attributedText.length,
               let url = value.attributedText.attribute(.link, at: offset, effectiveRange: nil) as? URL else { return }
         activateLink(url, modifierFlags: modifierFlags)
+    }
+    func activatePreviewForTesting(
+        itemID: UUID,
+        source: URL,
+        modifierFlags: NSEvent.ModifierFlags
+    ) {
+        guard let physicalIndex = itemIndices[itemID],
+              let value = item(at: physicalIndex - head),
+              value.previews.contains(where: { $0.source == source }) else { return }
+        activatePreview(source, modifierFlags: modifierFlags)
+    }
+    func inlinePreviewSourcesForTesting(at index: Int) -> [URL] {
+        item(at: index)?.previews.map(\.source) ?? []
+    }
+    func previewRectsForTesting(at index: Int) -> [NSRect] {
+        guard let value = item(at: index),
+              let y = layoutIndex.yOffset(for: index),
+              let height = layoutIndex.height(at: index) else { return [] }
+        let rect = NSRect(
+            x: contentInsets.left,
+            y: contentInsets.top + CGFloat(y),
+            width: contentWidth,
+            height: CGFloat(height)
+        )
+        return previewRects(for: value, in: rect)
     }
     func measuredHeightForTesting(at index: Int) -> Double? {
         item(at: index).map(measuredHeight(for:))
@@ -149,6 +210,10 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         markedItems.formIntersection(items.map(\.id))
         newContentBoundaryItemID = boundaryID.flatMap { id in items.contains(where: { $0.id == id }) ? id : nil }
         blinkingItemCount = items.reduce(0) { $0 + (hasBlink($1) ? 1 : 0) }
+        let activePreviewURLs = showsInlineImagePreviews
+            ? Set(items.flatMap(\.previews).map(\.source))
+            : []
+        cancelPreviewLoads(keeping: activePreviewURLs)
         rebuildIndexMap()
         rebuildMeasurements()
         updateBlinkTimer()
@@ -231,6 +296,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         newContentBoundaryItemID = nil
         blinkingItemCount = 0
         renderedItemCount = 0
+        cancelPreviewLoads()
         updateDocumentHeight()
         updateBlinkTimer()
         needsDisplay = true
@@ -396,8 +462,10 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
             drawParagraphDecoration(value.paragraph, in: rect)
             drawNewContentBoundary(for: value, in: rect)
             let attributed = attributedTextForDrawing(value, itemIndex: index)
-            drawCoreText(attributed, paragraph: value.paragraph, in: rect, context: context)
-            drawAssets(value.assets, attributedText: attributed, in: rect)
+            let textRect = textRect(for: value, in: rect)
+            drawCoreText(attributed, in: textRect, context: context)
+            drawAssets(value.assets, attributedText: attributed, in: textRect)
+            drawInlinePreviews(value.previews, item: value, in: rect)
         }
     }
 
@@ -459,11 +527,27 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         )
     }
 
+    private func paragraphPreviewContentRect(_ paragraph: ParagraphStyle, in rect: NSRect) -> NSRect {
+        let decoration = paragraphDecorationRect(paragraph, in: rect)
+        let border = CGFloat(max(0, paragraph.borderWidth))
+        let inset = min(border, decoration.width / 2)
+        return decoration.insetBy(dx: inset, dy: 0)
+    }
+
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         let point = convert(event.locationInWindow, from: nil)
+        mouseDownPreview = previewHit(at: point)
+        if mouseDownPreview != nil {
+            mouseDownPosition = nil
+            setHoveredLink(nil)
+            return
+        }
         updateHoveredLink(at: point)
-        guard let position = textPosition(at: point) else { return }
+        guard let position = textPosition(at: point) else {
+            mouseDownPosition = nil
+            return
+        }
         mouseDownPosition = position
         switch event.clickCount {
         case 2:
@@ -483,6 +567,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if mouseDownPreview != nil { return }
         let point = convert(event.locationInWindow, from: nil)
         autoscroll(with: event)
         if let position = textPosition(at: point) { focus = position }
@@ -493,7 +578,14 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     override func mouseUp(with event: NSEvent) {
         defer {
             mouseDownPosition = nil
+            mouseDownPreview = nil
             onInteractionCompleted?()
+        }
+        if let mouseDownPreview {
+            let point = convert(event.locationInWindow, from: nil)
+            guard let hit = previewHit(at: point), hit == mouseDownPreview else { return }
+            activatePreview(hit.source, modifierFlags: event.modifierFlags)
+            return
         }
         if !selectedRangeIsEmpty {
             onSelectionCompleted?()
@@ -599,11 +691,12 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
             CGSize(width: contentWidth, height: .greatestFiniteMagnitude),
             nil
         )
-        let assetHeight = item.assets.map { $0.asset.kind == .avatar ? 34.0 : 26.0 }.max() ?? 0
+        let compactAssetHeight = item.assets.map { $0.asset.kind == .avatar ? 34.0 : 26.0 }.max() ?? 0
+        let previewHeight = inlinePreviewHeight(for: item)
         let verticalSpacing = max(0, item.paragraph.topPadding)
             + max(0, item.paragraph.bottomPadding)
             + max(0, item.paragraph.borderWidth) * 2
-        return Double(max(18, assetHeight, ceil(size.height) + 1 + verticalSpacing))
+        return Double(max(18, compactAssetHeight, ceil(size.height) + 1 + previewHeight + verticalSpacing))
     }
 
     private func rebuildMeasurements() {
@@ -687,6 +780,10 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     }
 
     private func updateHoveredLink(at point: NSPoint) {
+        guard previewHit(at: point) == nil else {
+            setHoveredLink(nil)
+            return
+        }
         guard let position = textPosition(at: point),
               let value = item(at: position.item),
               position.offset >= 0,
@@ -733,9 +830,13 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         onLink?(url)
     }
 
+    private func activatePreview(_ url: URL, modifierFlags: NSEvent.ModifierFlags) {
+        guard modifierFlags.contains(.command) else { return }
+        onLink?(url)
+    }
+
     private func drawCoreText(
         _ attributed: NSAttributedString,
-        paragraph: ParagraphStyle,
         in rect: NSRect,
         context: CGContext
     ) {
@@ -743,16 +844,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         context.translateBy(x: rect.minX, y: rect.maxY)
         context.scaleBy(x: 1, y: -1)
         context.textMatrix = .identity
-        let border = CGFloat(max(0, paragraph.borderWidth))
-        let top = CGFloat(max(0, paragraph.topPadding)) + border
-        let bottom = CGFloat(max(0, paragraph.bottomPadding)) + border
-        let textRect = CGRect(
-            x: 0,
-            y: bottom,
-            width: rect.width,
-            height: max(1, rect.height - top - bottom)
-        )
-        let path = CGPath(rect: textRect, transform: nil)
+        let path = CGPath(rect: CGRect(x: 0, y: 0, width: rect.width, height: max(1, rect.height)), transform: nil)
         let framesetter = CTFramesetterCreateWithAttributedString(attributed)
         let frame = CTFramesetterCreateFrame(
             framesetter,
@@ -827,11 +919,82 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         }
     }
 
+    private func drawInlinePreviews(
+        _ previews: [InlinePreview],
+        item: Item,
+        in rect: NSRect
+    ) {
+        guard showsInlineImagePreviews, !previews.isEmpty else { return }
+        let rects = previewRects(for: item, in: rect)
+        for (index, preview) in previews.enumerated() where rects.indices.contains(index) {
+            let box = rects[index]
+            drawPreview(preview, in: box)
+        }
+    }
+
+    private func drawPreview(_ preview: InlinePreview, in rect: NSRect) {
+        let background = NSColor.controlBackgroundColor.withAlphaComponent(0.5)
+        background.setFill()
+        NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6).fill()
+        NSColor.separatorColor.setStroke()
+        NSBezierPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), xRadius: 6, yRadius: 6).stroke()
+
+        guard let image = imageCache[preview.source] else {
+            schedulePreviewLoad(preview.source)
+            let title = previewStates[preview.source] == .failed ? "Unable to load image" : "Loading image…"
+            let symbol = previewStates[preview.source] == .failed ? "exclamationmark.triangle" : "photo"
+            let symbolSize = min(22, max(14, rect.height * 0.22))
+            let symbolRect = NSRect(
+                x: rect.midX - symbolSize / 2,
+                y: rect.midY - symbolSize / 2 - 10,
+                width: symbolSize,
+                height: symbolSize
+            )
+            NSImage(systemSymbolName: symbol, accessibilityDescription: title)?.draw(
+                in: symbolRect,
+                from: .zero,
+                operation: .sourceOver,
+                fraction: 1,
+                respectFlipped: true,
+                hints: nil
+            )
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: min(12, max(9, rect.height * 0.12))),
+                .foregroundColor: NSColor.secondaryLabelColor,
+            ]
+            let label = NSAttributedString(string: title, attributes: attributes)
+            let labelSize = label.size()
+            label.draw(at: NSPoint(
+                x: rect.midX - labelSize.width / 2,
+                y: rect.midY + 4
+            ))
+            return
+        }
+
+        let inset = rect.insetBy(dx: 6, dy: 6)
+        guard image.size.width > 0, image.size.height > 0 else { return }
+        let scale = min(inset.width / image.size.width, inset.height / image.size.height)
+        let size = NSSize(width: image.size.width * scale, height: image.size.height * scale)
+        image.draw(
+            in: NSRect(
+                x: inset.midX - size.width / 2,
+                y: inset.midY - size.height / 2,
+                width: size.width,
+                height: size.height
+            ),
+            from: .zero,
+            operation: .sourceOver,
+            fraction: 1,
+            respectFlipped: true,
+            hints: [.interpolation: NSImageInterpolation.high]
+        )
+    }
+
     private func scheduleImageLoad(_ url: URL) {
         guard imageCache[url] == nil, imageTasks[url] == nil else { return }
         imageTasks[url] = Task { [weak self] in
             let data = await Task.detached(priority: .utility) { try? Data(contentsOf: url) }.value
-            guard let self else { return }
+            guard !Task.isCancelled, let self else { return }
             imageTasks.removeValue(forKey: url)
             guard let data, let image = NSImage(data: data) else { return }
             imageCache[url] = image
@@ -839,6 +1002,129 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
             needsDisplay = true
             NSAccessibility.post(element: self, notification: .valueChanged)
         }
+    }
+
+    private func schedulePreviewLoad(_ url: URL) {
+        guard showsInlineImagePreviews,
+              Self.isHTTPURL(url),
+              imageCache[url] == nil,
+              previewTasks[url] == nil,
+              previewStates[url] != .failed else { return }
+        previewStates[url] = .loading
+        previewDownloadCount += 1
+        previewTasks[url] = Task { [weak self] in
+            let data = try? await URLSession.shared.data(from: url).0
+            guard !Task.isCancelled, let self else { return }
+            previewTasks.removeValue(forKey: url)
+            guard let data, let image = NSImage(data: data) else {
+                previewStates[url] = .failed
+                needsDisplay = true
+                return
+            }
+            previewStates.removeValue(forKey: url)
+            imageCache[url] = image
+            updateAnimationTimer()
+            needsDisplay = true
+            NSAccessibility.post(element: self, notification: .valueChanged)
+        }
+    }
+
+    private func cancelPreviewLoads(keeping urls: Set<URL> = []) {
+        for url in Array(previewTasks.keys) where !urls.contains(url) {
+            guard let task = previewTasks[url] else { continue }
+            task.cancel()
+            previewTasks.removeValue(forKey: url)
+            previewStates.removeValue(forKey: url)
+            if !hasCompactAsset(source: url) { imageCache.removeValue(forKey: url) }
+        }
+        for url in Array(previewStates.keys) where !urls.contains(url) {
+            previewStates.removeValue(forKey: url)
+            if !hasCompactAsset(source: url) { imageCache.removeValue(forKey: url) }
+        }
+    }
+
+    private func hasCompactAsset(source url: URL) -> Bool {
+        retainedItems.contains { item in item.assets.contains { $0.asset.source == url } }
+    }
+
+    private func textRect(for item: Item, in rect: NSRect) -> NSRect {
+        let top = CGFloat(max(0, item.paragraph.topPadding) + max(0, item.paragraph.borderWidth))
+        return NSRect(
+            x: rect.minX,
+            y: rect.minY + top,
+            width: rect.width,
+            height: max(1, textHeight(for: item))
+        )
+    }
+
+    private func textHeight(for item: Item) -> CGFloat {
+        let framesetter = CTFramesetterCreateWithAttributedString(attributedTextForLayout(item))
+        let size = CTFramesetterSuggestFrameSizeWithConstraints(
+            framesetter,
+            CFRange(location: 0, length: item.attributedText.length),
+            nil,
+            CGSize(width: contentWidth, height: .greatestFiniteMagnitude),
+            nil
+        )
+        return max(18, ceil(size.height) + 1)
+    }
+
+    private func previewBoxSize(for paragraph: ParagraphStyle) -> NSSize {
+        let contentRect = paragraphPreviewContentRect(
+            paragraph,
+            in: NSRect(x: 0, y: 0, width: contentWidth, height: 0)
+        )
+        let width = min(240, max(1, contentRect.width))
+        return NSSize(width: width, height: max(1, 160 * width / 240))
+    }
+
+    private func inlinePreviewHeight(for item: Item) -> CGFloat {
+        guard showsInlineImagePreviews, !item.previews.isEmpty else { return 0 }
+        let boxHeight = previewBoxSize(for: item.paragraph).height
+        return 4 + CGFloat(item.previews.count) * boxHeight
+            + CGFloat(max(0, item.previews.count - 1)) * 6
+    }
+
+    private func previewRects(for item: Item, in rect: NSRect) -> [NSRect] {
+        guard showsInlineImagePreviews, !item.previews.isEmpty else { return [] }
+        let text = textRect(for: item, in: rect)
+        let content = paragraphPreviewContentRect(item.paragraph, in: rect)
+        let size = previewBoxSize(for: item.paragraph)
+        let y = text.maxY + 4
+        return item.previews.indices.map { index in
+            NSRect(
+                x: content.minX,
+                y: y + CGFloat(index) * (size.height + 6),
+                width: size.width,
+                height: size.height
+            )
+        }
+    }
+
+    private func previewHit(at point: NSPoint) -> PreviewHit? {
+        let contentRange = Double(point.y - contentInsets.top)..<Double(point.y - contentInsets.top + 0.01)
+        let candidates = layoutIndex.visibleRange(intersecting: contentRange)
+        for index in candidates {
+            guard let item = item(at: index),
+                  let y = layoutIndex.yOffset(for: index),
+                  let height = layoutIndex.height(at: index) else { continue }
+            let rect = NSRect(
+                x: contentInsets.left,
+                y: contentInsets.top + CGFloat(y),
+                width: contentWidth,
+                height: CGFloat(height)
+            )
+            for (preview, previewRect) in zip(item.previews, previewRects(for: item, in: rect))
+                where previewRect.contains(point) {
+                return .init(itemID: item.id, source: preview.source, rect: previewRect)
+            }
+        }
+        return nil
+    }
+
+    private static func isHTTPURL(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased() else { return false }
+        return scheme == "http" || scheme == "https"
     }
 
     private func updateAnimationTimer() {

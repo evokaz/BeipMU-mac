@@ -592,7 +592,7 @@ public struct AdvancedGMCPState: Sendable {
             ))
         }
         if let url = pendingImageURL {
-            line.assets.append(.init(kind: .avatar, source: url, altText: "Server avatar", characterOffset: 0))
+            line.assets.append(.init(kind: .image, source: url, altText: "Server image", characterOffset: 0))
         }
         return line
     }

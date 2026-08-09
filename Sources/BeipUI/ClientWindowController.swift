@@ -666,7 +666,6 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private var nextUnnamedWebViewID = 1
     private var gmcpStatisticsWindows: [String: GMCPStatisticsWindowController] = [:]
     private var tileMapWindows: [String: TileMapWindowController] = [:]
-    private var imageViewerWindow: ImageViewerWindowController?
     private var atlasWindow: AtlasWindowController?
     private var suppressAtlasPersistence = false
     private var preservingAtlasPlacement = false
@@ -908,7 +907,6 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         closeSpawnSurfaces()
         gmcpStatisticsWindows.values.forEach { $0.close() }
         tileMapWindows.values.forEach { $0.close() }
-        imageViewerWindow?.close()
         mcpStatusWindow?.close()
         closeWebViews()
         mediaController.flush()
@@ -1651,21 +1649,6 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         focusCommandInput()
     }
 
-    func toggleImageWindow() {
-        if let imageViewerWindow, imageViewerWindow.window?.isVisible == true {
-            imageViewerWindow.close()
-            return
-        }
-        let viewer = imageViewerWindow ?? ImageViewerWindowController()
-        imageViewerWindow = viewer
-        viewer.onClose = { [weak self] in self?.imageViewerWindow = nil }
-        if let owner = window, let child = viewer.window, child.parent == nil {
-            owner.addChildWindow(child, ordered: .above)
-        }
-        viewer.showWindow(nil)
-        viewer.window?.makeKeyAndOrderFront(nil)
-    }
-
     func toggleMapWindow() {
         if atlasWindow?.isDocked == true || atlasWindow?.window?.isVisible == true {
             closeAtlasSurface()
@@ -2006,6 +1989,9 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         timestamps.state = preferences.showsTimestamps ? .on : .off
         let fanFold = NSButton(checkboxWithTitle: "Fan-fold backgrounds", target: nil, action: nil)
         fanFold.state = preferences.usesFanFoldBackgrounds ? .on : .off
+        let inlineImages = NSButton(checkboxWithTitle: "Show inline image previews", target: nil, action: nil)
+        inlineImages.state = preferences.showsInlineImagePreviews ? .on : .off
+        inlineImages.setAccessibilityIdentifier("showInlineImagePreviews")
         let sticky = NSButton(checkboxWithTitle: "Sticky input", target: nil, action: nil)
         sticky.state = preferences.globalInputWindowSettings.keepsTextOnSubmit ? .on : .off
         let spelling = NSButton(checkboxWithTitle: "Check spelling", target: nil, action: nil)
@@ -2035,6 +2021,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             [NSTextField(labelWithString: "History lines:"), historyLimit],
             [NSView(), timestamps],
             [NSView(), fanFold],
+            [NSView(), inlineImages],
             [NSView(), sticky],
             [NSView(), spelling],
             [NSTextField(labelWithString: "Startup script:"), startupScript],
@@ -2044,13 +2031,14 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         grid.column(at: 0).xPlacement = .trailing
         grid.column(at: 1).width = 230
         grid.rowSpacing = 8
-        grid.frame = NSRect(x: 0, y: 0, width: 440, height: 225)
+        grid.frame = NSRect(x: 0, y: 0, width: 440, height: 250)
         alert.accessoryView = grid
         let finish: (NSApplication.ModalResponse) -> Void = { [weak self] response in
             guard response == .alertFirstButtonReturn, let self else { return }
             self.preferences.outputHistoryLimit = max(100, historyLimit.integerValue)
             self.preferences.showsTimestamps = timestamps.state == .on
             self.preferences.usesFanFoldBackgrounds = fanFold.state == .on
+            self.preferences.showsInlineImagePreviews = inlineImages.state == .on
             self.preferences.globalTextWindowSettings.historyLimit = self.preferences.outputHistoryLimit
             self.preferences.globalTextWindowSettings.showsTime = self.preferences.showsTimestamps
             self.preferences.globalTextWindowSettings.usesFanFoldBackgrounds = self.preferences.usesFanFoldBackgrounds
@@ -3153,14 +3141,12 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             if hasPendingPrompt { output.removeLastLine(); hasPendingPrompt = false }
             if !presentation.gagDisplay, !webViewGag {
                 output.append(presentation.line)
-                offerImages(in: presentation.line)
             }
             return
         }
         if hasPendingPrompt { output.removeLastLine() }
         if !presentation.gagDisplay, !webViewGag {
             output.append(presentation.line, terminator: "")
-            offerImages(in: presentation.line)
             hasPendingPrompt = true
         } else {
             hasPendingPrompt = false
@@ -4479,6 +4465,9 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
 
     private func applyPreferences() {
         applyTextWindowSettings()
+        output.showsInlineImagePreviews = preferences.showsInlineImagePreviews
+        triggerSpawnWindows.values.forEach { $0.showsInlineImagePreviews = preferences.showsInlineImagePreviews }
+        triggerSpawnTabGroups.values.forEach { $0.showsInlineImagePreviews = preferences.showsInlineImagePreviews }
         if output.isSplit != preferences.outputSplit { output.toggleSplit() }
         input.behavior.prefix = preferences.inputPrefix
         input.isContinuousSpellCheckingEnabled = preferences.checksSpelling
@@ -4729,6 +4718,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
 
     func reloadTextWindowPreferences() {
         let saved = WorkspacePreferencesStore.load()
+        preferences.showsInlineImagePreviews = saved.showsInlineImagePreviews
         preferences.globalTextWindowSettings = saved.globalTextWindowSettings
         preferences.worldTextWindowSettings = saved.worldTextWindowSettings
         preferences.characterTextWindowSettings = saved.characterTextWindowSettings
@@ -4738,6 +4728,9 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         preferences.characterInputWindowSettings = saved.characterInputWindowSettings
         preferences.tabInputWindowSettings = saved.tabInputWindowSettings
         applyTextWindowSettings()
+        output.showsInlineImagePreviews = preferences.showsInlineImagePreviews
+        triggerSpawnWindows.values.forEach { $0.showsInlineImagePreviews = preferences.showsInlineImagePreviews }
+        triggerSpawnTabGroups.values.forEach { $0.showsInlineImagePreviews = preferences.showsInlineImagePreviews }
         applyInputWindowSettings()
     }
 
@@ -5250,6 +5243,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private func spawnWindow(named title: String) -> TriggerSpawnWindowController {
         if let existing = triggerSpawnWindows[title] { return existing }
         let controller = TriggerSpawnWindowController(title: title)
+        controller.showsInlineImagePreviews = preferences.showsInlineImagePreviews
         controller.onAction = { [weak self] action in self?.perform(action) }
         controller.onWindowDragEnded = { [weak self, weak controller] point in
             guard let self, let controller else { return false }
@@ -5280,6 +5274,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private func spawnTabGroup(named title: String) -> TriggerSpawnTabGroupWindowController {
         if let existing = triggerSpawnTabGroups[title] { return existing }
         let controller = TriggerSpawnTabGroupWindowController(title: title)
+        controller.showsInlineImagePreviews = preferences.showsInlineImagePreviews
         controller.onAction = { [weak self] action in self?.perform(action) }
         controller.onStructureChange = { [weak self] in self?.saveSpawnSurfacePreferences() }
         controller.onWindowDragEnded = { [weak self, weak controller] point in
@@ -5868,28 +5863,6 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         )
         Task { await session.sendMCP(message) }
         appendClient("mcp-simpleedit Changes uploaded")
-    }
-
-    private func offerImages(in line: RenderedLine) {
-        var urls = line.assets.compactMap { $0.kind == .image ? $0.source : nil }
-        let pattern = #"https?://[^\s<>\"]+\.(?:png|jpe?g|gif|webp)(?:\?[^\s<>\"]*)?"#
-        if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) {
-            let range = NSRange(line.text.startIndex..., in: line.text)
-            urls += regex.matches(in: line.text, range: range).compactMap { match in
-                Range(match.range, in: line.text).flatMap { URL(string: String(line.text[$0])) }
-            }
-        }
-        for url in urls {
-            let viewer: ImageViewerWindowController
-            if let existing = imageViewerWindow {
-                viewer = existing
-            } else {
-                viewer = .init()
-                viewer.onClose = { [weak self] in self?.imageViewerWindow = nil }
-                imageViewerWindow = viewer
-            }
-            viewer.open(url)
-        }
     }
 
     private func ensureAtlasWindow() -> AtlasWindowController {

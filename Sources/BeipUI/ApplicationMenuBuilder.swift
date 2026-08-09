@@ -73,10 +73,6 @@ enum ApplicationMenuBuilder {
             )
         }
         menu.addItem(applicationMenuItem(
-            title: "Toggle Image Window",
-            action: #selector(ApplicationDelegate.toggleImageWindow(_:))
-        ))
-        menu.addItem(applicationMenuItem(
             title: "Toggle Map Window",
             action: #selector(ApplicationDelegate.toggleMapWindow(_:))
         ))

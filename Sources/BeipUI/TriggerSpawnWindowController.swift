@@ -25,6 +25,9 @@ final class TriggerSpawnWindowController: NSWindowController, NSWindowDelegate {
     var onAction: ((LinkAction) -> Void)? {
         didSet { output.onAction = onAction }
     }
+    var showsInlineImagePreviews = false {
+        didSet { output.showsInlineImagePreviews = showsInlineImagePreviews }
+    }
     private var dragFeedbackGeneration = 0
     private var floatingDragTask: Task<Void, Never>?
     private var latestDragReleasePoint: NSPoint?
@@ -222,6 +225,9 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
         didSet { dockingAccessory.onDockRequest = onDockRequest }
     }
     var onAction: ((LinkAction) -> Void)?
+    var showsInlineImagePreviews = false {
+        didSet { tabs.forEach { $0.output.showsInlineImagePreviews = showsInlineImagePreviews } }
+    }
     var onStructureChange: (() -> Void)?
     var onTabActivate: ((String) -> Void)?
     var onDockedSurfaceDrag: ((NSPoint) -> Bool)?
@@ -539,6 +545,7 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
 
     private func makeOutput() -> OutputTextView {
         let output = OutputTextView()
+        output.showsInlineImagePreviews = showsInlineImagePreviews
         output.setWindowFocused(false)
         output.onAction = { [weak self] action in self?.onAction?(action) }
         output.onContextMenu = { [weak self] _ in self?.outputContextMenu() }

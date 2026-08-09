@@ -98,6 +98,10 @@ before running them.
   rollover.
 - **Media:** MCP/GMCP media can display images, play audio, and speak text.
   Remote media URLs are restricted to HTTP and HTTPS.
+- **Inline image previews:** Workspace Settings includes **Show inline image previews**;
+  it is disabled by default. When enabled, Pueblo/GMCP images and visible HTTP/HTTPS
+  image links are shown beneath their output line. Command-click a thumbnail to open
+  its source in the browser.
 - **Maps:** Atlas files preserve rooms, exits, shapes, images, labels, palettes,
   and unknown compatible XML content. Map commands can add rooms and exits or
   infer a location from recent output.

@@ -189,6 +189,7 @@ final class WorkspacePreferencesTests: XCTestCase {
             showsTimestamps: true,
             usesFanFoldBackgrounds: true,
             outputSplit: true,
+            showsInlineImagePreviews: true,
             stickyInput: true,
             inputPrefix: "say ",
             inputHeight: 142,
@@ -598,6 +599,7 @@ final class WorkspacePreferencesTests: XCTestCase {
         XCTAssertEqual(decoded.dockPlacement, .hidden)
         XCTAssertEqual(decoded.lastDockedPlacement, .right)
         XCTAssertFalse(decoded.outputSplit)
+        XCTAssertFalse(decoded.showsInlineImagePreviews)
         XCTAssertNil(decoded.workspaceLayout)
         XCTAssertEqual(decoded.characterNotes, [:])
         XCTAssertEqual(decoded.spawnSurfaces, [:])
@@ -1366,10 +1368,6 @@ final class WorkspacePreferencesTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(lowContrast.foreground.contrastRatio(against: lowContrast.background), 7)
         XCTAssertGreaterThanOrEqual(lowContrast.accent.contrastRatio(against: lowContrast.background), 4.5)
 
-        let imageViewer = ImageViewerWindowController()
-        imageViewer.applyAccessibilityDisplayOptions(.init(reduceMotion: true))
-        XCTAssertFalse(imageViewer.imageAnimationEnabled)
-        imageViewer.close()
     }
 
     @MainActor

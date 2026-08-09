@@ -184,6 +184,7 @@ struct WorkspacePreferences: Codable, Equatable {
     var showsTimestamps = false
     var usesFanFoldBackgrounds = false
     var outputSplit = false
+    var showsInlineImagePreviews = false
     var stickyInput = false
     var inputPrefix = ""
     var inputHeight: Double = 64
@@ -215,6 +216,7 @@ struct WorkspacePreferences: Codable, Equatable {
         showsTimestamps: Bool = false,
         usesFanFoldBackgrounds: Bool = false,
         outputSplit: Bool = false,
+        showsInlineImagePreviews: Bool = false,
         stickyInput: Bool = false,
         inputPrefix: String = "",
         inputHeight: Double = 64,
@@ -245,6 +247,7 @@ struct WorkspacePreferences: Codable, Equatable {
         self.showsTimestamps = showsTimestamps
         self.usesFanFoldBackgrounds = usesFanFoldBackgrounds
         self.outputSplit = outputSplit
+        self.showsInlineImagePreviews = showsInlineImagePreviews
         self.stickyInput = stickyInput
         self.inputPrefix = inputPrefix
         self.inputHeight = inputHeight
@@ -278,6 +281,7 @@ struct WorkspacePreferences: Codable, Equatable {
         showsTimestamps = try values.decodeIfPresent(Bool.self, forKey: .showsTimestamps) ?? false
         usesFanFoldBackgrounds = try values.decodeIfPresent(Bool.self, forKey: .usesFanFoldBackgrounds) ?? false
         outputSplit = try values.decodeIfPresent(Bool.self, forKey: .outputSplit) ?? false
+        showsInlineImagePreviews = try values.decodeIfPresent(Bool.self, forKey: .showsInlineImagePreviews) ?? false
         stickyInput = try values.decodeIfPresent(Bool.self, forKey: .stickyInput) ?? false
         inputPrefix = try values.decodeIfPresent(String.self, forKey: .inputPrefix) ?? ""
         inputHeight = try values.decodeIfPresent(Double.self, forKey: .inputHeight) ?? 64

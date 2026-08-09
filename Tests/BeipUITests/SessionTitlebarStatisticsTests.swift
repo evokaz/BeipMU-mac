@@ -458,7 +458,6 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
                 "New Input Window",
                 "New Edit Window",
                 "Toggle Input History",
-                "Toggle Image Window",
                 "Toggle Map Window",
                 "Toggle Character Notes Window",
                 "Copy all window settings",
@@ -474,7 +473,6 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
             windowsMenu.item(withTitle: "Toggle Input History")?.action,
             #selector(ApplicationDelegate.toggleInputHistoryWindow(_:))
         )
-        XCTAssertEqual(windowsMenu.item(withTitle: "Toggle Image Window")?.action, #selector(ApplicationDelegate.toggleImageWindow(_:)))
         XCTAssertEqual(windowsMenu.item(withTitle: "Toggle Map Window")?.action, #selector(ApplicationDelegate.toggleMapWindow(_:)))
         XCTAssertEqual(
             windowsMenu.item(withTitle: "Toggle Character Notes Window")?.action,

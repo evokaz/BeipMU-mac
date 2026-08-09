@@ -123,7 +123,9 @@ final class AdvancedGMCPTests: XCTestCase {
         XCTAssertTrue(state.decorate(.init(text: "next line")).assets.isEmpty)
 
         _ = try state.consume(.init(package: "beip.line.image-url", payload: #""https://example.test/direct.gif""#))
-        XCTAssertEqual(state.decorate(.init(text: "direct")).assets.first?.source.absoluteString, "https://example.test/direct.gif")
+        let imageLine = state.decorate(.init(text: "direct"))
+        XCTAssertEqual(imageLine.assets.first?.source.absoluteString, "https://example.test/direct.gif")
+        XCTAssertEqual(imageLine.assets.first?.kind, .image)
     }
 
     func testRoomInfoNormalizesOptionalFieldsAndTracksExits() throws {

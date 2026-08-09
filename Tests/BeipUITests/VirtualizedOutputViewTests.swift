@@ -410,6 +410,99 @@ final class VirtualizedOutputViewTests: XCTestCase {
         XCTAssertEqual(openedURL?.absoluteString, "https://example.com")
     }
 
+    func testInlinePreviewsDiscoverVisibleImageURLsAndDeduplicateInSourceOrder() throws {
+        let output = OutputTextView()
+        let explicit = URL(string: "https://example.test/explicit")!
+        let duplicate = URL(string: "https://example.test/duplicate.png")!
+        let line = RenderedLine(
+            text: "\(duplicate.absoluteString) https://example.test/second.JPEG?size=2#hero ftp://example.test/no.png",
+            assets: [
+                .init(kind: .image, source: explicit, altText: "Explicit", characterOffset: 200),
+                .init(kind: .image, source: duplicate, altText: "Duplicate", characterOffset: 0),
+                .init(kind: .avatar, source: URL(string: "https://example.test/avatar.png")!, altText: "Avatar", characterOffset: 0),
+            ]
+        )
+
+        output.append(line)
+        XCTAssertEqual(output.primaryOutputViewForTesting.inlinePreviewSourcesForTesting(at: 0), [])
+
+        output.showsInlineImagePreviews = true
+        XCTAssertEqual(
+            output.primaryOutputViewForTesting.inlinePreviewSourcesForTesting(at: 0),
+            [duplicate, URL(string: "https://example.test/second.JPEG?size=2#hero")!, explicit]
+        )
+        XCTAssertEqual(output.primaryOutputViewForTesting.previewDownloadCountForTesting, 0)
+    }
+
+    func testInlinePreviewBoxesAreCappedStackedAndShrinkWithNarrowOutput() {
+        let view = VirtualizedOutputView(frame: NSRect(x: 0, y: 0, width: 500, height: 200))
+        view.showsInlineImagePreviews = true
+        let previews = [
+            VirtualizedOutputView.InlinePreview(source: URL(string: "https://example.test/one.png")!),
+            VirtualizedOutputView.InlinePreview(source: URL(string: "https://example.test/two.png")!),
+        ]
+        view.setItems([.init(
+            id: UUID(),
+            attributedText: NSAttributedString(string: "line\n"),
+            contentRange: NSRange(location: 0, length: 4),
+            assets: [],
+            previews: previews
+        )])
+
+        var rects = view.previewRectsForTesting(at: 0)
+        XCTAssertEqual(rects.count, 2)
+        XCTAssertEqual(rects[0].width, 240, accuracy: 0.1)
+        XCTAssertEqual(rects[0].height, 160, accuracy: 0.1)
+        XCTAssertEqual(rects[1].minY - rects[0].maxY, 6, accuracy: 0.1)
+        XCTAssertGreaterThan(view.measuredHeightForTesting(at: 0) ?? 0, 320)
+
+        view.setFrameSize(NSSize(width: 100, height: 200))
+        rects = view.previewRectsForTesting(at: 0)
+        XCTAssertLessThan(rects[0].width, 100)
+        XCTAssertEqual(rects[0].height / rects[0].width, 160.0 / 240.0, accuracy: 0.01)
+    }
+
+    func testInlinePreviewBoxesStayInsideTriggerParagraphContentBounds() throws {
+        let view = VirtualizedOutputView(frame: NSRect(x: 0, y: 0, width: 500, height: 200))
+        view.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
+        view.showsInlineImagePreviews = true
+        view.setItems([.init(
+            id: UUID(),
+            attributedText: NSAttributedString(string: "line\n"),
+            contentRange: NSRange(location: 0, length: 4),
+            assets: [],
+            previews: [.init(source: URL(string: "https://example.test/image.png")!)],
+            paragraph: .init(leftIndent: 20, rightIndent: 30, borderWidth: 8)
+        )])
+
+        let preview = try XCTUnwrap(view.previewRectsForTesting(at: 0).first)
+        XCTAssertEqual(preview.minX, 108, accuracy: 0.1)
+        XCTAssertEqual(preview.maxX, 342, accuracy: 0.1)
+        XCTAssertEqual(preview.width, 234, accuracy: 0.1)
+        XCTAssertEqual(preview.height / preview.width, 160.0 / 240.0, accuracy: 0.01)
+    }
+
+    func testInlinePreviewClicksRequireCommandModifier() {
+        let view = VirtualizedOutputView(frame: NSRect(x: 0, y: 0, width: 400, height: 200))
+        view.showsInlineImagePreviews = true
+        let id = UUID()
+        let url = URL(string: "https://example.test/image.webp")!
+        view.setItems([.init(
+            id: id,
+            attributedText: NSAttributedString(string: "source\n"),
+            contentRange: NSRange(location: 0, length: 6),
+            assets: [],
+            previews: [.init(source: url)]
+        )])
+        var opened: URL?
+        view.onLink = { opened = $0 }
+
+        view.activatePreviewForTesting(itemID: id, source: url, modifierFlags: [])
+        XCTAssertNil(opened)
+        view.activatePreviewForTesting(itemID: id, source: url, modifierFlags: [.command])
+        XCTAssertEqual(opened, url)
+    }
+
     func testExplicitLinkActionsTakePrecedenceOverAutomaticWebLinks() throws {
         let output = OutputTextView()
         let text = "https://example.com"

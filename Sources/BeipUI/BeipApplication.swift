@@ -544,7 +544,6 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     @objc func themeSettings(_ sender: Any?) { activeController?.showThemeSettings() }
     @objc func toggleMute(_ sender: Any?) { activeController?.toggleMute() }
     @objc func toggleInputHistoryWindow(_ sender: Any?) { activeController?.toggleInputHistoryWindow() }
-    @objc func toggleImageWindow(_ sender: Any?) { activeController?.toggleImageWindow() }
     @objc func toggleMapWindow(_ sender: Any?) { activeController?.toggleMapWindow() }
     @objc func toggleCharacterNotesWindow(_ sender: Any?) { activeController?.toggleCharacterNotesWindow() }
     @objc func copyAllWindowSettings(_ sender: Any?) { activeController?.copyAllWindowSettings() }

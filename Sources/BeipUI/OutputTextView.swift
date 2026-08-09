@@ -80,6 +80,14 @@ final class OutputTextView: NSObject {
 
     var showsTimestamps = false { didSet { rebuild(preservingScrollPosition: true) } }
     var usesFanFoldBackgrounds = false { didSet { rebuild(preservingScrollPosition: true) } }
+    var showsInlineImagePreviews = false {
+        didSet {
+            guard showsInlineImagePreviews != oldValue else { return }
+            outputView.showsInlineImagePreviews = showsInlineImagePreviews
+            secondaryOutputView?.showsInlineImagePreviews = showsInlineImagePreviews
+            rebuild(preservingScrollPosition: true)
+        }
+    }
     var isPaused: Bool { history.isPaused }
     var pendingLineCount: Int { history.pendingLines.count }
     var visibleLineCount: Int { history.count }
@@ -178,6 +186,7 @@ final class OutputTextView: NSObject {
         outputView.onPageUp = { [weak self] in self?.performPageUp() ?? false }
         outputView.onPageDown = { [weak self] in self?.performPageDown() ?? false }
         outputView.onSelectionCompleted = { [weak self] in self?.copySelectionAsPlainText() }
+        outputView.showsInlineImagePreviews = showsInlineImagePreviews
     }
 
     func clear() {
@@ -393,6 +402,7 @@ final class OutputTextView: NSObject {
     ) {
         let view = VirtualizedOutputView(frame: NSRect(x: 0, y: 0, width: max(1, outputView.bounds.width), height: 1))
         view.canvasBackgroundColor = defaultBackground
+        view.showsInlineImagePreviews = showsInlineImagePreviews
         view.onLink = { [weak self] url in self?.perform(url: url) }
         view.onContextMenu = onContextMenu
         view.onPageUp = { [weak self] in self?.performPageUp() ?? false }
@@ -787,9 +797,79 @@ final class OutputTextView: NSObject {
             id: line.id,
             attributedText: value,
             contentRange: contentRange,
-            assets: line.assets.map { ($0, textOffset + $0.characterOffset) },
+            assets: line.assets
+                .filter { $0.kind != .image }
+                .map { ($0, textOffset + $0.characterOffset) },
+            previews: inlineImagePreviews(for: line),
             paragraph: line.paragraph
         )
+    }
+
+    private func inlineImagePreviews(for line: RenderedLine) -> [VirtualizedOutputView.InlinePreview] {
+        guard showsInlineImagePreviews else { return [] }
+
+        struct Candidate {
+            var preview: VirtualizedOutputView.InlinePreview
+            var location: Int
+            var order: Int
+        }
+
+        var candidates: [Candidate] = []
+        var order = 0
+        for asset in line.assets where asset.kind == .image {
+            guard Self.isHTTPURL(asset.source) else { continue }
+            candidates.append(.init(
+                preview: .init(source: asset.source, altText: asset.altText),
+                location: max(0, asset.characterOffset),
+                order: order
+            ))
+            order += 1
+        }
+
+        let source = line.text as NSString
+        let sourceRange = NSRange(location: 0, length: source.length)
+        for match in webURLDetector.matches(in: line.text, options: [], range: sourceRange) {
+            guard match.resultType == .link,
+                  match.range.location >= 0,
+                  match.range.length > 0,
+                  NSMaxRange(match.range) <= source.length else { continue }
+            let raw = source.substring(with: match.range)
+            let candidateText = Self.trimmedImageURLText(raw)
+            guard let url = URL(string: candidateText),
+                  Self.isHTTPURL(url),
+                  Self.imageExtensions.contains(url.pathExtension.lowercased()) else { continue }
+            candidates.append(.init(
+                preview: .init(source: url, altText: "Image"),
+                location: match.range.location,
+                order: order
+            ))
+            order += 1
+        }
+
+        var seen = Set<String>()
+        return candidates
+            .sorted {
+                if $0.location != $1.location { return $0.location < $1.location }
+                return $0.order < $1.order
+            }
+            .compactMap { candidate in
+                seen.insert(candidate.preview.source.absoluteString).inserted ? candidate.preview : nil
+            }
+    }
+
+    private static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp"]
+
+    private static func isHTTPURL(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased() else { return false }
+        return scheme == "http" || scheme == "https"
+    }
+
+    private static func trimmedImageURLText(_ value: String) -> String {
+        var result = value
+        while let last = result.last, ".,!?;:)]}".contains(last) {
+            result.removeLast()
+        }
+        return result
     }
 
     private func applyAutomaticWebLinks(
