@@ -74,6 +74,7 @@ dmg_path="$distribution/$dmg_name"
 staging=$(mktemp -d "${TMPDIR:-/tmp}/beipmu-release.XXXXXX")
 trap 'rm -rf "$staging"' EXIT HUP INT TERM
 ditto "$app" "$staging/BeipMU.app"
+cp "$repo_dir/Documentation/DISTRIBUTION.md" "$staging/INSTALL.md"
 
 rm -f \
   "$zip_path" \

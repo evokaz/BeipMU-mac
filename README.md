@@ -6,19 +6,36 @@ the supported architecture and the Intel slice is untested and unsupported.
 
 ## Build and test
 
+Building requires macOS 14 or later, Xcode 26 with Swift 6.2, and XcodeGen.
+The complete test and profiling workflow also requires Python 3 for its fixture,
+baseline, and verification scripts.
+
+To compile a Release app for normal use, only run:
+
 ```sh
-swift test
-./Scripts/test-ui.sh
-./Scripts/profile-app-soak.sh
-xcodegen generate
-xcodebuild -project BeipMU.xcodeproj -scheme BeipMU \
-  -configuration Debug -derivedDataPath DerivedData build
+./Scripts/package-release.sh
 ```
 
-Run `Scripts/package-release.sh` after a Release build to create the direct
-download ZIP and SHA-256 checksum. Pass `--format dmg` for a DMG instead, or
-`--format both` to create both formats. The default format is ZIP. Releases
-are intentionally not notarized.
+The script generates the Xcode project, builds and ad-hoc signs the universal
+Release app, and creates a ZIP and SHA-256 checksum under `dist`. The compiled
+app is also available at `DerivedData/Build/Products/Release/BeipMU.app` and can
+be launched from Finder. No separate Xcode build is required.
+
+For development and local verification, generate the project before running
+the Xcode-based build or test scripts:
+
+```sh
+./Scripts/generate-project.sh
+./Scripts/test.sh
+xcodebuild -project BeipMU.xcodeproj -scheme BeipMU \
+  -configuration Debug -derivedDataPath DerivedData build
+./Scripts/test-ui.sh
+./Scripts/profile-app-soak.sh
+```
+
+Pass `--format dmg` to `Scripts/package-release.sh` for a DMG instead, or
+`--format both` to create both formats. The default format is ZIP. Releases are
+intentionally not notarized.
 
 ## Included functionality
 
