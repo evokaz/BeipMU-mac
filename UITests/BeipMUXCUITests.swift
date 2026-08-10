@@ -229,6 +229,39 @@ final class BeipMUXCUITests: XCTestCase {
         XCTAssertTrue(outputWindow.textFields["outputSettingsFixedWidthCharacters"].exists)
     }
 
+    func testInactiveOutputContextSettingsStayWithVisibleTab() {
+        let app = launchApplication()
+        defer { app.terminate() }
+        let window = app.windows["mainWindow"]
+
+        window.buttons["tabBarApplicationMenu"].click()
+        let windowsMenu = app.menuItems["Windows"]
+        XCTAssertTrue(windowsMenu.waitForExistence(timeout: 2))
+        windowsMenu.hover()
+        let newTab = windowsMenu.menuItems["New Tab"]
+        XCTAssertTrue(newTab.waitForExistence(timeout: 2))
+        newTab.click()
+
+        let backgroundTab = window.buttons.matching(identifier: "sessionTab").firstMatch
+        XCTAssertTrue(backgroundTab.waitForExistence(timeout: 3))
+        backgroundTab.click()
+        XCTAssertTrue(waitUntil {
+            window.buttons["activeSessionTab"].exists
+                && window.buttons.matching(identifier: "sessionTab").count == 1
+        })
+
+        XCUIApplication(bundleIdentifier: "com.apple.finder").activate()
+
+        let output = window.descendants(matching: .textView)["MU star output"]
+        output.rightClick()
+        let settingsItem = output.menuItems["Settings…"]
+        XCTAssertTrue(settingsItem.waitForExistence(timeout: 3))
+        settingsItem.click()
+
+        XCTAssertTrue(app.windows["settingsWindow"].waitForExistence(timeout: 3))
+        XCTAssertEqual(app.windows.matching(identifier: "mainWindow").count, 1)
+    }
+
     func testStatisticsPanelAccessibilityAndBaseline() throws {
         let app = launchApplication()
         defer { app.terminate() }

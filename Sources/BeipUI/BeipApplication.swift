@@ -244,8 +244,8 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         controller.onWorkspacePreferencesChange = { [weak self] in
             self?.workspacePreferencesDidChange()
         }
-        controller.onSettingsRequest = { [weak self] section, scope in
-            self?.presentSettings(section: section, initialScope: scope)
+        controller.onSettingsRequest = { [weak self] owner, section, scope in
+            self?.presentSettings(owner: owner, section: section, initialScope: scope)
         }
         controller.onFactoryResetRequest = { [weak self, weak controller] in
             self?.requestFactoryReset(from: controller?.window)
@@ -718,11 +718,21 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     @objc func convertSpaces(_ sender: Any?) { activeController?.applyInputConversion(.spaces) }
     @objc func settings(_ sender: Any?) {
         lastSettingsSection = settingsWindowController?.selectedSection ?? lastSettingsSection
-        presentSettings(section: lastSettingsSection)
+        guard let owner = activeController else { return }
+        presentSettings(owner: owner, section: lastSettingsSection)
     }
-    @objc func globalTextWindowSettings(_ sender: Any?) { presentSettings(section: .output, initialScope: .global) }
-    @objc func globalInputWindowSettings(_ sender: Any?) { presentSettings(section: .input, initialScope: .global) }
-    @objc func themeSettings(_ sender: Any?) { presentSettings(section: .appearance) }
+    @objc func globalTextWindowSettings(_ sender: Any?) {
+        guard let owner = activeController else { return }
+        presentSettings(owner: owner, section: .output, initialScope: .global)
+    }
+    @objc func globalInputWindowSettings(_ sender: Any?) {
+        guard let owner = activeController else { return }
+        presentSettings(owner: owner, section: .input, initialScope: .global)
+    }
+    @objc func themeSettings(_ sender: Any?) {
+        guard let owner = activeController else { return }
+        presentSettings(owner: owner, section: .appearance)
+    }
     @objc func toggleMute(_ sender: Any?) { activeController?.toggleMute() }
     @objc func toggleInputHistoryWindow(_ sender: Any?) { activeController?.toggleInputHistoryWindow() }
     @objc func toggleMapWindow(_ sender: Any?) { activeController?.toggleMapWindow() }
@@ -749,18 +759,19 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     @objc func toggleFullScreen(_ sender: Any?) { activeController?.toggleFullScreen() }
 
     @objc func configureKeyboardShortcuts(_ sender: Any?) {
-        presentSettings(section: .shortcuts)
+        guard let owner = activeController else { return }
+        presentSettings(owner: owner, section: .shortcuts)
     }
 
     private func presentSettings(
+        owner: ClientWindowController,
         section: SettingsSection,
         initialScope: TextWindowSettingsEditorView.Scope? = nil
     ) {
-        guard let controller = activeController else { return }
         let context = SettingsPresentationContext(
             section: section,
             initialScope: initialScope,
-            identity: controller.settingsIdentityForTesting
+            identity: owner.settingsIdentityForTesting
         )
         if let settingsWindowController {
             settingsWindowController.present(context: context)
@@ -789,7 +800,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
             settings.showWindow(nil)
         }
         if let settingsWindow = settingsWindowController?.window,
-           let ownerWindow = controller.window,
+           let ownerWindow = owner.window,
            !(ownerWindow.childWindows ?? []).contains(settingsWindow) {
             settingsWindow.parent?.removeChildWindow(settingsWindow)
             ownerWindow.addChildWindow(settingsWindow, ordered: .above)

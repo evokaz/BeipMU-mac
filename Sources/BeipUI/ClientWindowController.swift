@@ -728,7 +728,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     var onThemeChange: ((WorkspaceThemeSettings) -> Void)?
     var onTextWindowSettingsChange: (() -> Void)?
     var onWorkspacePreferencesChange: (() -> Void)?
-    var onSettingsRequest: ((SettingsSection, TextWindowSettingsEditorView.Scope?) -> Void)?
+    var onSettingsRequest: ((ClientWindowController, SettingsSection, TextWindowSettingsEditorView.Scope?) -> Void)?
     var onFactoryResetRequest: (() -> Void)?
     var onInputHeightChange: ((Double) -> Void)?
     var timestampsEnabled: Bool {
@@ -1900,7 +1900,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     @objc private func contextClear(_ sender: Any?) { clearOutput() }
     @objc private func contextDeleteLine(_ sender: Any?) { output.removeSelectedLine() }
     @objc private func contextTextWindowSettings(_ sender: Any?) {
-        onSettingsRequest?(.output, activeTextWindowSettingsScope)
+        onSettingsRequest?(self, .output, activeTextWindowSettingsScope)
     }
 
     @objc private func contextUseGlobalSettings(_ sender: Any?) {
@@ -1917,7 +1917,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     private func showInputWindowSettings(initialScope: TextWindowSettingsEditorView.Scope) {
-        onSettingsRequest?(.input, initialScope)
+        onSettingsRequest?(self, .input, initialScope)
     }
 
     private func toggleInputUseGlobalSettings() {
@@ -1934,7 +1934,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     func showWorkspaceSettings() {
-        onSettingsRequest?(.appearance, nil)
+        onSettingsRequest?(self, .appearance, nil)
     }
 
     func showEmbeddedHelp(topic: String? = nil) {

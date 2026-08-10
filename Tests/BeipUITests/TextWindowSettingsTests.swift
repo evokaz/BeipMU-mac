@@ -116,6 +116,36 @@ final class TextWindowSettingsTests: XCTestCase {
     }
 
     @MainActor
+    func testOutputContextSettingsReportTheirOriginatingControllerAndScope() throws {
+        let server = ServerProfile(name: "Origin World", host: "example.invalid", port: 8888)
+        var preferences = WorkspacePreferences()
+        let identity = TextWindowSettingsIdentity(world: server.name, character: nil, tab: "Main")
+        preferences.tabTextWindowSettings[try XCTUnwrap(identity.tabKey)] = .init(
+            usesGlobalSettings: false,
+            settings: .init(fontSize: 17)
+        )
+        let controller = ClientWindowController(
+            profileLibrary: .init(workspace: try .empty(isDirty: false)),
+            initialPreferences: preferences
+        )
+        defer { controller.close() }
+        controller.restoreOpenTab(server: server, character: nil)
+
+        var request: (ClientWindowController, SettingsSection, TextWindowSettingsEditorView.Scope?)?
+        controller.onSettingsRequest = { owner, section, scope in
+            request = (owner, section, scope)
+        }
+
+        let item = try XCTUnwrap(controller.outputContextMenuForTesting().item(withTitle: "Settings…"))
+        let action = try XCTUnwrap(item.action)
+        XCTAssertTrue(NSApplication.shared.sendAction(action, to: item.target, from: item))
+
+        XCTAssertTrue(request?.0 === controller)
+        XCTAssertEqual(request?.1, .output)
+        XCTAssertEqual(request?.2, .tab)
+    }
+
+    @MainActor
     func testContextSettingsRouteToResolvedScopeAndSeedInheritedTabOverrides() throws {
         let server = ServerProfile(name: "Settings World", host: "example.invalid", port: 8888)
         let character = CharacterProfile(name: "Settings Character")
