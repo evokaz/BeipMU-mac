@@ -316,6 +316,14 @@ private final class SessionWindowTabItemView: NSView, NSDraggingSource {
         selectTab(self)
     }
 
+    override func otherMouseDown(with event: NSEvent) {
+        guard event.buttonNumber == 2 else {
+            super.otherMouseDown(with: event)
+            return
+        }
+        targetController?.window?.performClose(event)
+    }
+
     override func rightMouseDown(with event: NSEvent) {
         guard let menu = targetController?.sessionTabContextMenu() else {
             super.rightMouseDown(with: event)

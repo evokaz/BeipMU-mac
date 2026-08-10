@@ -83,6 +83,103 @@ final class ClientWindowCloseTests: XCTestCase {
     }
 
     @MainActor
+    func testMiddleClickingBackgroundTabClosesItWithoutSelectingIt() throws {
+        let library = ProfileLibrary(workspace: try .empty(isDirty: false))
+        let first = ClientWindowController(profileLibrary: library)
+        let second = ClientWindowController(profileLibrary: library)
+        let third = ClientWindowController(profileLibrary: library)
+        defer {
+            first.close()
+            second.close()
+            third.close()
+        }
+
+        first.restoreOpenTab(
+            server: .init(name: "First World", host: "first.invalid", port: 8888),
+            character: nil
+        )
+        second.restoreOpenTab(
+            server: .init(name: "Second World", host: "second.invalid", port: 8888),
+            character: nil
+        )
+        third.restoreOpenTab(
+            server: .init(name: "Third World", host: "third.invalid", port: 8888),
+            character: nil
+        )
+
+        let group = ClientTabGroup(first)
+        group.add(second)
+        group.add(third)
+        group.select(third, sender: nil)
+
+        let content = try XCTUnwrap(third.window?.contentView)
+        content.layoutSubtreeIfNeeded()
+        let firstTab = try XCTUnwrap(
+            WorkspaceUITestSupport.recursiveSubviews(of: content).first {
+                $0.accessibilityIdentifier() == "sessionTab"
+                    && $0.accessibilityLabel() == "First World tab"
+            }
+        )
+        let event = try middleMouseDownEvent()
+
+        firstTab.otherMouseDown(with: event)
+
+        XCTAssertEqual(group.controllers.count, 2)
+        XCTAssertTrue(group.controllers[0] === second)
+        XCTAssertTrue(group.controllers[1] === third)
+        XCTAssertTrue(group.selectedController === third)
+        XCTAssertNil(first.sessionTabGroup)
+        XCTAssertTrue(second.sessionTabGroup === group)
+        XCTAssertTrue(third.sessionTabGroup === group)
+    }
+
+    @MainActor
+    func testMiddleClickingConnectedBackgroundTabCancellationLeavesItOpen() throws {
+        let library = ProfileLibrary(workspace: try .empty(isDirty: false))
+        let first = ClientWindowController(profileLibrary: library)
+        let second = ClientWindowController(profileLibrary: library)
+        defer {
+            first.close()
+            second.close()
+        }
+
+        first.restoreOpenTab(
+            server: .init(name: "Connected World", host: "connected.invalid", port: 8888),
+            character: nil
+        )
+        first.isSessionConnectedForTesting = true
+
+        let group = ClientTabGroup(first)
+        group.add(second)
+        group.select(second, sender: nil)
+
+        var promptCount = 0
+        first.closeConnectedTabConfirmationHandlerForTesting = { _, _ in
+            promptCount += 1
+            return false
+        }
+        let content = try XCTUnwrap(second.window?.contentView)
+        content.layoutSubtreeIfNeeded()
+        let firstTab = try XCTUnwrap(
+            WorkspaceUITestSupport.recursiveSubviews(of: content).first {
+                $0.accessibilityIdentifier() == "sessionTab"
+                    && $0.accessibilityLabel() == "Connected World tab"
+            }
+        )
+        let event = try middleMouseDownEvent()
+
+        firstTab.otherMouseDown(with: event)
+
+        XCTAssertEqual(promptCount, 1)
+        XCTAssertEqual(group.controllers.count, 2)
+        XCTAssertTrue(group.controllers[0] === first)
+        XCTAssertTrue(group.controllers[1] === second)
+        XCTAssertTrue(group.selectedController === second)
+        XCTAssertTrue(first.isSessionConnectedForTesting)
+        XCTAssertTrue(first.sessionTabGroup === group)
+    }
+
+    @MainActor
     func testLastTabReplacementPromptsOnceAndInternalCloseDoesNotPromptAgain() throws {
         let controller = try makeConnectedController()
         let window = try XCTUnwrap(controller.window)
@@ -134,5 +231,16 @@ final class ClientWindowCloseTests: XCTestCase {
         )
         controller.isSessionConnectedForTesting = true
         return controller
+    }
+
+    @MainActor
+    private func middleMouseDownEvent() throws -> NSEvent {
+        let cgEvent = try XCTUnwrap(CGEvent(
+            mouseEventSource: nil,
+            mouseType: .otherMouseDown,
+            mouseCursorPosition: .zero,
+            mouseButton: .center
+        ))
+        return try XCTUnwrap(NSEvent(cgEvent: cgEvent))
     }
 }
