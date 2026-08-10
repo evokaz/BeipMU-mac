@@ -2567,6 +2567,10 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     private func stopCurrentSessionAndPersistStatistics() {
+        // A new session can replace the current one without the old session
+        // delivering a terminal state event. Do not let its writers continue
+        // receiving output from the replacement session.
+        stopAllLogsIfActive(announcing: false)
         let previousSession = session
         let previousProfile = activeCharacterProfile
         let previousBaseline = persistedSessionStatistics
@@ -2677,69 +2681,86 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         }
     }
 
+    private func handleConnectionState(_ state: ConnectionState, from source: SessionActor?) async {
+        switch state {
+        case .disconnected:
+            stopLogsForConnectionLoss()
+            isSessionConnected = false
+            connectionStateText = "Disconnected"; stateLabel.stringValue = connectionStateText; stateLabel.textColor = .secondaryLabelColor
+            appendConnectionNotice(.disconnected)
+        case .resolving:
+            isSessionConnected = false
+            connectionStateText = "Resolving…"; stateLabel.stringValue = connectionStateText; stateLabel.textColor = .systemOrange
+        case .connecting:
+            isSessionConnected = false
+            connectionStateText = "Connecting…"; stateLabel.stringValue = connectionStateText; stateLabel.textColor = .systemOrange
+        case .connected:
+            isSessionConnected = true
+            lastTypedAt = Date()
+            connectionStateText = "Connected"
+            stateLabel.stringValue = connectionStateText
+            stateLabel.textColor = .systemGreen
+            startAutomaticLog()
+            if let source { await persistActiveCharacterStatistics(from: source, markLastUsed: true) }
+        case .disconnecting:
+            stopLogsForConnectionLoss()
+            isSessionConnected = false
+            connectionStateText = "Disconnecting…"; stateLabel.stringValue = connectionStateText; stateLabel.textColor = .systemOrange
+        case let .failed(message):
+            stopLogsForConnectionLoss()
+            isSessionConnected = false
+            connectionStateText = "Failed"; stateLabel.stringValue = connectionStateText; stateLabel.textColor = .systemRed
+            appendConnectionError(message)
+            if let source { await persistActiveCharacterStatistics(from: source) }
+        }
+        refreshTitlebarStatistics()
+        refreshDiagnostics()
+        if case .connected = state { webViewWindows.values.forEach { $0.connectionChanged(connected: true) } }
+        if case .disconnected = state { webViewWindows.values.forEach { $0.connectionChanged(connected: false) } }
+        if case .failed = state { webViewWindows.values.forEach { $0.connectionChanged(connected: false) } }
+        if case .connected = state {
+            applyScriptEvaluation(await scriptService.dispatchConnectionEvent("connect", host: scriptHostSnapshot), showValue: false)
+            if let server = currentServer, let character = currentCharacter {
+                for puppet in character.puppets where puppet.connectWithPlayer {
+                    _ = (NSApp.delegate as? ApplicationDelegate)?.openPuppet(
+                        master: self, server: server, character: character, puppet: puppet
+                    )
+                }
+            }
+        }
+        if case .disconnected = state {
+            if let source { await persistActiveCharacterStatistics(from: source) }
+            applyScriptEvaluation(await scriptService.dispatchConnectionEvent("disconnect", host: scriptHostSnapshot), showValue: false)
+        }
+        if case .failed = state {
+            applyScriptEvaluation(await scriptService.dispatchConnectionEvent("disconnect", host: scriptHostSnapshot), showValue: false)
+        }
+        let connected = state == .connected
+        let shouldNotifyPuppets: Bool
+        switch state {
+        case .connected, .disconnected, .failed: shouldNotifyPuppets = true
+        default: shouldNotifyPuppets = false
+        }
+        if shouldNotifyPuppets {
+            puppetChildren.values.forEach { $0.masterConnectionStateChanged(connected: connected) }
+        }
+        if case .disconnecting = state {
+            // Puppet windows mirror the master's terminal state only after
+            // the transport finishes disconnecting. Their writers still
+            // belong to this world session and must stop immediately.
+            puppetChildren.values.forEach { $0.stopLogsForConnectionLoss() }
+        }
+    }
+
+    func applyConnectionStateForTesting(_ state: ConnectionState) async {
+        await handleConnectionState(state, from: nil)
+    }
+
     private func handle(_ event: SessionEvent, from source: SessionActor) async {
         guard session === source else { return }
         switch event {
         case let .state(state):
-            switch state {
-            case .disconnected:
-                isSessionConnected = false
-                connectionStateText = "Disconnected"; stateLabel.stringValue = connectionStateText; stateLabel.textColor = .secondaryLabelColor
-                appendConnectionNotice(.disconnected)
-            case .resolving:
-                isSessionConnected = false
-                connectionStateText = "Resolving…"; stateLabel.stringValue = connectionStateText; stateLabel.textColor = .systemOrange
-            case .connecting:
-                isSessionConnected = false
-                connectionStateText = "Connecting…"; stateLabel.stringValue = connectionStateText; stateLabel.textColor = .systemOrange
-            case .connected:
-                isSessionConnected = true
-                lastTypedAt = Date()
-                connectionStateText = "Connected"
-                stateLabel.stringValue = connectionStateText
-                stateLabel.textColor = .systemGreen
-                startAutomaticLog()
-                await persistActiveCharacterStatistics(from: source, markLastUsed: true)
-            case .disconnecting:
-                isSessionConnected = false
-                connectionStateText = "Disconnecting…"; stateLabel.stringValue = connectionStateText; stateLabel.textColor = .systemOrange
-            case let .failed(message):
-                isSessionConnected = false
-                connectionStateText = "Failed"; stateLabel.stringValue = connectionStateText; stateLabel.textColor = .systemRed
-                appendConnectionError(message)
-                await persistActiveCharacterStatistics(from: source)
-            }
-            refreshTitlebarStatistics()
-            refreshDiagnostics()
-            if case .connected = state { webViewWindows.values.forEach { $0.connectionChanged(connected: true) } }
-            if case .disconnected = state { webViewWindows.values.forEach { $0.connectionChanged(connected: false) } }
-            if case .failed = state { webViewWindows.values.forEach { $0.connectionChanged(connected: false) } }
-            if case .connected = state {
-                applyScriptEvaluation(await scriptService.dispatchConnectionEvent("connect", host: scriptHostSnapshot), showValue: false)
-                if let server = currentServer, let character = currentCharacter {
-                    for puppet in character.puppets where puppet.connectWithPlayer {
-                        _ = (NSApp.delegate as? ApplicationDelegate)?.openPuppet(
-                            master: self, server: server, character: character, puppet: puppet
-                        )
-                    }
-                }
-            }
-            if case .disconnected = state {
-                await persistActiveCharacterStatistics(from: source)
-                applyScriptEvaluation(await scriptService.dispatchConnectionEvent("disconnect", host: scriptHostSnapshot), showValue: false)
-            }
-            if case .failed = state {
-                applyScriptEvaluation(await scriptService.dispatchConnectionEvent("disconnect", host: scriptHostSnapshot), showValue: false)
-            }
-            let connected = state == .connected
-            let shouldNotifyPuppets: Bool
-            switch state {
-            case .connected, .disconnected, .failed: shouldNotifyPuppets = true
-            default: shouldNotifyPuppets = false
-            }
-            if shouldNotifyPuppets {
-                puppetChildren.values.forEach { $0.masterConnectionStateChanged(connected: connected) }
-            }
+            await handleConnectionState(state, from: source)
         case let .renderedLine(line):
             guard !suppressSessionData else { return }
             if routeMasterLineToPuppet(line, isPrompt: false) { return }
@@ -2895,6 +2916,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     private func masterConnectionStateChanged(connected: Bool) {
+        if !connected { stopLogsForConnectionLoss() }
         let changed = (connectionStateText == "Connected") != connected
         isSessionConnected = connected
         if connected, changed { lastTypedAt = Date() }
@@ -2916,6 +2938,13 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
                 showValue: false
             )
         }
+    }
+
+    /// Stops connection-scoped logs once, while retaining the normal stop
+    /// notice for the first loss event. Subsequent disconnect/failure events
+    /// see no active writers and therefore do nothing.
+    private func stopLogsForConnectionLoss() {
+        stopAllLogsIfActive(announcing: true)
     }
 
     private func routeMasterLineToPuppet(_ line: RenderedLine, isPrompt: Bool) -> Bool {
@@ -3297,6 +3326,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
 
     private func stopAllLogs(announcing: Bool = true) {
         guard !logWriters.isEmpty else {
+            dailyLogRolloverTimer?.invalidate()
+            dailyLogRolloverTimer = nil
             if announcing { appendClient("No active logs.") }
             refreshLoggingWindow()
             return
@@ -3318,6 +3349,11 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         updateWindowTitle()
         refreshDiagnostics()
         refreshLoggingWindow()
+    }
+
+    private func stopAllLogsIfActive(announcing: Bool) {
+        guard !logWriters.isEmpty else { return }
+        stopAllLogs(announcing: announcing)
     }
 
     private func resolvedLogURL(
