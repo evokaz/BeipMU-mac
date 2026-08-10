@@ -16,8 +16,8 @@ final class AboutWindowControllerTests: XCTestCase {
         XCTAssertFalse(textField("aboutVersion", in: views)?.stringValue.isEmpty ?? true)
 
         let project = button("aboutProjectGitHub", in: views)
-        XCTAssertEqual(project?.title, "Coming soon")
-        XCTAssertEqual(project?.isEnabled, false)
+        XCTAssertEqual(project?.title, "https://github.com/evokaz/BeipMU-mac")
+        XCTAssertEqual(project?.isEnabled, true)
 
         let originalProjectLabel = textField("aboutOriginalProjectLabel", in: views)
         XCTAssertEqual(originalProjectLabel?.stringValue, "Original Project:")

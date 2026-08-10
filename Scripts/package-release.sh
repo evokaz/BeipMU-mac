@@ -65,6 +65,15 @@ xcodebuild \
 
 app="$derived_data/Build/Products/Release/BeipMU.app"
 test -d "$app"
+main_executable="$app/Contents/MacOS/BeipMU"
+script_service_executable="$app/Contents/XPCServices/BeipScriptService.xpc/Contents/MacOS/BeipScriptService"
+test -f "$main_executable"
+test -f "$script_service_executable"
+
+# Keep the matching dSYMs in DerivedData, but remove build-machine paths and
+# other debug records from the binaries that are distributed.
+strip -S "$main_executable"
+strip -S "$script_service_executable"
 codesign --force --deep --sign - "$app"
 mkdir -p "$distribution"
 zip_name="BeipMU-macOS-universal.zip"
@@ -72,7 +81,48 @@ dmg_name="BeipMU-macOS-universal.dmg"
 zip_path="$distribution/$zip_name"
 dmg_path="$distribution/$dmg_name"
 staging=$(mktemp -d "${TMPDIR:-/tmp}/beipmu-release.XXXXXX")
-trap 'rm -rf "$staging"' EXIT HUP INT TERM
+mounted_dmg=
+
+cleanup() {
+  if [ -n "$mounted_dmg" ]; then
+    hdiutil detach "$mounted_dmg" >/dev/null 2>&1 || true
+  fi
+  rm -rf "$staging"
+}
+
+trap cleanup EXIT HUP INT TERM
+
+private_path_matches() {
+  scan_root=$1
+  {
+    LC_ALL=C find "$scan_root" -type f \
+      -exec grep -a -l -E '/Users/[^/]+/|/home/[^/]+/|/private/var/folders/[^/]+/' {} + 2>/dev/null || true
+    LC_ALL=C find "$scan_root" -type f \
+      -exec grep -a -l -F "$repo_dir" {} + 2>/dev/null || true
+    if [ -n "${TMPDIR:-}" ]; then
+      LC_ALL=C find "$scan_root" -type f \
+        -exec grep -a -l -F "${TMPDIR%/}" {} + 2>/dev/null || true
+    fi
+  } | sort -u
+}
+
+verify_distributable_app() {
+  verified_app=$1
+  artifact_label=$2
+  test -d "$verified_app"
+
+  matches=$(private_path_matches "$verified_app")
+  if [ -n "$matches" ]; then
+    echo "Refusing to package $artifact_label: private build paths remain in:" >&2
+    echo "$matches" >&2
+    exit 1
+  fi
+
+  codesign --verify --deep --strict --verbose=1 "$verified_app"
+  echo "Verified $artifact_label contains no private build paths."
+}
+
+verify_distributable_app "$app" "Release app"
 ditto "$app" "$staging/BeipMU.app"
 cp "$repo_dir/Documentation/DISTRIBUTION.md" "$staging/INSTALL.md"
 
@@ -91,6 +141,10 @@ create_checksum() {
 
 if [ "$format" = zip ] || [ "$format" = both ]; then
   ditto -c -k --norsrc --noextattr --noqtn --noacl "$staging" "$zip_path"
+  zip_verification="$staging/zip-verification"
+  mkdir "$zip_verification"
+  ditto -x -k "$zip_path" "$zip_verification"
+  verify_distributable_app "$zip_verification/BeipMU.app" "$zip_name"
   echo "Created $zip_path"
   create_checksum "$zip_name"
 fi
@@ -106,6 +160,17 @@ if [ "$format" = dmg ] || [ "$format" = both ]; then
     -ov \
     -format UDZO \
     "$dmg_path"
+  dmg_verification="$staging/dmg-verification"
+  mkdir "$dmg_verification"
+  hdiutil attach \
+    -readonly \
+    -nobrowse \
+    -mountpoint "$dmg_verification" \
+    "$dmg_path" >/dev/null
+  mounted_dmg="$dmg_verification"
+  verify_distributable_app "$dmg_verification/BeipMU.app" "$dmg_name"
+  hdiutil detach "$mounted_dmg" >/dev/null
+  mounted_dmg=
   echo "Created $dmg_path"
   create_checksum "$dmg_name"
 fi

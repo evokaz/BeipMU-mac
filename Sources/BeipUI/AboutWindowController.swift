@@ -3,8 +3,7 @@ import AppKit
 @MainActor
 final class AboutWindowController: NSWindowController, NSWindowDelegate {
     private enum Links {
-        // Replace this with the project's repository URL when it is published.
-        static let projectGitHub: URL? = nil
+        static let projectGitHub: URL = URL(string: "https://github.com/evokaz/BeipMU-mac")!
         static let originalDeveloper = URL(string: "https://beipdev.github.io/BeipMU/")!
     }
 
@@ -66,11 +65,10 @@ final class AboutWindowController: NSWindowController, NSWindowDelegate {
         let projectLabel = NSTextField(labelWithString: "Project GitHub")
         projectLabel.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .medium)
         let projectLink = linkButton(
-            title: Links.projectGitHub == nil ? "Coming soon" : "Open project page",
+            title: Links.projectGitHub.absoluteString,
             action: #selector(openProjectGitHub(_:)),
             identifier: "aboutProjectGitHub"
         )
-        projectLink.isEnabled = Links.projectGitHub != nil
 
         let projectRow = NSStackView(views: [projectLabel, projectLink])
         projectRow.orientation = .horizontal
@@ -130,8 +128,7 @@ final class AboutWindowController: NSWindowController, NSWindowDelegate {
     }
 
     @objc private func openProjectGitHub(_ sender: Any?) {
-        guard let url = Links.projectGitHub else { return }
-        NSWorkspace.shared.open(url)
+        NSWorkspace.shared.open(Links.projectGitHub)
     }
 
     @objc private func openOriginalDeveloperWebsite(_ sender: Any?) {

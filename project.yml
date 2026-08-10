@@ -27,7 +27,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.beipmu.BeipMU
         PRODUCT_NAME: BeipMU
-        MARKETING_VERSION: "4.331"
+        MARKETING_VERSION: "331"
         CURRENT_PROJECT_VERSION: "0.1"
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: BeipMU
