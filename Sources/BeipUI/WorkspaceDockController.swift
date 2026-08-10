@@ -330,11 +330,18 @@ final class WorkspaceDockController: NSObject, NSWindowDelegate, NSSplitViewDele
     }
 
     func applyTheme(_ palette: WorkspaceThemePalette) {
+        floatingPanel?.appearance = palette.appearance
+        floatingPanel?.backgroundColor = palette.chrome
+        floatingPanel?.contentView?.appearance = palette.appearance
+        floatingPanel?.contentView?.needsDisplay = true
         notesTextView.textColor = palette.foreground
         notesTextView.backgroundColor = palette.background
         notesTextView.insertionPointColor = palette.accent
         diagnosticsTextView.textColor = palette.foreground
         diagnosticsTextView.backgroundColor = palette.background
+        diagnosticsTextView.insertionPointColor = palette.accent
+        notesTextView.needsDisplay = true
+        diagnosticsTextView.needsDisplay = true
     }
 
     func prepareForOwnerClose() {

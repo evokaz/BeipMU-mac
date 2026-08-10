@@ -53,6 +53,7 @@ final class OutputTextView: NSObject {
     private var secondaryScrollView: NSScrollView?
     private var defaultForeground = NSColor(calibratedWhite: 0.9, alpha: 1)
     private var defaultBackground = NSColor(calibratedWhite: 0.05, alpha: 1)
+    private var themePalette = WorkspaceThemeSettings().palette
     private let timestampFormatter: DateFormatter
     private var history = OutputHistory(limit: 10_000)
     private var lineContentRanges: [UUID: NSRange] = [:]
@@ -118,8 +119,8 @@ final class OutputTextView: NSObject {
     func applySettings(_ suppliedSettings: TextWindowSettings) {
         settings = suppliedSettings.normalized
         if !settings.showsNewContentMarkers { clearNewContentBoundary() }
-        let foreground = NSColor(hexString: settings.foregroundHex) ?? .textColor
-        let background = NSColor(hexString: settings.backgroundHex) ?? .textBackgroundColor
+        let foreground = NSColor(hexString: settings.foregroundHex) ?? themePalette.foreground
+        let background = NSColor(hexString: settings.backgroundHex) ?? themePalette.background
         defaultForeground = settings.invertBrightness ? foreground.invertingBrightness : foreground
         defaultBackground = settings.invertBrightness ? background.invertingBrightness : background
         history.limit = settings.historyLimit
@@ -136,8 +137,16 @@ final class OutputTextView: NSObject {
     func applyTheme(_ palette: WorkspaceThemePalette) {
         // Text-window colors are independently configurable. The workspace theme
         // still owns surrounding window chrome and supplies legacy defaults.
-        if settings.foregroundHex.isEmpty { defaultForeground = palette.foreground }
-        if settings.backgroundHex.isEmpty { defaultBackground = palette.background }
+        themePalette = palette
+        let foreground = NSColor(hexString: settings.foregroundHex) ?? palette.foreground
+        let background = NSColor(hexString: settings.backgroundHex) ?? palette.background
+        defaultForeground = settings.invertBrightness ? foreground.invertingBrightness : foreground
+        defaultBackground = settings.invertBrightness ? background.invertingBrightness : background
+        scrollView.backgroundColor = defaultBackground
+        secondaryScrollView?.backgroundColor = defaultBackground
+        configure(view: outputView)
+        if let secondaryOutputView { configure(view: secondaryOutputView) }
+        rebuild(preservingScrollPosition: true)
     }
 
     func capturedText(lineCount: Int, skipping skipCount: Int) -> String {
@@ -464,6 +473,8 @@ final class OutputTextView: NSObject {
 
     private func configure(view: VirtualizedOutputView) {
         view.canvasBackgroundColor = defaultBackground
+        view.selectionBackgroundColor = themePalette.accent.withAlphaComponent(0.55)
+        view.selectionForegroundColor = NSColor.maximumContrastColor(against: themePalette.accent)
         view.contentInsets = .init(
             top: CGFloat(settings.marginTop + 7),
             left: CGFloat(settings.marginLeft + 9),

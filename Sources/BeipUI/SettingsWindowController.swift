@@ -339,6 +339,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         reloadContent()
     }
 
+    func applyTheme(_ palette: WorkspaceThemePalette) {
+        window?.appearance = palette.appearance
+        window?.backgroundColor = palette.chrome
+        window?.contentView?.appearance = palette.appearance
+        window?.contentView?.needsDisplay = true
+        window?.contentView?.needsLayout = true
+    }
+
     var selectedSectionForTesting: SettingsSection { selectedSection }
     var presentationContextForTesting: SettingsPresentationContext { context }
     var sidebarTitlesForTesting: [String] { SettingsSection.allCases.map(\.title) }

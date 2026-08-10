@@ -280,6 +280,76 @@ final class TextWindowSettingsTests: XCTestCase {
     }
 
     @MainActor
+    func testLiveThemeRefreshesInheritedOutputAndInputColorsButPreservesExplicitColors() throws {
+        let firstTheme = WorkspaceThemeSettings(
+            mode: .custom,
+            foregroundHex: "#102030",
+            backgroundHex: "#405060",
+            accentHex: "#708090"
+        )
+        let secondTheme = WorkspaceThemeSettings(
+            mode: .custom,
+            foregroundHex: "#A0B0C0",
+            backgroundHex: "#C0B0A0",
+            accentHex: "#D0E0F0"
+        )
+
+        let inheritedOutput = OutputTextView()
+        inheritedOutput.applySettings(.init(foregroundHex: "", backgroundHex: ""))
+        inheritedOutput.applyTheme(firstTheme.palette)
+        inheritedOutput.append(.init(text: "Inherited"))
+        XCTAssertEqual(inheritedOutput.primaryScrollViewForTesting.backgroundColor.hexString, "#405060")
+        XCTAssertEqual(inheritedOutput.primaryOutputViewForTesting.canvasBackgroundColor.hexString, "#405060")
+        XCTAssertEqual(
+            (try XCTUnwrap(inheritedOutput.primaryOutputViewForTesting.renderedAttributedTextForTesting(at: 0))
+                .attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor)?.hexString,
+            "#102030"
+        )
+        inheritedOutput.applyTheme(secondTheme.palette)
+        XCTAssertEqual(inheritedOutput.primaryScrollViewForTesting.backgroundColor.hexString, "#C0B0A0")
+        XCTAssertEqual(inheritedOutput.primaryOutputViewForTesting.canvasBackgroundColor.hexString, "#C0B0A0")
+        XCTAssertEqual(
+            (try XCTUnwrap(inheritedOutput.primaryOutputViewForTesting.renderedAttributedTextForTesting(at: 0))
+                .attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor)?.hexString,
+            "#A0B0C0"
+        )
+
+        let explicitOutput = OutputTextView()
+        explicitOutput.applySettings(.init(foregroundHex: "#010203", backgroundHex: "#F0E0D0"))
+        explicitOutput.append(.init(text: "Explicit"))
+        explicitOutput.applyTheme(secondTheme.palette)
+        XCTAssertEqual(explicitOutput.primaryScrollViewForTesting.backgroundColor.hexString, "#F0E0D0")
+        XCTAssertEqual(
+            (try XCTUnwrap(explicitOutput.primaryOutputViewForTesting.renderedAttributedTextForTesting(at: 0))
+                .attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor)?.hexString,
+            "#010203"
+        )
+
+        let inheritedInput = CommandInputView()
+        inheritedInput.applySettings(.init(foregroundHex: "", backgroundHex: ""))
+        inheritedInput.applyTheme(firstTheme.palette)
+        XCTAssertEqual(inheritedInput.textColor?.hexString, "#102030")
+        XCTAssertEqual(inheritedInput.backgroundColor.hexString, "#405060")
+        inheritedInput.applyTheme(secondTheme.palette)
+        XCTAssertEqual(inheritedInput.textColor?.hexString, "#A0B0C0")
+        XCTAssertEqual(inheritedInput.backgroundColor.hexString, "#C0B0A0")
+        XCTAssertEqual(
+            (inheritedInput.selectedTextAttributes[.foregroundColor] as? NSColor)?.hexString,
+            "#A0B0C0"
+        )
+
+        let explicitInput = CommandInputView()
+        explicitInput.applySettings(.init(foregroundHex: "#112233", backgroundHex: "#334455"))
+        explicitInput.applyTheme(secondTheme.palette)
+        XCTAssertEqual(explicitInput.textColor?.hexString, "#112233")
+        XCTAssertEqual(explicitInput.backgroundColor.hexString, "#334455")
+        XCTAssertEqual(
+            (explicitInput.selectedTextAttributes[.foregroundColor] as? NSColor)?.hexString,
+            "#112233"
+        )
+    }
+
+    @MainActor
     func testControllerInputContextMenuContainsSettingsAndGlobalInheritance() throws {
         let controller = ClientWindowController(profileLibrary: .init(workspace: try .empty(isDirty: false)))
         defer { controller.close() }

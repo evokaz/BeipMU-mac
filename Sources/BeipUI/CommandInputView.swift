@@ -20,6 +20,7 @@ final class CommandInputView: NSTextView {
     var completionCandidates: [String] = []
     private var commandHistory = InputHistory()
     private var settings = InputWindowSettings()
+    private var themePalette = WorkspaceThemeSettings().palette
 
     init() {
         let storage = NSTextStorage()
@@ -64,21 +65,27 @@ final class CommandInputView: NSTextView {
     }
 
     func applyTheme(_ palette: WorkspaceThemePalette) {
-        if settings.foregroundHex.isEmpty { textColor = palette.foreground }
-        if settings.backgroundHex.isEmpty { backgroundColor = palette.background }
+        themePalette = palette
+        let foreground = NSColor(hexString: settings.foregroundHex) ?? palette.foreground
+        let background = NSColor(hexString: settings.backgroundHex) ?? palette.background
+        textColor = foreground
+        backgroundColor = background
+        containerScrollView.backgroundColor = background
         insertionPointColor = palette.accent
         selectedTextAttributes = [
             .backgroundColor: palette.accent.withAlphaComponent(0.55),
-            .foregroundColor: textColor ?? palette.foreground,
+            .foregroundColor: foreground,
         ]
+        needsDisplay = true
+        containerScrollView.needsDisplay = true
     }
 
     func applySettings(_ suppliedSettings: InputWindowSettings) {
         settings = suppliedSettings.normalized
         font = NSFont(name: settings.fontName, size: settings.fontSize)
             ?? .monospacedSystemFont(ofSize: settings.fontSize, weight: .regular)
-        textColor = NSColor(hexString: settings.foregroundHex) ?? .textColor
-        backgroundColor = NSColor(hexString: settings.backgroundHex) ?? .textBackgroundColor
+        textColor = NSColor(hexString: settings.foregroundHex) ?? themePalette.foreground
+        backgroundColor = NSColor(hexString: settings.backgroundHex) ?? themePalette.background
         containerScrollView.backgroundColor = backgroundColor
         containerScrollView.contentInsets = NSEdgeInsets(
             top: CGFloat(settings.marginTop),

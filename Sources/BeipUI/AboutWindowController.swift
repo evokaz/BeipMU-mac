@@ -6,6 +6,8 @@ final class AboutWindowController: NSWindowController, NSWindowDelegate {
         static let projectGitHub: URL = URL(string: "https://github.com/evokaz/BeipMU-mac")!
         static let originalDeveloper = URL(string: "https://beipdev.github.io/BeipMU/")!
     }
+    private var themedTextFields: [NSTextField] = []
+    private var themedLinkButtons: [NSButton] = []
 
     init(bundle: Bundle = .main) {
         let panel = NSPanel(
@@ -31,6 +33,15 @@ final class AboutWindowController: NSWindowController, NSWindowDelegate {
         window?.center()
         window?.makeKeyAndOrderFront(sender)
         NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+
+    func applyTheme(_ palette: WorkspaceThemePalette) {
+        window?.appearance = palette.appearance
+        window?.backgroundColor = palette.chrome
+        window?.contentView?.appearance = palette.appearance
+        themedTextFields.forEach { $0.textColor = palette.foreground }
+        themedLinkButtons.forEach { $0.contentTintColor = palette.accent }
+        window?.contentView?.needsDisplay = true
     }
 
     private func configureContent(in panel: NSPanel, bundle: Bundle) {
@@ -89,6 +100,9 @@ final class AboutWindowController: NSWindowController, NSWindowDelegate {
             action: #selector(openOriginalDeveloperWebsite(_:)),
             identifier: "aboutOriginalDeveloperLink"
         )
+
+        themedTextFields = [appName, version, projectLabel, thanks, originalProjectLabel]
+        themedLinkButtons = [projectLink, originalLink]
 
         let originalProjectRow = NSStackView(views: [originalProjectLabel, originalLink])
         originalProjectRow.orientation = .horizontal

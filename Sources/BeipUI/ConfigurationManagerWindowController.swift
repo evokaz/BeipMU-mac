@@ -150,6 +150,17 @@ final class ConfigurationManagerWindowController: NSWindowController, NSOutlineV
         window?.makeKeyAndOrderFront(sender)
     }
 
+    func applyTheme(_ palette: WorkspaceThemePalette) {
+        window?.appearance = palette.appearance
+        window?.backgroundColor = palette.chrome
+        window?.contentView?.appearance = palette.appearance
+        detailScroll.backgroundColor = palette.background
+        table.backgroundColor = palette.background
+        samplesTable.backgroundColor = palette.background
+        window?.contentView?.needsDisplay = true
+        window?.contentView?.needsLayout = true
+    }
+
     private func configureUI(in window: NSWindow) {
         let sidebar = NSStackView()
         sidebar.orientation = .vertical

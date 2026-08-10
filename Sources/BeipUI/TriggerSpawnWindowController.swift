@@ -15,6 +15,7 @@ private final class TriggerSpawnFloatingWindow: NSWindow {
 final class TriggerSpawnWindowController: NSWindowController, NSWindowDelegate {
     private let output = OutputTextView()
     private let dockingAccessory = DockSurfaceAccessoryViewController()
+    private var themePalette = WorkspaceThemeSettings().palette
     private(set) var isDocked = false
     var onClose: (() -> Void)?
     var onCloseRequest: (() -> Void)?
@@ -57,6 +58,13 @@ final class TriggerSpawnWindowController: NSWindowController, NSWindowDelegate {
     func clear() { output.clear() }
     func append(_ line: RenderedLine) { output.append(line) }
     var retainedLines: [RenderedLine] { output.retainedLines }
+    func applyTheme(_ palette: WorkspaceThemePalette) {
+        themePalette = palette
+        window?.appearance = palette.appearance
+        window?.backgroundColor = palette.chrome
+        output.applyTheme(palette)
+        window?.contentView?.needsDisplay = true
+    }
     func contentViewForDocking() -> NSView {
         cancelFloatingDrag()
         window?.orderOut(nil)
@@ -106,7 +114,7 @@ final class TriggerSpawnWindowController: NSWindowController, NSWindowDelegate {
         guard let view = window?.contentView else { return }
         view.wantsLayer = true
         view.layer?.borderWidth = 3
-        view.layer?.borderColor = NSColor.controlAccentColor.cgColor
+        view.layer?.borderColor = themePalette.accent.cgColor
         dragFeedbackGeneration += 1
         let generation = dragFeedbackGeneration
         Task { @MainActor [weak self] in
@@ -216,6 +224,7 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
     private let root = NSView()
     private let dockingAccessory = DockSurfaceAccessoryViewController()
     private var tabs: [Tab] = []
+    private var themePalette = WorkspaceThemeSettings().palette
     private var selectedID: UUID?
     private(set) var isDocked = false
     var onClose: (() -> Void)?
@@ -396,6 +405,15 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
         index(ofTitle: title).map { tabs[$0].output.retainedLines } ?? []
     }
 
+    func applyTheme(_ palette: WorkspaceThemePalette) {
+        themePalette = palette
+        window?.appearance = palette.appearance
+        window?.backgroundColor = palette.chrome
+        tabs.forEach { $0.output.applyTheme(palette) }
+        root.layer?.backgroundColor = palette.chrome.cgColor
+        window?.contentView?.needsDisplay = true
+    }
+
     func windowDidMove(_ notification: Notification) {
         guard !isDocked, let frame = window?.frame else { return }
         observeFloatingDrag(frame: frame)
@@ -504,7 +522,7 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
 
     private func pulseDragFeedback() {
         root.layer?.borderWidth = 3
-        root.layer?.borderColor = NSColor.controlAccentColor.cgColor
+        root.layer?.borderColor = themePalette.accent.cgColor
         dragFeedbackGeneration += 1
         let generation = dragFeedbackGeneration
         Task { @MainActor [weak self] in
@@ -545,6 +563,7 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
 
     private func makeOutput() -> OutputTextView {
         let output = OutputTextView()
+        output.applyTheme(themePalette)
         output.showsInlineImagePreviews = showsInlineImagePreviews
         output.setWindowFocused(false)
         output.onAction = { [weak self] action in self?.onAction?(action) }

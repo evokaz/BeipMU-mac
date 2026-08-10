@@ -51,6 +51,7 @@ final class WebViewWindowController: NSWindowController, NSWindowDelegate, WKNav
     private var wantsDisconnect = false
     private var wantsSend = false
     private var wantsReceive = false
+    private var themePalette = WorkspaceThemeSettings().palette
     private var headers: [String: String] = [:]
     private var allowsFileNavigation: Bool
     private(set) var currentRequest: WebViewOpenRequest
@@ -144,8 +145,11 @@ final class WebViewWindowController: NSWindowController, NSWindowDelegate, WKNav
     func recordDockSide(_ side: WebViewDockSide?) { currentRequest.dock = side }
 
     func applyTheme(_ palette: WorkspaceThemePalette) {
+        themePalette = palette
         window?.appearance = palette.appearance
         window?.backgroundColor = palette.chrome
+        webView.appearance = palette.appearance
+        webView.needsDisplay = true
         injectTheme(palette)
     }
 
@@ -305,6 +309,7 @@ final class WebViewWindowController: NSWindowController, NSWindowDelegate, WKNav
         navigationTimeoutTask?.cancel()
         navigationTimeoutTask = nil
         activeNavigation = nil
+        injectTheme(themePalette)
         if let title = webView.title, !title.isEmpty { window?.title = title }
         onNavigationFinished?()
     }

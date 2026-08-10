@@ -12,6 +12,7 @@ final class RecoveryReviewWindowController: NSWindowController, NSWindowDelegate
     private let restoreButton = NSButton(title: "Restore Selected", target: nil, action: nil)
     private let discardButton = NSButton(title: "Discard Selected", target: nil, action: nil)
     private let skipButton = NSButton(title: "Skip for Now", target: nil, action: nil)
+    private var titleLabel: NSTextField?
     private var decisionMade = false
 
     var onRestore: (([UUID]) -> Void)?
@@ -36,6 +37,14 @@ final class RecoveryReviewWindowController: NSWindowController, NSWindowDelegate
 
     required init?(coder: NSCoder) { nil }
 
+    func applyTheme(_ palette: WorkspaceThemePalette) {
+        window?.appearance = palette.appearance
+        window?.backgroundColor = palette.chrome
+        window?.contentView?.appearance = palette.appearance
+        titleLabel?.textColor = palette.foreground
+        window?.contentView?.needsDisplay = true
+    }
+
     var selectedSessionIDsForTesting: [UUID] {
         candidates.map(\.id).filter { checkboxes[$0]?.state == .on }
     }
@@ -43,6 +52,7 @@ final class RecoveryReviewWindowController: NSWindowController, NSWindowDelegate
     private func configure() {
         guard let content = window?.contentView else { return }
         let title = NSTextField(wrappingLabelWithString: "BeipMU found disconnected session snapshots. Choose which sessions to restore; restoring never reconnects automatically.")
+        titleLabel = title
         title.translatesAutoresizingMaskIntoConstraints = false
 
         rows.orientation = .vertical

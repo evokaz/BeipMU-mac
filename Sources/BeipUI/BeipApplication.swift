@@ -46,6 +46,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     private let stateContext: RuntimeStateContext
     private let profileLibrary: ProfileLibrary
     private let recoveryStore: SessionRecoveryStore
+    private var currentTheme: WorkspaceThemeSettings
     private var configurationManager: ConfigurationManagerWindowController?
     private var recoveryReview: RecoveryReviewWindowController?
     private var keyboardShortcuts = KeyboardShortcutStore.load()
@@ -72,6 +73,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
             url: context.configurationDirectory.appendingPathComponent("Recovery.dat"),
             capacity: profileLibrary.workspace.projection.logging.restoreBufferSize
         )
+        currentTheme = WorkspacePreferencesStore.load().theme
         super.init()
     }
 
@@ -115,6 +117,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     @objc func showAbout(_ sender: Any?) {
         let controller = aboutWindowController ?? AboutWindowController()
         aboutWindowController = controller
+        controller.applyTheme(currentTheme.palette)
         controller.showWindow(sender)
     }
 
@@ -206,6 +209,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
             recoveryStore: recoveryStore
         )
         windows.append(controller)
+        controller.applyThemeSettings(currentTheme)
         controller.onClose = { [weak self, weak controller] in
             guard let self, let controller else { return }
             self.windows.removeAll { $0 === controller }
@@ -234,8 +238,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
             self?.openQuickConnectTab(from: source, server: server, character: character)
         }
         controller.onThemeChange = { [weak self] theme in
-            self?.windows.forEach { $0.applyThemeSettings(theme) }
-            self?.settingsWindowController?.refreshFromExternalChange()
+            self?.applyTheme(theme)
         }
         controller.onTextWindowSettingsChange = { [weak self] in
             self?.windows.forEach { $0.reloadTextWindowPreferences() }
@@ -449,6 +452,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         guard !candidates.isEmpty else { return }
 
         let review = RecoveryReviewWindowController(candidates: candidates)
+        review.applyTheme(currentTheme.palette)
         review.onRestore = { [weak self, weak review] ids in
             guard let self else { return }
             for id in ids {
@@ -597,6 +601,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
             try recoveryStore.reset()
             stateContext.clearActivePreferencesDomain()
             ClientWindowController.resetProcessStateAfterFactoryReset()
+            currentTheme = WorkspacePreferencesStore.load().theme
             keyboardShortcuts = KeyboardShortcutStore.load(from: profileLibrary.keyEquivalents)
             lastSettingsSection = .appearance
             configureMenu()
@@ -638,6 +643,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
                     self?.activeController?.showConnectionStatistics()
                 }
             )
+            configurationManager?.applyTheme(currentTheme.palette)
         }
         configurationManager?.showWindow(sender)
         NSApplication.shared.activate(ignoringOtherApps: true)
@@ -774,6 +780,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
             identity: owner.settingsIdentityForTesting
         )
         if let settingsWindowController {
+            settingsWindowController.applyTheme(currentTheme.palette)
             settingsWindowController.present(context: context)
         } else {
             let settings = SettingsWindowController(
@@ -797,6 +804,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
                 }
             )
             settingsWindowController = settings
+            settings.applyTheme(currentTheme.palette)
             settings.showWindow(nil)
         }
         if let settingsWindow = settingsWindowController?.window,
@@ -809,8 +817,34 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     }
 
     private func workspacePreferencesDidChange() {
+        applyTheme(WorkspacePreferencesStore.load().theme)
         windows.forEach { $0.reloadTextWindowPreferences() }
         settingsWindowController?.refreshFromExternalChange()
+    }
+
+    var currentThemeForTesting: WorkspaceThemeSettings { currentTheme }
+
+    /// Theme changes affect more than the client controller that initiated the
+    /// edit. AppKit controls get their colors from the window appearance, while
+    /// custom views and web content need their cached palette values refreshed
+    /// explicitly.
+    private func applyTheme(_ settings: WorkspaceThemeSettings) {
+        currentTheme = settings
+        let palette = settings.palette
+
+        for window in NSApplication.shared.windows {
+            window.appearance = palette.appearance
+            window.backgroundColor = palette.chrome
+            window.contentView?.appearance = palette.appearance
+            window.contentView?.needsDisplay = true
+            window.contentView?.needsLayout = true
+        }
+
+        windows.forEach { $0.applyThemeSettings(settings) }
+        settingsWindowController?.applyTheme(palette)
+        configurationManager?.applyTheme(palette)
+        recoveryReview?.applyTheme(palette)
+        aboutWindowController?.applyTheme(palette)
     }
 
     private func nativeShortcutConflictMessage(

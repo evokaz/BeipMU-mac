@@ -40,6 +40,7 @@ private final class SessionTabStripView: NSStackView {
     private var draggedTabID: UUID?
     private var dropInsertionIndex: Int?
     private var widthConstraints: [NSLayoutConstraint] = []
+    private var accentColor = NSColor.controlAccentColor
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -73,10 +74,17 @@ private final class SessionTabStripView: NSStackView {
                 targetController: controller,
                 strip: self
             )
+            tab.applyTheme(accent: accentColor)
             cells[controller.tabDragIdentifier] = tab
             addArrangedSubview(tab)
         }
         viewport?.setNeedsLayoutAndRevealSelection()
+        needsDisplay = true
+    }
+
+    func applyTheme(_ palette: WorkspaceThemePalette) {
+        accentColor = palette.accent
+        cells.values.forEach { $0.applyTheme(accent: palette.accent) }
         needsDisplay = true
     }
 
@@ -184,7 +192,7 @@ private final class SessionTabStripView: NSStackView {
         super.draw(dirtyRect)
         guard dropInsertionIndex != nil else { return }
         let highlight = bounds.insetBy(dx: 1, dy: 1)
-        NSColor.controlAccentColor.withAlphaComponent(0.12).setFill()
+        accentColor.withAlphaComponent(0.12).setFill()
         NSBezierPath(roundedRect: highlight, xRadius: 6, yRadius: 6).fill()
 
         let index = dropInsertionIndex ?? 0
@@ -197,7 +205,7 @@ private final class SessionTabStripView: NSStackView {
         } else {
             markerX = 2
         }
-        NSColor.controlAccentColor.setFill()
+        accentColor.setFill()
         NSBezierPath(rect: NSRect(x: markerX, y: 3, width: 2, height: max(0, bounds.height - 6))).fill()
     }
 
@@ -319,6 +327,7 @@ private final class SessionWindowTabItemView: NSView, NSDraggingSource {
     private var hovered = false
     private var dragging = false
     private var dragStarted = false
+    private var accentColor = NSColor.controlAccentColor
 
     var isSelectedForLayout: Bool { selected }
     var naturalWidth: CGFloat {
@@ -491,6 +500,11 @@ private final class SessionWindowTabItemView: NSView, NSDraggingSource {
         updateBackground()
     }
 
+    func applyTheme(accent: NSColor) {
+        accentColor = accent
+        updateBackground()
+    }
+
     func draggingSession(
         _ session: NSDraggingSession,
         sourceOperationMaskFor context: NSDraggingContext
@@ -521,7 +535,7 @@ private final class SessionWindowTabItemView: NSView, NSDraggingSource {
             NSColor.clear.cgColor
         }
         layer?.borderWidth = dragging ? 2 : 0
-        layer?.borderColor = dragging ? NSColor.controlAccentColor.cgColor : nil
+        layer?.borderColor = dragging ? accentColor.cgColor : nil
     }
 
     private func dragImage() -> NSImage {
@@ -1986,6 +2000,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         }
 
         let controller = SessionStatisticsWindowController()
+        applyTheme(to: controller)
         controller.onClose = { [weak self] in
             self?.statisticsTask?.cancel()
             self?.statisticsTask = nil
@@ -2097,6 +2112,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     func showEmbeddedHelp(topic: String? = nil) {
         let controller = helpWindow ?? EmbeddedHelpWindowController()
         helpWindow = controller
+        applyTheme(to: controller)
         controller.show(topic: topic)
         controller.showWindow(self)
         controller.window?.makeKeyAndOrderFront(self)
@@ -2110,6 +2126,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             return
         }
         let editor = AutomationEditorWindowController(library: profileLibrary, kind: kind, scope: selectedScope)
+        applyTheme(to: editor)
         editor.onClose = { [weak self, weak editor] in
             guard let editor else { return }
             self?.automationEditors.removeAll { $0 === editor }
@@ -2140,6 +2157,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             existing.window?.makeKeyAndOrderFront(nil)
         } else {
             let controller = AutomationDebugWindowController(kind: kind)
+            applyTheme(to: controller)
             controller.onClose = { [weak self] in self?.automationDebugWindows.removeValue(forKey: kind) }
             automationDebugWindows[kind] = controller
             controller.showWindow(nil)
@@ -2160,6 +2178,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             return
         }
         let controller = NetworkDebugWindowController(title: baseWindowTitle)
+        applyTheme(to: controller)
         controller.onClose = { [weak self] in self?.networkDebugWindow = nil }
         networkDebugWindow = controller
         controller.showWindow(nil)
@@ -2175,6 +2194,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             return
         }
         let controller = ScriptDebugWindowController(title: baseWindowTitle)
+        applyTheme(to: controller)
         controller.onClose = { [weak self] in self?.scriptDebugWindow = nil }
         controller.onReset = { [weak self, scriptService] in
             Task {
@@ -2200,6 +2220,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         }
 
         let controller = LoggingWindowController(entries: activeLogEntries)
+        applyTheme(to: controller)
         controller.onClose = { [weak self] in self?.loggingWindow = nil }
         controller.onStop = { [weak self] url in self?.stopLog(at: url) }
         controller.onStopAll = { [weak self] in self?.stopAllLogs() }
@@ -2217,15 +2238,50 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         let palette = settings.palette
         window?.appearance = palette.appearance
         window?.backgroundColor = palette.chrome
+        window?.contentView?.appearance = palette.appearance
+        window?.contentView?.needsDisplay = true
+        window?.contentView?.needsLayout = true
         taskbarView?.layer?.backgroundColor = palette.chrome.cgColor
+        sessionTabs.applyTheme(palette)
         output.applyTheme(palette)
         input.applyTheme(palette)
         inputHistoryPane.applyTheme(palette)
         dockController?.applyTheme(palette)
+        aiWindow?.applyTheme(palette)
         secondaryInputWindows.forEach { $0.applyTheme(palette) }
         editWindows.forEach { $0.applyTheme(palette) }
         mcpStatusWindow?.applyTheme(palette)
         webViewWindows.values.forEach { $0.applyTheme(palette) }
+        triggerSpawnWindows.values.forEach { $0.applyTheme(palette) }
+        triggerSpawnTabGroups.values.forEach { $0.applyTheme(palette) }
+        let auxiliaryControllers: [NSWindowController] = scriptWindows.values.map { $0 as NSWindowController }
+            + automationEditors.map { $0 as NSWindowController }
+            + automationDebugWindows.values.map { $0 as NSWindowController }
+            + [networkDebugWindow, scriptDebugWindow, loggingWindow, statisticsWindow, atlasWindow]
+                .compactMap { $0 as NSWindowController? }
+            + triggerStatisticsWindows.values.map { $0 as NSWindowController }
+            + gmcpStatisticsWindows.values.map { $0 as NSWindowController }
+            + tileMapWindows.values.map { $0 as NSWindowController }
+        for controller in auxiliaryControllers {
+            controller.window?.appearance = palette.appearance
+            controller.window?.backgroundColor = palette.chrome
+            controller.window?.contentView?.appearance = palette.appearance
+            controller.window?.contentView?.needsDisplay = true
+            controller.window?.contentView?.needsLayout = true
+        }
+        helpWindow?.window?.appearance = palette.appearance
+        helpWindow?.window?.backgroundColor = palette.chrome
+        helpWindow?.window?.contentView?.appearance = palette.appearance
+        helpWindow?.window?.contentView?.needsDisplay = true
+    }
+
+    private func applyTheme(to controller: NSWindowController) {
+        let palette = preferences.theme.palette
+        controller.window?.appearance = palette.appearance
+        controller.window?.backgroundColor = palette.chrome
+        controller.window?.contentView?.appearance = palette.appearance
+        controller.window?.contentView?.needsDisplay = true
+        controller.window?.contentView?.needsLayout = true
     }
 
     @objc private func accessibilityDisplayOptionsChanged(_ notification: Notification) {
@@ -5263,6 +5319,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
                 } else {
                     guard operation.action == "create" else { continue }
                     controller = .init(operation: operation)
+                    applyTheme(to: controller)
                     controller.onClose = { [weak self] in self?.scriptWindows.removeValue(forKey: operation.identifier) }
                     controller.onEvent = { [weak self, scriptService] event, arguments in
                         guard let self else { return }
@@ -5347,6 +5404,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             controller = existing
         } else {
             controller = .init(title: title)
+            applyTheme(to: controller)
             controller.onClose = { [weak self] in self?.triggerStatisticsWindows.removeValue(forKey: title) }
             triggerStatisticsWindows[title] = controller
         }
@@ -5436,6 +5494,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private func spawnWindow(named title: String) -> TriggerSpawnWindowController {
         if let existing = triggerSpawnWindows[title] { return existing }
         let controller = TriggerSpawnWindowController(title: title)
+        controller.applyTheme(preferences.theme.palette)
         controller.showsInlineImagePreviews = preferences.showsInlineImagePreviews
         controller.onAction = { [weak self] action in self?.perform(action) }
         controller.onWindowDragEnded = { [weak self, weak controller] point in
@@ -5467,6 +5526,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private func spawnTabGroup(named title: String) -> TriggerSpawnTabGroupWindowController {
         if let existing = triggerSpawnTabGroups[title] { return existing }
         let controller = TriggerSpawnTabGroupWindowController(title: title)
+        controller.applyTheme(preferences.theme.palette)
         controller.showsInlineImagePreviews = preferences.showsInlineImagePreviews
         controller.onAction = { [weak self] action in self?.perform(action) }
         controller.onStructureChange = { [weak self] in self?.saveSpawnSurfacePreferences() }
@@ -5758,6 +5818,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
                         controller = existing
                     } else {
                         controller = .init(title: title)
+                        applyTheme(to: controller)
                         controller.onClose = { [weak self] in self?.gmcpStatisticsWindows.removeValue(forKey: title) }
                         gmcpStatisticsWindows[title] = controller
                     }
@@ -5770,6 +5831,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
                         controller = existing
                     } else {
                         controller = .init(title: name)
+                        applyTheme(to: controller)
                         controller.onClose = { [weak self] in self?.tileMapWindows.removeValue(forKey: name) }
                         controller.onChange = { [weak self] map in
                             guard let self else { return }
@@ -6065,6 +6127,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private func ensureAtlasWindow() -> AtlasWindowController {
         if let atlasWindow { return atlasWindow }
         let controller = AtlasWindowController()
+        applyTheme(to: controller)
         controller.onClose = { [weak self, weak controller] in
             guard let self, let controller, self.atlasWindow === controller else { return }
             if !self.preservingAtlasPlacement {

@@ -102,6 +102,12 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     var canvasBackgroundColor = NSColor(calibratedWhite: 0.05, alpha: 1) {
         didSet { needsDisplay = true }
     }
+    var selectionBackgroundColor = NSColor.selectedTextBackgroundColor {
+        didSet { needsDisplay = true }
+    }
+    var selectionForegroundColor = NSColor.selectedTextColor {
+        didSet { needsDisplay = true }
+    }
 
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
@@ -734,8 +740,8 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         let result = NSMutableAttributedString(attributedString: attributedTextForLayout(item))
         if let range = selectionRange(in: itemIndex), range.length > 0 {
             result.addAttributes([
-                .backgroundColor: NSColor.selectedTextBackgroundColor,
-                .foregroundColor: NSColor.selectedTextColor,
+                .backgroundColor: selectionBackgroundColor,
+                .foregroundColor: selectionForegroundColor,
             ], range: range)
         }
         if !blinkVisible {
