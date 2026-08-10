@@ -945,6 +945,12 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if isSessionConnected,
+           !bypassLastTabReplacement,
+           !applicationTerminationPrepared,
+           !confirmClosingConnectedTab() {
+            return false
+        }
         if !bypassLastTabReplacement,
            (sessionTabGroup?.controllers.count ?? 1) == 1,
            onRequestCloseLastTab?(self) == true {
@@ -952,6 +958,23 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         }
         sessionTabGroup?.prepareToClose(self)
         return true
+    }
+
+    private func confirmClosingConnectedTab() -> Bool {
+        let world = currentServer?.name ?? baseWindowTitle
+        let message = "Close connected tab?"
+        let detail = "Closing this tab will disconnect from \(world)."
+        if let handler = closeConnectedTabConfirmationHandlerForTesting {
+            return handler(message, detail)
+        }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = message
+        alert.informativeText = detail
+        alert.addButton(withTitle: "Close Tab")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     func closeForTabReplacement() {
@@ -1353,6 +1376,14 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     var tabBarApplicationMenuForTesting: NSMenu { tabBarApplicationMenu() }
     var quickConnectMenuForTesting: NSMenu { quickConnectMenu() }
     var sessionTabContextMenuForTesting: NSMenu { sessionTabContextMenu() }
+    var isSessionConnectedForTesting: Bool {
+        get { isSessionConnected }
+        set {
+            isSessionConnected = newValue
+            connectionStateText = newValue ? "Connected" : "Disconnected"
+        }
+    }
+    var closeConnectedTabConfirmationHandlerForTesting: (@MainActor (String, String) -> Bool)?
     var inputHeightPreferenceForTesting: Double { preferences.inputHeight }
     private(set) var inputLayoutRestorationGenerationForTesting: UInt64 = 0
     var isInputHistoryPaneVisibleForTesting: Bool { isInputHistoryPaneVisible }
