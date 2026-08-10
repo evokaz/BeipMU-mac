@@ -521,8 +521,6 @@ public struct LegacyConfigurationDocument: Sendable {
     }
 
     /// Returns scalar fields from every unnamed entry in a legacy collection.
-    /// This is used for collections such as `Variables`, whose v331 form is
-    /// `{ Name="…" Value="…" }`.
     public func unnamedBlockValues(at collectionPath: [String]) -> [[String: String]] {
         guard let children = descend(collectionPath, nodes: nodes) else { return [] }
         return children.compactMap { node in
@@ -532,6 +530,31 @@ public struct LegacyConfigurationDocument: Sendable {
                 return (name, Self.unquote(value))
             })
         }
+    }
+
+    func assignmentValues(at path: [String]) -> [(name: String, value: String)] {
+        guard let children = descend(path, nodes: nodes) else { return [] }
+        return children.compactMap { node in
+            guard case let .assignment(name, value, _, _) = node else { return nil }
+            return (name, Self.unquote(value))
+        }
+    }
+
+    @discardableResult
+    mutating func removeAssignment(named name: String, at path: [String]) throws -> Bool {
+        guard let children = descend(path, nodes: nodes) else { return false }
+        let ranges = children.compactMap { node -> Range<String.Index>? in
+            guard case let .assignment(candidate, _, _, range) = node,
+                  candidate.caseInsensitiveCompare(name) == .orderedSame else { return nil }
+            return range
+        }
+        guard !ranges.isEmpty else { return false }
+        for range in ranges.map(expandedRemovalRange).sorted(by: { $0.lowerBound > $1.lowerBound }) {
+            source.removeSubrange(range)
+        }
+        var parser = LegacyParser(source: source)
+        nodes = try parser.parse()
+        return true
     }
 
     /// Removes one named entry from a legacy collection. Both full block form

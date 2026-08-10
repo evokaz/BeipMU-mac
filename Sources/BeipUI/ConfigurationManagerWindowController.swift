@@ -604,14 +604,6 @@ final class ConfigurationManagerWindowController: NSWindowController, NSOutlineV
         deleteButton?.isEnabled = activeList == .saved && selection != nil
     }
 
-    // Kept as a small compatibility shim for the native UI tests and for
-    // callers that used the original flat NSTableView implementation.
-    func tableViewSelectionDidChange(_ notification: Notification) {
-        outlineViewSelectionDidChange(
-            Notification(name: NSOutlineView.selectionDidChangeNotification, object: table)
-        )
-    }
-
     private func rebuildDetails() {
         detailStack.arrangedSubviews.forEach {
             detailStack.removeArrangedSubview($0)

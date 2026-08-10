@@ -173,17 +173,11 @@ public struct LegacyConfigurationWorkspace: Sendable {
     }
 
     public func variables(in scope: AutomationScope) throws -> [String: String] {
-        let entries = document.unnamedBlockValues(at: try variableCollectionPath(scope))
-        return Dictionary(uniqueKeysWithValues: entries.compactMap { entry in
-            guard let name = entry.firstValue(caseInsensitiveKey: "Name"),
-                  let value = entry.firstValue(caseInsensitiveKey: "Value") else { return nil }
-            return (name, value)
-        })
+        Dictionary(uniqueKeysWithValues: document.assignmentValues(at: try variableCollectionPath(scope)))
     }
 
-    /// Adds or updates a v331 variable entry without rewriting neighbouring
-    /// fields. An update therefore remains deterministic when an older host
-    /// discarded the original entry before handoff.
+    /// Adds or updates a v331 variable assignment without rewriting
+    /// neighbouring fields. Existing key casing is preserved.
     public mutating func setVariable(
         named name: String,
         value: String,
@@ -192,27 +186,20 @@ public struct LegacyConfigurationWorkspace: Sendable {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw WorkspaceError.emptyName }
         let path = try variableCollectionPath(scope)
-        let entries = document.unnamedBlockValues(at: path)
-        let index: Int
-        if let existing = entries.firstIndex(where: {
-            $0.firstValue(caseInsensitiveKey: "Name")?.caseInsensitiveCompare(trimmed) == .orderedSame
-        }) {
-            index = existing
-        } else {
-            index = try document.appendUnnamedBlock(at: path)
-            try document.upsertValue(trimmed, inUnnamedBlockAt: index, collectionPath: path, relativePath: ["Name"])
-        }
-        try document.upsertValue(value, inUnnamedBlockAt: index, collectionPath: path, relativePath: ["Value"])
+        let storedName = document.assignmentValues(at: path).first(where: {
+            $0.name.caseInsensitiveCompare(trimmed) == .orderedSame
+        })?.name ?? trimmed
+        try document.upsertValue(value, at: path + [storedName])
         try reloadProjectionAfterAutomationEdit()
     }
 
     @discardableResult
     public mutating func removeVariable(named name: String, in scope: AutomationScope) throws -> Bool {
         let path = try variableCollectionPath(scope)
-        guard let index = document.unnamedBlockValues(at: path).firstIndex(where: {
-            $0.firstValue(caseInsensitiveKey: "Name")?.caseInsensitiveCompare(name) == .orderedSame
-        }) else { return false }
-        let removed = try document.removeUnnamedBlock(at: index, collectionPath: path)
+        guard let storedName = document.assignmentValues(at: path).first(where: {
+            $0.name.caseInsensitiveCompare(name) == .orderedSame
+        })?.name else { return false }
+        let removed = try document.removeAssignment(named: storedName, at: path)
         try reloadProjectionAfterAutomationEdit()
         return removed
     }

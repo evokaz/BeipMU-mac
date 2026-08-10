@@ -153,6 +153,28 @@ final class AtlasEditorTests: XCTestCase {
         XCTAssertEqual(viewport.origin, .init(x: -50, y: -50))
     }
 
+    func testReplacingAtlasAndRenamingRoomParticipateInUndoHistory() {
+        let original = Atlas(maps: [.init(
+            name: "Original",
+            rooms: [.init(name: "Start", rect: .init(x1: 0, y1: 0, x2: 40, y2: 30))]
+        )])
+        let replacement = Atlas(maps: [.init(
+            name: "Replacement",
+            rooms: [.init(name: "Crossroads", rect: .init(x1: 10, y1: 20, x2: 90, y2: 80))]
+        )])
+        var editor = AtlasEditor(atlas: original)
+
+        editor.replaceAtlas(replacement)
+        XCTAssertEqual(editor.atlas, replacement)
+        editor.renameRoom(at: .init(mapIndex: 0, roomIndex: 0), to: "Town Square")
+        XCTAssertEqual(editor.atlas.maps[0].rooms[0].name, "Town Square")
+
+        editor.undo()
+        XCTAssertEqual(editor.atlas, replacement)
+        editor.undo()
+        XCTAssertEqual(editor.atlas, original)
+    }
+
     func testSelectionFragmentRewritesExitsAndPastesWithOffset() throws {
         var editor = AtlasEditor(atlas: Atlas(maps: [.init(name: "Main")]))
         let first = try XCTUnwrap(editor.addRoom(name: "A", rect: .init(x1: 0, y1: 0, x2: 40, y2: 30)))
@@ -294,7 +316,7 @@ final class AtlasEditorTests: XCTestCase {
     func testShippedV1AndV2AtlasesHaveSemanticWriteRoundTrips() throws {
         let repository = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        let maps = repository.deletingLastPathComponent().appendingPathComponent("BeipMU-win/Maps")
+        let maps = repository.appendingPathComponent("Maps", isDirectory: true)
         for name in ["FurryMUCK.atlas", "Fluff.atlas", "Arx_Map_by_Precisi.atlas"] {
             let original = try AtlasReader.read(from: maps.appendingPathComponent(name))
             XCTAssertEqual(try AtlasReader.read(from: AtlasWriter.data(for: original)), original, name)

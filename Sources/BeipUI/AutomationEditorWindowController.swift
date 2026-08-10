@@ -2072,19 +2072,37 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
 
     @objc private func moveMacroIn(_ sender: Any?) {
         guard let path = selectedMacroPath, let index = path.last, index > 0 else { NSSound.beep(); return }
-        let parent = Array(path.dropLast())
-        let destination = parent + [index - 1]
-        let count = macroWorkspace.macro(at: destination, in: selectedMacroScope ?? macroEditingScope)?.children.count ?? 0
-        moveSelectedMacro(toParentPath: destination, index: count)
+        moveSelectedMacro { workspace, sourcePath, scope in
+            try workspace.indentMacro(at: sourcePath, in: scope)
+        }
     }
 
     @objc private func moveMacroOut(_ sender: Any?) {
-        guard let path = selectedMacroPath, path.count > 1, let parentIndex = path.dropLast().last else {
+        guard let path = selectedMacroPath, path.count > 1 else {
             NSSound.beep()
             return
         }
-        let parent = Array(path.dropLast())
-        moveSelectedMacro(toParentPath: Array(parent.dropLast()), index: parentIndex + 1)
+        moveSelectedMacro { workspace, sourcePath, scope in
+            try workspace.outdentMacro(at: sourcePath, in: scope)
+        }
+    }
+
+    private func moveSelectedMacro(
+        using operation: (
+            inout LegacyConfigurationWorkspace,
+            [Int],
+            LegacyConfigurationWorkspace.AutomationScope
+        ) throws -> [Int]
+    ) {
+        guard resolvePendingFormChanges(),
+              let sourcePath = selectedMacroPath, let selectedMacroScope else { NSSound.beep(); return }
+        stageMacroFormIfNeeded()
+        do {
+            var candidate = macroWorkspace
+            let moved = try operation(&candidate, sourcePath, selectedMacroScope)
+            stagedMacroWorkspace = candidate
+            reloadMacroOutline(selecting: macroSelectionKey(scope: selectedMacroScope, path: moved))
+        } catch { present(error) }
     }
 
     private func moveSelectedMacro(toParentPath destinationParentPath: [Int], index destinationIndex: Int) {
@@ -2413,14 +2431,6 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
         panel.beginSheetModal(for: window!) { [weak self] response in
             guard response == .OK, let url = panel.url else { return }
             Task { @MainActor in self?.performTriggerExport(to: url, from: targetScope) }
-        }
-    }
-
-    private var selectedTriggerAction: LegacyConfigurationWorkspace.EditableTriggerAction {
-        switch actionPopup.indexOfSelectedItem {
-        case 1: .gag(display: true, log: true)
-        case 2: .send(actionField.stringValue)
-        default: .gag(display: true, log: false)
         }
     }
 

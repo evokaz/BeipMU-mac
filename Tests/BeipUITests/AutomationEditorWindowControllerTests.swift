@@ -918,6 +918,50 @@ final class AutomationEditorWindowControllerTests: XCTestCase {
         XCTAssertTrue(try library.workspace.renderedDocument().serialized().contains("Type=true"))
     }
 
+    func testMacroEditorIndentAndOutdentUseWorkspaceMovementAPIs() throws {
+        let library = ProfileLibrary(workspace: try Self.workspace(
+            """
+            Version=331
+            Connections {
+              KeyboardMacros2 { Active=true
+                { Description="Folder" Folder=true
+                  KeyboardMacros2 { { Description="Child" Macro="north" key=F1 } }
+                }
+                { Description="Second" Macro="south" key=F2 }
+              }
+            }
+            """
+        ))
+        let controller = AutomationEditorWindowController(library: library, kind: .macros)
+        defer { controller.close() }
+        let content = try XCTUnwrap(controller.window?.contentView)
+        let outline = try XCTUnwrap(
+            recursiveSubviews(of: content)
+                .compactMap { $0 as? NSOutlineView }
+                .first { $0.accessibilityIdentifier() == "macroScopeOutline" }
+        )
+
+        let secondRow = try XCTUnwrap(row(titled: "Second", in: outline))
+        outline.selectRowIndexes(.init(integer: secondRow), byExtendingSelection: false)
+        controller.outlineViewSelectionDidChange(.init(
+            name: NSOutlineView.selectionDidChangeNotification,
+            object: outline
+        ))
+        try button(identifier: "macroMoveIn", in: content).performClick(nil)
+        try button(identifier: "macroApply", in: content).performClick(nil)
+        XCTAssertEqual(library.workspace.macro(at: [0, 1], in: .global)?.description, "Second")
+
+        let indentedRow = try XCTUnwrap(row(titled: "Second", in: outline))
+        outline.selectRowIndexes(.init(integer: indentedRow), byExtendingSelection: false)
+        controller.outlineViewSelectionDidChange(.init(
+            name: NSOutlineView.selectionDidChangeNotification,
+            object: outline
+        ))
+        try button(identifier: "macroMoveOut", in: content).performClick(nil)
+        try button(identifier: "macroApply", in: content).performClick(nil)
+        XCTAssertEqual(library.workspace.macro(at: [1], in: .global)?.description, "Second")
+    }
+
     func testAutomationDebuggerDisplaysTriggerSkipReasons() throws {
         let controller = AutomationDebugWindowController(kind: .triggers)
         defer { controller.close() }

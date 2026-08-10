@@ -975,12 +975,6 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         currentServer?.id == server.id && currentCharacter?.id == character?.id
     }
 
-    func tabGroupContainsSavedProfile(_ server: ServerProfile, character: CharacterProfile?) -> Bool {
-        (sessionTabGroup?.controllers ?? [self]).contains {
-            $0.representsSavedProfile(server, character: character)
-        }
-    }
-
     func savedProfileControllerInTabGroup(
         _ server: ServerProfile,
         character: CharacterProfile?
@@ -1872,18 +1866,6 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         onWorkspacePreferencesChange?()
     }
 
-    func showGlobalTextWindowSettings() {
-        onSettingsRequest?(.output, .global)
-    }
-
-    func showGlobalInputWindowSettings() {
-        onSettingsRequest?(.input, .global)
-    }
-
-    private func showTextWindowSettings(initialScope: TextWindowSettingsEditorView.Scope) {
-        onSettingsRequest?(.output, initialScope)
-    }
-
     func showWorkspaceSettings() {
         onSettingsRequest?(.appearance, nil)
     }
@@ -1983,10 +1965,6 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
         controller.focusInitialControl()
-    }
-
-    func showThemeSettings() {
-        onSettingsRequest?(.appearance, nil)
     }
 
     func showLoggingControls() {

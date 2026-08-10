@@ -147,6 +147,8 @@ final class AutomationTests: XCTestCase {
         XCTAssertFalse(KeyboardMacroKey.matches(configured: "Command+A", pressed: "A"))
         XCTAssertTrue(KeyboardMacroKey.matches(configured: "?Control+Alt+A", pressed: "Alt+A"))
         XCTAssertTrue(KeyboardMacroKey.matches(configured: "A", pressed: "A"))
+        XCTAssertTrue(KeyboardMacroKey.parse("Control+Alt+A")?.isConcrete == true)
+        XCTAssertFalse(KeyboardMacroKey.parse("?Control+Alt+A")?.isConcrete == true)
     }
 
     func testKeyboardMacroInactiveFolderGroupDoesNotMatchChildren() {

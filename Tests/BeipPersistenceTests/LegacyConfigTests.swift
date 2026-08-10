@@ -1338,6 +1338,60 @@ final class LegacyConfigTests: XCTestCase {
         XCTAssertEqual(try LegacyConfigurationProjection(document: rendered).scripting.startupPath, "Scripts/startup.js")
     }
 
+    func testEditableConfigurationWorkspaceUpdatesConnectionSettings() throws {
+        var workspace = try LegacyConfigurationWorkspace.empty()
+        workspace.updateSettings {
+            $0.connectTimeoutMilliseconds = 12_000
+            $0.connectRetryCount = 3
+            $0.retryForever = true
+            $0.tcpKeepAlive = false
+            $0.tcpNoDelay = false
+        }
+
+        XCTAssertTrue(workspace.isDirty)
+        let rendered = try workspace.renderedDocument()
+        let settings = try LegacyConfigurationProjection(document: rendered).settings
+        XCTAssertEqual(settings.connectTimeoutMilliseconds, 12_000)
+        XCTAssertEqual(settings.connectRetryCount, 3)
+        XCTAssertTrue(settings.retryForever)
+        XCTAssertFalse(settings.tcpKeepAlive)
+        XCTAssertFalse(settings.tcpNoDelay)
+    }
+
+    func testEditableConfigurationWorkspaceRoundTripsScopedVariables() throws {
+        var workspace = try LegacyConfigurationWorkspace(document: .init(source: """
+        Version=331
+        Connections { Shortcuts { World { Characters { Hero { } } } } }
+        """))
+        let server = try XCTUnwrap(workspace.servers.first)
+        let character = try XCTUnwrap(server.characters.first)
+        let scope = LegacyConfigurationWorkspace.AutomationScope.character(
+            server: server.profile.id,
+            character: character.id
+        )
+
+        try workspace.setVariable(named: "Mood", value: "quiet", in: scope)
+        try workspace.setVariable(named: "mood", value: "focused", in: scope)
+        XCTAssertEqual(try workspace.variables(in: scope), ["Mood": "focused"])
+
+        let rendered = try workspace.renderedDocument()
+        let reparsed = try LegacyConfigurationWorkspace(document: rendered)
+        let reparsedServer = try XCTUnwrap(reparsed.servers.first)
+        let reparsedCharacter = try XCTUnwrap(reparsedServer.characters.first)
+        XCTAssertEqual(
+            reparsed.projection.variables(
+                for: reparsedServer.profile,
+                character: reparsedCharacter,
+                puppet: nil
+            )["Mood"],
+            "focused"
+        )
+
+        XCTAssertTrue(try workspace.removeVariable(named: "MOOD", in: scope))
+        XCTAssertFalse(try workspace.removeVariable(named: "missing", in: scope))
+        XCTAssertEqual(try workspace.variables(in: scope), [:])
+    }
+
     func testUnnamedCollectionEntriesCanBeEditedWithoutRewritingNeighbors() throws {
         var document = try LegacyConfigurationDocument(source: """
         Connections {
@@ -1379,6 +1433,13 @@ final class LegacyConfigTests: XCTestCase {
             macro: "score",
             typeIntoInput: true
         )
+        try workspace.updateGlobalMacro(
+            at: macro,
+            description: "Quick inventory",
+            key: "Control+Alt+I",
+            macro: "inventory",
+            typeIntoInput: false
+        )
         try workspace.updateGlobalAlias(
             at: alias,
             description: "Go south",
@@ -1396,8 +1457,10 @@ final class LegacyConfigTests: XCTestCase {
         XCTAssertEqual(workspace.globalAliases.first?.replacement, "south")
         XCTAssertEqual(workspace.globalTriggers.map(\.description), ["Hide score"])
         XCTAssertTrue(workspace.globalTriggers.first?.actions.contains(.gag(display: true, log: true)) == true)
-        XCTAssertEqual(workspace.globalMacros.first?.macro, "score")
-        XCTAssertTrue(workspace.globalMacros.first?.typeIntoInput == true)
+        XCTAssertEqual(workspace.globalMacros.first?.description, "Quick inventory")
+        XCTAssertEqual(workspace.globalMacros.first?.key, "Control+Alt+I")
+        XCTAssertEqual(workspace.globalMacros.first?.macro, "inventory")
+        XCTAssertFalse(workspace.globalMacros.first?.typeIntoInput == true)
 
         try workspace.removeGlobalAlias(at: alias)
         try workspace.removeGlobalTrigger(at: trigger)
@@ -1424,6 +1487,12 @@ final class LegacyConfigTests: XCTestCase {
         """))
 
         XCTAssertEqual(workspace.macro(at: [0, 0], in: .global)?.macro, "north")
+        let indented = try workspace.indentMacro(at: [1], in: .global)
+        XCTAssertEqual(indented, [0, 1])
+        XCTAssertEqual(workspace.macro(at: indented, in: .global)?.description, "Second")
+        let outdented = try workspace.outdentMacro(at: indented, in: .global)
+        XCTAssertEqual(outdented, [1])
+        XCTAssertEqual(workspace.macro(at: outdented, in: .global)?.description, "Second")
         var copied = try workspace.copyMacro(
             at: [0, 0],
             in: .global,

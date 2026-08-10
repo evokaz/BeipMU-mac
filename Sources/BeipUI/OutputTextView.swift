@@ -92,7 +92,6 @@ final class OutputTextView: NSObject {
     var pendingLineCount: Int { history.pendingLines.count }
     var visibleLineCount: Int { history.count }
     var isSplit: Bool { secondaryOutputView != nil }
-    var lastDrawnLineCount: Int { outputView.lastDrawnItemCount }
     var renderedLineCount: Int { outputView.itemCount }
     var visiblePaintCandidateCount: Int {
         outputView.visibleItemCount(in: scrollView.contentView.bounds)

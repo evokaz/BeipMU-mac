@@ -717,14 +717,6 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         return windows.last
     }
 
-    private func showShortcutError(_ message: String) {
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = "Shortcut Not Saved"
-        alert.informativeText = message
-        alert.runModal()
-    }
-
     private struct NativeMenuShortcutConflict {
         let shortcut: KeyboardShortcut
         let item: NSMenuItem

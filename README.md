@@ -10,6 +10,10 @@ This project is a native macOS reimplementation of
 Bennet. It aims to preserve compatibility with BeipMU's configuration format
 and core functionality while providing a native AppKit interface.
 
+This macOS reimplementation is maintained independently. Please report issues
+with BeipMU for Mac to this project rather than seeking support from the
+original BeipMU Windows developer.
+
 The current app targets macOS 14 or later. Releases are built as universal
 macOS applications, although Apple silicon is the supported and tested
 architecture; the Intel slice is currently untested.
@@ -20,8 +24,8 @@ architecture; the Intel slice is currently untested.
 
 ## Highlights
 
-- Native AppKit windows, tabs, split sidebars, dockable tools, themes, keyboard
-  customization, and accessibility-aware display behavior.
+- Native AppKit windows, tabs, split sidebars, dockable tools, scoped display
+  settings, themes, keyboard customization, and accessibility-aware behavior.
 - Telnet negotiation, GMCP, MCP, Pueblo, ANSI/256/true color, NAWS, TLS, and
   multiple text encodings.
 - Worlds, characters, and puppets backed by a lossless BeipMU v331-compatible
@@ -68,15 +72,17 @@ regenerate instead of treating the generated project as the source of truth.
 ## First run
 
 1. Open BeipMU and choose **Connection → Connect…**.
-2. Enter a host and port, or create a saved world and character in **Settings…**.
+2. Enter a host and port, or create a saved world and character in
+   **Connection → Worlds & Characters…**.
 3. Type server commands in the input field. Client-side commands begin with
    `/`; use `/help` for the built-in list and `//text` to send text beginning
    with a slash.
 
 BeipMU stores its live configuration in
 `~/Library/Application Support/BeipMU/`. The portable `Config.txt` format may
-contain character passwords and AI endpoint settings in plaintext. Treat the
-file, its automatic backup, and exported copies as secrets.
+contain character passwords and AI endpoint settings in plaintext, while the
+crash-recovery journal can contain session output and typed input. Treat the
+live data directory, automatic backup, and exported copies as sensitive.
 
 See the [user guide](Documentation/USER_GUIDE.md) for profiles, automation,
 scripting, logs, and data locations.

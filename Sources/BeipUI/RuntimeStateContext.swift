@@ -16,8 +16,6 @@ struct RuntimeStateContext {
 
     static let releaseBundleIdentifier = "org.beipmu.BeipMU"
     static let debugBundleIdentifier = "org.beipmu.BeipMU.Debug"
-    static let releaseScriptServiceIdentifier = "org.beipmu.BeipMU.ScriptService"
-    static let debugScriptServiceIdentifier = "org.beipmu.BeipMU.Debug.ScriptService"
 
     static let uiTestingKey = "BEIPMU_UI_TESTING"
     static let uiTestResetKey = "BEIPMU_UI_TEST_RESET"

@@ -66,7 +66,7 @@ xcodebuild -project BeipMU.xcodeproj -scheme BeipMU \
 | --- | --- |
 | `BeipCoreTests` | Rendered lines, layout indexing, GMCP, media, WebViews |
 | `BeipProtocolsTests` | Telnet, decoding, MCP, network/TLS resilience, connection scale |
-| `BeipPersistenceTests` | Lossless config, recovery, restore logs, Atlas, scale |
+| `BeipPersistenceTests` | Lossless config, backup recovery, crash journals, Atlas, scale |
 | `BeipAutomationTests` | Matching, aliases, triggers, macros, commands, delays |
 | `BeipScriptRuntimeTests` | JavaScript host API, XPC watchdog and recovery |
 | `BeipUITests` | AppKit controllers, preferences, virtualization, live propagation |
@@ -86,6 +86,12 @@ BEIPMU_RECORD_BASELINES=1 ./Scripts/test-ui.sh
 
 Review every changed PNG under `UITests/Baselines/`; baseline recording should
 not be used merely to hide an unexpected visual regression.
+
+Debug application builds use
+`~/Library/Application Support/BeipMU-Debug/`, keeping developer profiles,
+preferences, and `Recovery.dat` separate from the release app. XCUITests and
+the full-app soak provide their own temporary state directory and `UserDefaults`
+suite; do not point those overrides at the release directory.
 
 Set `BEIPMU_EVIDENCE_DIR` to a new, nonexistent directory when UI, benchmark,
 or soak artifacts must be retained. The scripts refuse to mix results into an

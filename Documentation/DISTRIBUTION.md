@@ -11,6 +11,10 @@ Releases are distributed directly by the project as ad hoc-signed archives.
 They are not signed with an Apple Developer ID and are not notarized by Apple.
 There is no automatic updater.
 
+BeipMU for Mac is an independent reimplementation. Support requests and bug
+reports for this macOS application should be directed to this project, not to
+the developer of the original BeipMU for Windows.
+
 ## Install from a ZIP
 
 1. Verify the downloaded checksum as described below.
@@ -56,14 +60,21 @@ BeipMU stores its live data under:
 The portable `Config.txt` format can include world addresses, character login
 commands, passwords, AI endpoint settings, and automation in plaintext. Its
 automatic `Config.backup.txt` and manually exported configurations contain the
-same class of sensitive data. Passwords are not moved to macOS Keychain.
+same class of sensitive data. `Recovery.dat` can contain server output, sent
+input, input history, and protocol state from interrupted sessions. Passwords
+are not moved to macOS Keychain.
 
 Before sharing a configuration, diagnostic collection, computer backup, or
-user account, inspect and redact these files. Protect backups with encryption
-appropriate to their destination.
+user account, inspect and redact these files. Protect the entire application
+data directory and its backups with encryption appropriate to their
+destination.
 
 Network connections are plaintext unless TLS is enabled for the world. Keep
 certificate verification enabled for normal TLS connections.
+
+Debug builds store their data separately under
+`~/Library/Application Support/BeipMU-Debug/`; release builds do not use that
+directory.
 
 ## Build release artifacts
 

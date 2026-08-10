@@ -6,7 +6,8 @@ Use **Connection → Connect…** for a one-off connection. A connection needs a
 host and a port; TLS, certificate verification, text encoding, MCP, Pueblo,
 and other protocol options can be configured on a saved world.
 
-For repeat connections, open **Settings…** and create this hierarchy:
+For repeat connections, choose **Connection → Worlds & Characters…** (or use
+the profiles button in the tab bar) and create this hierarchy:
 
 ```text
 World
@@ -45,6 +46,20 @@ saved in the macOS sidecar configuration. Leave a shortcut field empty to
 disable it. Conflicts with another shortcut or a fixed native menu command are
 rejected with a prompt naming the conflict. Standard macOS commands such as
 Settings, Help, and Quit remain fixed.
+
+## Customize the workspace
+
+**Settings…** opens a retained window with Appearance, Output, Input,
+Scripting, and Shortcuts sections. Output and input settings can apply to the
+global default or to the active world, character, or tab. A non-global scope
+can inherit the default or keep its own font, colors, sizing, spacing, and
+behavior. Changes apply to open windows as they are committed.
+
+Right-click the output or input area to open the relevant settings directly
+for the active tab. The output context menu also provides pause, split, copy,
+clear, delete-line, and default-inheritance controls. Workspace-wide options,
+including inline image previews, output splitting, spelling, and the speech
+voice, are labeled as such in Settings.
 
 ## Client commands
 
@@ -110,6 +125,21 @@ before running them.
 - **WebViews:** Server WebViews are controlled by the configured per-world
   policy. Review a world's policy before allowing server-initiated content.
 
+## Crash recovery
+
+For saved sessions, BeipMU maintains a bounded recovery journal by default.
+Portable configurations can disable it globally with `RestoreLogs=false` or
+per character with the **Restore Log** option in Worlds & Characters. After an
+abnormal termination, the next launch opens **Recover Sessions**. Select
+snapshots to restore or discard, or choose **Skip for Now** to leave them
+available for a later launch.
+
+Recovery is passive: it restores rendered output, prompts, spawn output, input
+history, and relevant GMCP state without running triggers, scripts, media, or
+network actions. It never reconnects automatically. Use **Reconnect** after
+reviewing the restored tab. Closing a session or quitting normally removes its
+recovery snapshot.
+
 ## Configuration and backups
 
 The app-owned data directory is:
@@ -118,7 +148,8 @@ The app-owned data directory is:
 ~/Library/Application Support/BeipMU/
 ├── Config.txt
 ├── Config.backup.txt
-└── Config.mac.json
+├── Config.mac.json
+└── Recovery.dat
 ```
 
 - `Config.txt` is the portable v331 configuration. The editor preserves
@@ -129,15 +160,23 @@ The app-owned data directory is:
   from this backup.
 - `Config.mac.json` stores Mac-only state such as customized shortcuts and
   restored tab groups.
+- `Recovery.dat` is the bounded crash-recovery journal. It can contain rendered
+  server output, sent input, input history, spawn output, and GMCP state.
 
-The configuration manager can import or export `Config.txt`. Import is parsed
-and projected before it replaces live state, so an invalid file is rejected.
+Debug builds use `~/Library/Application Support/BeipMU-Debug/` so development
+runs do not read or overwrite release data. UI tests use a temporary isolated
+directory.
+
+Use **File → Import Config…** or **File → Export Config…** for the complete
+portable configuration. Import is parsed and projected before it replaces live
+state, so an invalid file is rejected. The Worlds & Characters manager also
+supports profile-level import and export.
 
 > [!IMPORTANT]
 > Character connection strings may include passwords in plaintext. The app
 > does not store those passwords in Keychain. Protect `Config.txt`,
-> `Config.backup.txt`, exported configurations, diagnostic bundles, and any
-> release or cloud backup that contains them.
+> `Config.backup.txt`, `Recovery.dat`, exported configurations, diagnostic
+> bundles, and any release or cloud backup that contains them.
 
 For transport security, enable TLS and leave certificate verification enabled.
 Disabling certificate verification accepts any certificate and should only be

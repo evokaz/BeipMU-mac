@@ -13,6 +13,9 @@ final class WorkspacePreferencesTests: XCTestCase {
         defer { controller.close() }
         let window = try XCTUnwrap(controller.window)
         controller.showWindow(nil)
+        guard let visibleFrame = window.screen?.visibleFrame else {
+            throw XCTSkip("A WindowServer screen is required for window geometry testing")
+        }
         let inputSplit = try XCTUnwrap(
             recursiveSubviews(of: try XCTUnwrap(window.contentView))
                 .compactMap { $0 as? NSSplitView }
@@ -31,15 +34,36 @@ final class WorkspacePreferencesTests: XCTestCase {
         // AppKit retains only the title bar's own system minimum after showing.
         XCTAssertLessThanOrEqual(window.minSize.height, 32)
         XCTAssertEqual(window.contentMinSize, .zero)
-        window.setFrame(
-            NSRect(origin: window.frame.origin, size: NSSize(width: window.frame.width, height: 500)),
-            display: false
+        let initialHeight = window.frame.height
+        let smallerHeight = max(
+            window.minSize.height + 1,
+            min(initialHeight * 0.5, visibleFrame.height * 0.5)
         )
         window.setFrame(
-            NSRect(origin: window.frame.origin, size: NSSize(width: window.frame.width, height: 1_200)),
+            NSRect(
+                x: visibleFrame.minX,
+                y: visibleFrame.maxY - smallerHeight,
+                width: window.frame.width,
+                height: smallerHeight
+            ),
             display: false
         )
-        XCTAssertEqual(window.frame.height, 1_200, accuracy: 1)
+        XCTAssertLessThan(window.frame.height, initialHeight)
+        let reducedHeight = window.frame.height
+        let largerHeight = min(
+            visibleFrame.height,
+            max(reducedHeight + 1, visibleFrame.height * 0.9)
+        )
+        window.setFrame(
+            NSRect(
+                x: visibleFrame.minX,
+                y: visibleFrame.maxY - largerHeight,
+                width: window.frame.width,
+                height: largerHeight
+            ),
+            display: false
+        )
+        XCTAssertGreaterThan(window.frame.height, reducedHeight)
         XCTAssertGreaterThan(window.maxSize.height, 1_200)
         XCTAssertGreaterThan(window.contentMaxSize.height, 1_200)
         XCTAssertEqual(window.resizeIncrements.height, 1)

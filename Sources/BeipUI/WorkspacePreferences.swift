@@ -441,12 +441,6 @@ enum WorkspacePreferencesStore {
         return merged
     }
 
-    static func resetUITestDefaults() {
-        guard RuntimeStateContext.current.isUITesting,
-              let suiteName = RuntimeStateContext.current.defaultsSuiteName else { return }
-        UserDefaults.standard.removePersistentDomain(forName: suiteName)
-    }
-
     private static var activeDefaults: UserDefaults {
         RuntimeStateContext.current.defaults
     }

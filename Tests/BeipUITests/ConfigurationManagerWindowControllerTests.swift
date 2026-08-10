@@ -26,12 +26,12 @@ final class ConfigurationManagerWindowControllerTests: XCTestCase {
         )
 
         table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
-        controller.tableViewSelectionDidChange(Notification(name: NSTableView.selectionDidChangeNotification))
+        notifySelectionChange(table, controller: controller)
         content.layoutSubtreeIfNeeded()
         detailScroll.contentView.scroll(to: NSPoint(x: 0, y: 500))
 
         table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
-        controller.tableViewSelectionDidChange(Notification(name: NSTableView.selectionDidChangeNotification))
+        notifySelectionChange(table, controller: controller)
         content.layoutSubtreeIfNeeded()
 
         XCTAssertGreaterThan(
@@ -65,7 +65,7 @@ final class ConfigurationManagerWindowControllerTests: XCTestCase {
                 .first
         )
         table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
-        controller.tableViewSelectionDidChange(Notification(name: NSTableView.selectionDidChangeNotification))
+        notifySelectionChange(table, controller: controller)
 
         let views = recursiveSubviews(of: controller.window?.contentView)
         let identifiers = Set(views.compactMap { $0.accessibilityIdentifier() })
@@ -133,7 +133,7 @@ final class ConfigurationManagerWindowControllerTests: XCTestCase {
                 .first
         )
         table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
-        controller.tableViewSelectionDidChange(Notification(name: NSTableView.selectionDidChangeNotification))
+        notifySelectionChange(table, controller: controller)
 
         let dateField = try XCTUnwrap(
             recursiveSubviews(of: controller.window?.contentView)
@@ -165,13 +165,13 @@ final class ConfigurationManagerWindowControllerTests: XCTestCase {
         )
 
         table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
-        controller.tableViewSelectionDidChange(Notification(name: NSTableView.selectionDidChangeNotification))
+        notifySelectionChange(table, controller: controller)
         copy.performClick(nil)
 
         XCTAssertEqual(library.workspace.servers.map(\.profile.name), ["World", "World - copy"])
 
         table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
-        controller.tableViewSelectionDidChange(Notification(name: NSTableView.selectionDidChangeNotification))
+        notifySelectionChange(table, controller: controller)
         copy.performClick(nil)
 
         XCTAssertEqual(
@@ -195,7 +195,7 @@ final class ConfigurationManagerWindowControllerTests: XCTestCase {
                 .first
         )
         table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
-        controller.tableViewSelectionDidChange(Notification(name: NSTableView.selectionDidChangeNotification))
+        notifySelectionChange(table, controller: controller)
 
         let characterName = try XCTUnwrap(
             recursiveSubviews(of: content)
@@ -235,7 +235,7 @@ final class ConfigurationManagerWindowControllerTests: XCTestCase {
                 .first { $0.accessibilityIdentifier() == "configurationProfileList" }
         )
         table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
-        controller.tableViewSelectionDidChange(Notification(name: NSTableView.selectionDidChangeNotification))
+        notifySelectionChange(table, controller: controller)
 
         let nameField = try XCTUnwrap(
             recursiveSubviews(of: content)
@@ -258,9 +258,9 @@ final class ConfigurationManagerWindowControllerTests: XCTestCase {
         )
 
         table.selectRowIndexes(IndexSet(integer: 2), byExtendingSelection: false)
-        controller.tableViewSelectionDidChange(Notification(name: NSTableView.selectionDidChangeNotification))
+        notifySelectionChange(table, controller: controller)
         table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
-        controller.tableViewSelectionDidChange(Notification(name: NSTableView.selectionDidChangeNotification))
+        notifySelectionChange(table, controller: controller)
 
         let reloadedNameField = try XCTUnwrap(
             recursiveSubviews(of: content)
@@ -304,7 +304,7 @@ final class ConfigurationManagerWindowControllerTests: XCTestCase {
                 .first
         )
         table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
-        controller.tableViewSelectionDidChange(Notification(name: NSTableView.selectionDidChangeNotification))
+        notifySelectionChange(table, controller: controller)
 
         let views = recursiveSubviews(of: controller.window?.contentView)
         let connect = try XCTUnwrap(
@@ -349,7 +349,7 @@ final class ConfigurationManagerWindowControllerTests: XCTestCase {
         )
         name.stringValue = "Edited First"
         table.selectRowIndexes(.init(integer: 1), byExtendingSelection: false)
-        controller.tableViewSelectionDidChange(Notification(name: NSTableView.selectionDidChangeNotification))
+        notifySelectionChange(table, controller: controller)
 
         XCTAssertEqual(library.workspace.servers.first?.profile.name, "Edited First")
         XCTAssertEqual(table.selectedRow, 1)
@@ -380,7 +380,7 @@ final class ConfigurationManagerWindowControllerTests: XCTestCase {
         )
         name.stringValue = "Edited First"
         table.selectRowIndexes(.init(integer: 1), byExtendingSelection: false)
-        controller.tableViewSelectionDidChange(Notification(name: NSTableView.selectionDidChangeNotification))
+        notifySelectionChange(table, controller: controller)
 
         XCTAssertEqual(table.selectedRow, 0)
         XCTAssertEqual(name.stringValue, "Edited First")
@@ -413,6 +413,22 @@ final class ConfigurationManagerWindowControllerTests: XCTestCase {
         if window.firstResponder === view { return true }
         guard let editor = window.firstResponder as? NSTextView else { return false }
         return editor.delegate as AnyObject === view
+    }
+
+    private func notifySelectionChange(
+        _ tableView: NSTableView,
+        controller: ConfigurationManagerWindowController,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        guard let outlineView = tableView as? NSOutlineView else {
+            XCTFail("Expected the configuration profile list to be an NSOutlineView", file: file, line: line)
+            return
+        }
+        controller.outlineViewSelectionDidChange(Notification(
+            name: NSOutlineView.selectionDidChangeNotification,
+            object: outlineView
+        ))
     }
 
     private func recursiveSubviews(of root: NSView?) -> [NSView] {

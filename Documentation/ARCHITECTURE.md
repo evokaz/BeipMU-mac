@@ -14,7 +14,7 @@ flowchart TD
     UI --> Core["BeipCore\ndomain models and session actor"]
     UI --> Protocols["BeipProtocols\nnetwork and parsing"]
     UI --> Automation["BeipAutomation\ninput/output rules"]
-    UI --> Persistence["BeipPersistence\nconfiguration, restore log, Atlas"]
+    UI --> Persistence["BeipPersistence\nconfiguration, recovery journal, Atlas"]
     UI --> Runtime["BeipScriptRuntime\nJavaScript host and XPC client"]
     Protocols --> Core
     Automation --> Core
@@ -39,7 +39,7 @@ flowchart LR
     Events --> Controller["ClientWindowController"]
     Controller --> Triggers["TriggerEngine actor"]
     Triggers --> Workspace["Virtualized output workspace"]
-    Controller --> Logs["Session logs / restore log"]
+    Controller --> Logs["Session logs / recovery journal"]
     Input["Command input"] --> Aliases["AliasEngine"]
     Aliases --> Commands["CommandRegistry"]
     Commands --> Session
@@ -77,9 +77,20 @@ the previous live `Config.txt` is copied to `Config.backup.txt` before a new
 version replaces it. Mac-only state is stored separately in `Config.mac.json`
 so the portable configuration remains compatible.
 
-Restore logs use a bounded binary record format with repair and playback
-support. Atlas maps are ZIP/XML archives whose reader and writer preserve
-unknown compatible content for round trips.
+`RuntimeStateContext` selects one persistence identity for the process. Release
+builds use `Application Support/BeipMU`, Debug builds use
+`Application Support/BeipMU-Debug`, and UI tests use an explicitly isolated
+temporary directory and preferences suite.
+
+`SessionRecoveryStore` appends checksummed, length-prefixed JSON frames to the
+bounded `Recovery.dat` journal. Startup repair keeps the valid prefix after an
+incomplete final frame, while compaction enforces total and per-session size
+limits. Recovery records final presentation state so replay can restore text,
+prompts, spawn output, input history, and GMCP state without invoking network,
+automation, scripts, or media. Normal session closure removes its snapshot.
+
+Atlas maps are ZIP/XML archives whose reader and writer preserve unknown
+compatible content for round trips.
 
 ## Automation pipeline
 
@@ -119,9 +130,11 @@ hardened runtime for both application targets.
 The Swift package tests domain and UI components without launching the full
 application. `BeipTestSupport` supplies a scripted local MU server for network
 and service resilience tests. Deterministic fixtures exercise large profiles,
-many concurrent sessions, restore logs, and Atlas round trips.
+many concurrent sessions, recovery journals, and Atlas round trips.
 
 XCUITests cover complete application flows and compare named screenshots with
 checked-in baselines. Separate workspace and full-app soak scripts enforce
 throughput, retained-history, viewport-candidate, resident-memory, and leak
-budgets. See [DEVELOPMENT.md](DEVELOPMENT.md) for exact commands.
+budgets. Recovery tests cover bounded journaling, truncated-write repair,
+configuration defaults, passive replay, and state-directory isolation. See
+[DEVELOPMENT.md](DEVELOPMENT.md) for exact commands.
