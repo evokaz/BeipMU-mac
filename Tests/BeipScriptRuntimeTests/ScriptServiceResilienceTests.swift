@@ -149,20 +149,23 @@ private final class M9ScriptServiceListener: NSObject, NSXPCListenerDelegate, @u
 final class ScriptServiceResilienceTests: XCTestCase {
     private let watchdogInterval: TimeInterval = 0.08
 
-    func testInfiniteScriptExpiresWatchdogReconnectsAndPreservesHostState() async {
-        let (client, listener) = makeClient()
+    func testInfiniteScriptExpiresWatchdogReconnectsAndPreservesHostState() async throws {
+        let sleeper = TestSleeper()
+        let (client, listener) = makeClient(watchdogSleep: sleeper.sleep(for:))
         let host = ScriptHostSnapshot(
             configPath: "/Users/test/Config.txt",
             window: .init(variables: ["character": "Ada"])
         )
 
-        let started = ContinuousClock.now
-        let failure = await client.evaluate("while (true) {}", host: host)
-        let elapsed = started.duration(to: .now)
+        let pending = Task { await client.evaluate("while (true) {}", host: host) }
+        try await eventually("script watchdog to be armed") {
+            await sleeper.pendingCount() == 1
+        }
+        await sleeper.advance()
+        let failure = await pending.value
         let recovered = await client.evaluate("host-state", host: host)
 
         XCTAssertTrue(failure.error?.contains("watchdog") == true)
-        XCTAssertLessThan(elapsed, .seconds(1))
         XCTAssertEqual(recovered.value, "/Users/test/Config.txt|Ada")
         withExtendedLifetime(listener) {}
     }
@@ -170,7 +173,9 @@ final class ScriptServiceResilienceTests: XCTestCase {
     func testExplicitResetCompletesPendingScriptAndNextEvaluationSucceeds() async throws {
         let (client, listener) = makeClient()
         let pending = Task { await client.evaluate("while (true) {}") }
-        try await Task.sleep(for: .milliseconds(20))
+        try await eventually("pending script before reset") {
+            await client.pendingRequestCountForTesting() == 1
+        }
 
         await client.reset()
         let resetResult = await pending.value
@@ -184,7 +189,9 @@ final class ScriptServiceResilienceTests: XCTestCase {
     func testClientInvalidationCompletesPendingScriptAndReconnects() async throws {
         let (client, listener) = makeClient()
         let pending = Task { await client.evaluate("while (true) {}") }
-        try await Task.sleep(for: .milliseconds(20))
+        try await eventually("pending script before invalidation") {
+            await client.pendingRequestCountForTesting() == 1
+        }
 
         await client.invalidate()
         let invalidated = await pending.value
@@ -210,7 +217,10 @@ final class ScriptServiceResilienceTests: XCTestCase {
         let (client, listener) = makeClient()
         await client.startAsyncOutputDelivery { _ in }
         let armed = await client.evaluate("race-drain-invalidation")
-        try await Task.sleep(for: .milliseconds(120))
+        await client.pollAsyncOutputsForTesting()
+        try await eventually("drain-race connection invalidation") {
+            await !client.hasActiveConnectionForTesting()
+        }
         let recovered = await client.evaluate("success")
         await client.stopAsyncOutputDelivery()
 
@@ -220,10 +230,14 @@ final class ScriptServiceResilienceTests: XCTestCase {
     }
 
     func testOrderedCallbacksSurviveBeforeFailureAndCompletedWatchdogIsStale() async throws {
-        let (client, listener) = makeClient()
+        let sleeper = TestSleeper()
+        let (client, listener) = makeClient(watchdogSleep: sleeper.sleep(for:))
 
         let ordered = await client.evaluate("ordered-output")
-        try await Task.sleep(for: .milliseconds(160))
+        try await eventually("completed request watchdog cancellation") {
+            await sleeper.pendingCount() == 0
+        }
+        await sleeper.advance()
         let sameConnection = await client.evaluate("success")
         let terminated = await client.evaluate("terminate-service")
         let recovered = await client.evaluate("ordered-output")
@@ -263,11 +277,11 @@ final class ScriptServiceResilienceTests: XCTestCase {
         async let scriptFailure = client.evaluate("while (true) {}")
         try await serverTask.value
 
-        var networkOutputs: [ScriptOutput] = []
-        for _ in 0..<50 where networkOutputs.isEmpty {
-            try await Task.sleep(for: .milliseconds(10))
-            networkOutputs.append(contentsOf: await runtime.drainAsyncOutputs())
-        }
+        let networkOutputs = try await eventually(
+            "script socket output",
+            observe: { await runtime.drainAsyncOutputs() },
+            until: { !$0.isEmpty }
+        )
         let failure = await scriptFailure
         let recovered = await client.evaluate("success")
         server.stop()
@@ -278,10 +292,13 @@ final class ScriptServiceResilienceTests: XCTestCase {
         withExtendedLifetime(listener) {}
     }
 
-    private func makeClient() -> (ScriptServiceClient, M9ScriptServiceListener) {
+    private func makeClient(
+        watchdogSleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    ) -> (ScriptServiceClient, M9ScriptServiceListener) {
         let listener = M9ScriptServiceListener()
         let client = ScriptServiceClient(
             watchdogInterval: watchdogInterval,
+            watchdogSleep: watchdogSleep,
             connectionFactory: { [listener] in listener.makeConnection() }
         )
         return (client, listener)

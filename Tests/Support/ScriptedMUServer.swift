@@ -64,6 +64,8 @@ public final class ScriptedMUServer: @unchecked Sendable {
     private var connectionContinuation: CheckedContinuation<NWConnection, Error>?
     private var pendingConnections: [NWConnection] = []
     private var activeConnections: [ObjectIdentifier: NWConnection] = [:]
+    private var cancellationContinuations: [CheckedContinuation<Void, Never>] = []
+    private var isCancelled = false
 
     public init(tlsIdentity: sec_identity_t? = nil) throws {
         let parameters: NWParameters
@@ -84,7 +86,10 @@ public final class ScriptedMUServer: @unchecked Sendable {
                     return
                 }
                 self.finishListener(.success(port))
-            case let .failed(error): self.finishListener(.failure(error))
+            case let .failed(error):
+                self.finishListener(.failure(error))
+                self.finishCancellation()
+            case .cancelled: self.finishCancellation()
             default: break
             }
         }
@@ -108,7 +113,7 @@ public final class ScriptedMUServer: @unchecked Sendable {
         try await withCheckedThrowingContinuation { continuation in
             lock.withLock { listenerContinuation = continuation }
             listener.start(queue: queue)
-            queue.asyncAfter(deadline: .now() + 3) { [weak self] in
+            queue.asyncAfter(deadline: .now() + 10) { [weak self] in
                 self?.finishListener(.failure(ScriptedMUServerError.timeout("listener readiness")))
             }
         }
@@ -145,7 +150,6 @@ public final class ScriptedMUServer: @unchecked Sendable {
     }
 
     public func stop() {
-        listener.stateUpdateHandler = nil
         listener.newConnectionHandler = nil
         listener.cancel()
         let connections = lock.withLock { () -> [NWConnection] in
@@ -159,6 +163,18 @@ public final class ScriptedMUServer: @unchecked Sendable {
         finishConnection(.failure(ScriptedMUServerError.closed))
     }
 
+    public func stopAndWait() async {
+        stop()
+        await withCheckedContinuation { continuation in
+            let resumeImmediately = lock.withLock { () -> Bool in
+                if isCancelled { return true }
+                cancellationContinuations.append(continuation)
+                return false
+            }
+            if resumeImmediately { continuation.resume() }
+        }
+    }
+
     private func nextConnection() async throws -> NWConnection {
         try await withCheckedThrowingContinuation { continuation in
             let pending = lock.withLock { () -> NWConnection? in
@@ -170,7 +186,7 @@ public final class ScriptedMUServer: @unchecked Sendable {
             }
             if let pending { continuation.resume(returning: pending) }
             else {
-                queue.asyncAfter(deadline: .now() + 3) { [weak self] in
+                queue.asyncAfter(deadline: .now() + 10) { [weak self] in
                     self?.finishConnection(.failure(ScriptedMUServerError.timeout("client connection")))
                 }
             }
@@ -222,7 +238,7 @@ public final class ScriptedMUServer: @unchecked Sendable {
         try await withCheckedThrowingContinuation { continuation in
             let gate = ScriptedContinuationGate<Void>(continuation)
             start { error in gate.resume(error.map(Result.failure) ?? .success(())) }
-            queue.asyncAfter(deadline: .now() + 3) {
+            queue.asyncAfter(deadline: .now() + 10) {
                 gate.resume(.failure(ScriptedMUServerError.timeout(operation)))
             }
         }
@@ -235,7 +251,7 @@ public final class ScriptedMUServer: @unchecked Sendable {
         try await withCheckedThrowingContinuation { continuation in
             let gate = ScriptedContinuationGate<Value>(continuation)
             start { error, value in gate.resume(error.map(Result.failure) ?? .success(value)) }
-            queue.asyncAfter(deadline: .now() + 3) {
+            queue.asyncAfter(deadline: .now() + 10) {
                 gate.resume(.failure(ScriptedMUServerError.timeout(operation)))
             }
         }
@@ -249,6 +265,17 @@ public final class ScriptedMUServer: @unchecked Sendable {
     private func finishConnection(_ result: Result<NWConnection, Error>) {
         let continuation = lock.withLock { defer { connectionContinuation = nil }; return connectionContinuation }
         continuation?.resume(with: result)
+    }
+
+    private func finishCancellation() {
+        let continuations = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+            guard !isCancelled else { return [] }
+            isCancelled = true
+            defer { cancellationContinuations.removeAll() }
+            return cancellationContinuations
+        }
+        listener.stateUpdateHandler = nil
+        continuations.forEach { $0.resume() }
     }
 }
 

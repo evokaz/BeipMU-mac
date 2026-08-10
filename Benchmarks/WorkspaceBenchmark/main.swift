@@ -8,6 +8,7 @@ private struct BenchmarkConfiguration {
     var queryCount = 100_000
     var minimumLinesPerSecond = 250_000.0
     var minimumQueriesPerSecond = 500_000.0
+    var enforceBudgets = true
 
     init(arguments: [String]) throws {
         var iterator = arguments.dropFirst().makeIterator()
@@ -34,6 +35,7 @@ private struct BenchmarkConfiguration {
                     throw BenchmarkError.invalidArgument("Invalid value for \(argument): \(raw)")
                 }
                 minimumQueriesPerSecond = parsed
+            case "--report-only": enforceBudgets = false
             case "--help":
                 print(Self.usage)
                 Darwin.exit(EXIT_SUCCESS)
@@ -50,6 +52,7 @@ private struct BenchmarkConfiguration {
       --queries N                     Viewport index queries (default: 100000)
       --minimum-lines-per-second N    Required append throughput (default: 250000)
       --minimum-queries-per-second N  Required viewport queries/sec (default: 500000)
+      --report-only                    Emit measurements without enforcing speed budgets
     """
 
     private static func positiveInteger(_ value: String, name: String) throws -> Int {
@@ -84,6 +87,7 @@ private struct BenchmarkReport: Codable {
     var queryOperationsPerSecond: Double
     var minimumLinesPerSecond: Double
     var minimumQueriesPerSecond: Double
+    var budgetsEnforced: Bool
     var checksum: Int
     var passed: Bool
 }
@@ -126,11 +130,12 @@ private func run(_ configuration: BenchmarkConfiguration) -> BenchmarkReport {
     let historyRate = Double(configuration.lineCount) / max(historySeconds, 0.000_001)
     let layoutRate = Double(configuration.lineCount) / max(layoutSeconds, 0.000_001)
     let queryRate = Double(configuration.queryCount) / max(querySeconds, 0.000_001)
-    let passed = history.count == configuration.historyLimit
+    let correctnessPassed = history.count == configuration.historyLimit
         && layout.count == configuration.historyLimit
-        && historyRate >= configuration.minimumLinesPerSecond
+    let performancePassed = historyRate >= configuration.minimumLinesPerSecond
         && layoutRate >= configuration.minimumLinesPerSecond
         && queryRate >= configuration.minimumQueriesPerSecond
+    let passed = correctnessPassed && (!configuration.enforceBudgets || performancePassed)
 
     let report = BenchmarkReport(
         lineCount: configuration.lineCount,
@@ -145,6 +150,7 @@ private func run(_ configuration: BenchmarkConfiguration) -> BenchmarkReport {
         queryOperationsPerSecond: queryRate,
         minimumLinesPerSecond: configuration.minimumLinesPerSecond,
         minimumQueriesPerSecond: configuration.minimumQueriesPerSecond,
+        budgetsEnforced: configuration.enforceBudgets,
         checksum: checksum,
         passed: passed
     )

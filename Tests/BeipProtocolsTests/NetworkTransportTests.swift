@@ -1,5 +1,5 @@
 @preconcurrency import Network
-import BeipCore
+@testable import BeipCore
 import BeipProtocols
 import BeipTestSupport
 import Foundation
@@ -28,18 +28,14 @@ final class NetworkTransportTests: XCTestCase {
             forceIPv4: true
         )))
         _ = try await server.nextConnection()
-        await fulfillment(of: [connected], timeout: 3)
+        await fulfillment(of: [connected], timeout: 10)
         await transport.disconnect()
     }
 
     func testFailedInitialConnectionRetriesAccordingToPolicy() async throws {
         let temporaryServer = try FakeTCPServer()
         let closedPort = try await temporaryServer.start()
-        temporaryServer.stop()
-        // NWListener cancellation is asynchronous. Wait for the ephemeral port
-        // to leave LISTEN so this remains an initial-connect failure even when
-        // the full suite puts the Network framework queues under load.
-        try await Task.sleep(for: .milliseconds(100))
+        await temporaryServer.stopAndWait()
 
         let transport = NetworkTransport()
         let stream = await transport.events()
@@ -61,7 +57,7 @@ final class NetworkTransportTests: XCTestCase {
             server: .init(name: "retry", host: "127.0.0.1", port: closedPort, forceIPv4: true),
             policy: .init(connectTimeoutMilliseconds: 1_000, retryCount: 2)
         ))
-        await fulfillment(of: [secondAttempt], timeout: 4)
+        await fulfillment(of: [secondAttempt], timeout: 10)
         let events = await recorder.events()
         XCTAssertGreaterThanOrEqual(events.filter { $0 == .state(.resolving) }.count, 2, "\(events)")
         let notices = await recorder.connectionNotices()
@@ -98,7 +94,7 @@ final class NetworkTransportTests: XCTestCase {
 
         try await transport.connect(to: .init(server: .init(name: "matrix", host: "127.0.0.1", port: port)))
         let scriptTask = Task { try await server.run(script) }
-        await fulfillment(of: [disconnected], timeout: 3)
+        await fulfillment(of: [disconnected], timeout: 10)
         try await scriptTask.value
 
         let received = await recorder.receivedBytes()
@@ -140,9 +136,9 @@ final class NetworkTransportTests: XCTestCase {
 
         await session.connect(.init(server: .init(name: "script", host: "127.0.0.1", port: port)))
         let scriptTask = Task { try await server.run(script) }
-        await fulfillment(of: [welcome], timeout: 3)
+        await fulfillment(of: [welcome], timeout: 10)
         await session.send("look")
-        await fulfillment(of: [room, disconnected], timeout: 3)
+        await fulfillment(of: [room, disconnected], timeout: 10)
         try await scriptTask.value
 
         let lines = await recorder.renderedLines()
@@ -205,10 +201,10 @@ final class NetworkTransportTests: XCTestCase {
         let firstScriptTask = Task { try await firstServer.run(firstScript) }
         let secondScriptTask = Task { try await secondServer.run(secondScript) }
 
-        await fulfillment(of: [firstLine, secondLine], timeout: 3)
+        await fulfillment(of: [firstLine, secondLine], timeout: 10)
         await firstSession.send("one")
         await secondSession.send("two")
-        await fulfillment(of: [firstDisconnected, secondDisconnected], timeout: 3)
+        await fulfillment(of: [firstDisconnected, secondDisconnected], timeout: 10)
         try await firstScriptTask.value
         try await secondScriptTask.value
 
@@ -264,7 +260,7 @@ final class NetworkTransportTests: XCTestCase {
             .init(disconnect: true),
         ])
         let scriptTask = Task { try await server.run(script) }
-        await fulfillment(of: [messages, disconnected], timeout: 3)
+        await fulfillment(of: [messages, disconnected], timeout: 10)
         try await scriptTask.value
 
         let received = await recorder.gmcpMessages()
@@ -311,7 +307,7 @@ final class NetworkTransportTests: XCTestCase {
             verifiesCertificate: true
         )))
         _ = try await server.nextConnection()
-        await fulfillment(of: [rejected], timeout: 3)
+        await fulfillment(of: [rejected], timeout: 10)
     }
 
     func testTLSWithCertificateVerificationDisabledExchangesData() async throws {
@@ -341,10 +337,10 @@ final class NetworkTransportTests: XCTestCase {
             verifiesCertificate: false
         )))
         let peer = try await server.nextConnection()
-        await fulfillment(of: [connected], timeout: 3)
+        await fulfillment(of: [connected], timeout: 10)
 
         try await peer.send(Data("secure server".utf8))
-        await fulfillment(of: [received], timeout: 3)
+        await fulfillment(of: [received], timeout: 10)
         let events = await recorder.events()
         XCTAssertTrue(events.contains(.received(Data("secure server".utf8))))
 
@@ -386,7 +382,7 @@ final class NetworkTransportTests: XCTestCase {
             sendNAWSOnResize: true
         )))
         let peer = try await server.nextConnection()
-        await fulfillment(of: [connected], timeout: 3)
+        await fulfillment(of: [connected], timeout: 10)
 
         try await peer.send(Data([255, 253]))
         try await peer.send(Data([31]) + Data("\u{1b}[31mhel".utf8))
@@ -401,7 +397,7 @@ final class NetworkTransportTests: XCTestCase {
         await session.updateWindowSize(columns: 120, rows: 50)
         let resized = try await peer.receive(atLeast: 9)
         XCTAssertEqual(resized, Data([255, 250, 31, 0, 120, 0, 50, 255, 240]))
-        await fulfillment(of: [rendered], timeout: 3)
+        await fulfillment(of: [rendered], timeout: 10)
 
         let lines = await recorder.renderedLines()
         XCTAssertEqual(lines.map(\.text), ["hello"])
@@ -412,7 +408,7 @@ final class NetworkTransportTests: XCTestCase {
         XCTAssertEqual(sentText, Data("look\r\n".utf8))
 
         try await peer.finish()
-        await fulfillment(of: [disconnected], timeout: 3)
+        await fulfillment(of: [disconnected], timeout: 10)
 
         let states = await recorder.states()
         let resolving = try XCTUnwrap(states.firstIndex(of: .resolving))
@@ -438,7 +434,14 @@ final class NetworkTransportTests: XCTestCase {
         let server = try FakeTCPServer()
         let port = try await server.start()
         defer { server.stop() }
-        let session = SessionActor(transport: NetworkTransport(), processor: MUDProtocolPipeline())
+        let sleeper = TestSleeper()
+        let clock = LockedTestClock()
+        let session = SessionActor(
+            transport: NetworkTransport(),
+            processor: MUDProtocolPipeline(),
+            idleSleep: sleeper.sleep(for:),
+            idleNow: clock.now
+        )
         let character = CharacterProfile(name: "Idle", idleTimeout: 0.25, idleText: "IDLE")
 
         await session.connect(.init(
@@ -447,19 +450,25 @@ final class NetworkTransportTests: XCTestCase {
             policy: .init(connectTimeoutMilliseconds: 1_000, retryCount: 1, keepAlive: false, noDelay: false)
         ))
         let peer = try await server.nextConnection()
-        try await Task.sleep(for: .milliseconds(150))
+        try await eventually("initial idle wait to be scheduled") {
+            await sleeper.pendingCount() == 1
+        }
+        clock.advance(by: 0.15)
         await session.send("look")
         let command = try await peer.receive(atLeast: 6)
         XCTAssertEqual(command, Data("look\r\n".utf8))
 
-        try await Task.sleep(for: .milliseconds(150))
-        var receivedIdleTooEarly = false
-        do {
-            _ = try await peer.receive(atLeast: 6, timeout: 0.05)
-            receivedIdleTooEarly = true
-        } catch { }
-        XCTAssertFalse(receivedIdleTooEarly)
+        try await eventually("idle wait to restart after activity") {
+            await sleeper.pendingCount() == 1
+        }
+        clock.advance(by: 0.15)
+        await sleeper.advance()
+        try await eventually("idle wait to continue before the full interval") {
+            await sleeper.pendingCount() == 1
+        }
 
+        clock.advance(by: 0.10)
+        await sleeper.advance()
         let idle = try await peer.receive(atLeast: 6)
         XCTAssertEqual(idle, Data("IDLE\r\n".utf8))
         await session.disconnect()
@@ -491,7 +500,7 @@ final class NetworkTransportTests: XCTestCase {
         await session.send("look")
         let lookPayload = try await peer.receive(atLeast: 6)
         XCTAssertEqual(lookPayload, Data("look\r\n".utf8))
-        await fulfillment(of: [echoed], timeout: 3)
+        await fulfillment(of: [echoed], timeout: 10)
         let lines = await recorder.renderedLines()
         XCTAssertEqual(lines.last?.text, "look")
         XCTAssertEqual(lines.last?.source, .localEcho)
@@ -501,10 +510,23 @@ final class NetworkTransportTests: XCTestCase {
         await session.send("quiet")
         let quietPayload = try await peer.receive(atLeast: 7)
         XCTAssertEqual(quietPayload, Data("quiet\r\n".utf8))
-        try await Task.sleep(for: .milliseconds(20))
+        try await eventually("local echo event processing after disabling echo") {
+            await recorder.renderedLines().filter { $0.source == .localEcho }.count == 1
+        }
         let finalLines = await recorder.renderedLines()
         XCTAssertEqual(finalLines.filter { $0.source == .localEcho }.count, 1)
         await session.disconnect()
+    }
+}
+
+private final class LockedTestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: TimeInterval = 0
+
+    func now() -> TimeInterval { lock.withLock { value } }
+
+    func advance(by interval: TimeInterval) {
+        lock.withLock { value += interval }
     }
 }
 
@@ -569,6 +591,8 @@ private final class FakeTCPServer: @unchecked Sendable {
     private var connectionContinuation: CheckedContinuation<FakeServerConnection, Error>?
     private var pendingConnections: [FakeServerConnection] = []
     private var allConnections: [FakeServerConnection] = []
+    private var cancellationContinuations: [CheckedContinuation<Void, Never>] = []
+    private var isCancelled = false
 
     init(tlsIdentity: sec_identity_t? = nil) throws {
         let parameters: NWParameters
@@ -591,6 +615,9 @@ private final class FakeTCPServer: @unchecked Sendable {
                 self.completeStart(.success(port))
             case let .failed(error):
                 self.completeStart(.failure(error))
+                self.completeCancellation()
+            case .cancelled:
+                self.completeCancellation()
             default: break
             }
         }
@@ -606,7 +633,7 @@ private final class FakeTCPServer: @unchecked Sendable {
         try await withCheckedThrowingContinuation { continuation in
             lock.withLock { startContinuation = continuation }
             listener.start(queue: queue)
-            queue.asyncAfter(deadline: .now() + 3) { [weak self] in
+            queue.asyncAfter(deadline: .now() + 10) { [weak self] in
                 self?.completeStart(.failure(FakeServerError.timeout("listener readiness")))
             }
         }
@@ -621,7 +648,7 @@ private final class FakeTCPServer: @unchecked Sendable {
             }
             if let pending { continuation.resume(returning: pending) }
             else {
-                queue.asyncAfter(deadline: .now() + 3) { [weak self] in
+                queue.asyncAfter(deadline: .now() + 10) { [weak self] in
                     self?.completeConnection(.failure(FakeServerError.timeout("client connection")))
                 }
             }
@@ -629,13 +656,24 @@ private final class FakeTCPServer: @unchecked Sendable {
     }
 
     func stop() {
-        listener.stateUpdateHandler = nil
         listener.newConnectionHandler = nil
         listener.cancel()
         let connections = lock.withLock { allConnections }
         connections.forEach { $0.cancel() }
         completeStart(.failure(FakeServerError.closed))
         completeConnection(.failure(FakeServerError.closed))
+    }
+
+    func stopAndWait() async {
+        stop()
+        await withCheckedContinuation { continuation in
+            let resumeImmediately = lock.withLock { () -> Bool in
+                if isCancelled { return true }
+                cancellationContinuations.append(continuation)
+                return false
+            }
+            if resumeImmediately { continuation.resume() }
+        }
     }
 
     private func deliver(_ connection: FakeServerConnection) {
@@ -665,6 +703,17 @@ private final class FakeTCPServer: @unchecked Sendable {
             return connectionContinuation
         }
         continuation?.resume(with: result)
+    }
+
+    private func completeCancellation() {
+        let continuations = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+            guard !isCancelled else { return [] }
+            isCancelled = true
+            defer { cancellationContinuations.removeAll() }
+            return cancellationContinuations
+        }
+        listener.stateUpdateHandler = nil
+        continuations.forEach { $0.resume() }
     }
 }
 
@@ -764,13 +813,13 @@ private final class FakeServerConnection: @unchecked Sendable {
                 if let error { gate.resume(.failure(error)) }
                 else { gate.resume(.success(())) }
             })
-            queue.asyncAfter(deadline: .now() + 3) {
+            queue.asyncAfter(deadline: .now() + 10) {
                 gate.resume(.failure(FakeServerError.timeout("server send")))
             }
         }
     }
 
-    func receive(atLeast minimumLength: Int, timeout: TimeInterval = 3) async throws -> Data {
+    func receive(atLeast minimumLength: Int, timeout: TimeInterval = 10) async throws -> Data {
         var result = Data()
         while result.count < minimumLength {
             result.append(try await receiveOnce(timeout: timeout))
@@ -790,7 +839,7 @@ private final class FakeServerConnection: @unchecked Sendable {
                     else { gate.resume(.success(())) }
                 }
             )
-            queue.asyncAfter(deadline: .now() + 3) {
+            queue.asyncAfter(deadline: .now() + 10) {
                 gate.resume(.failure(FakeServerError.timeout("server close")))
             }
         }

@@ -103,10 +103,12 @@ public actor SessionActor {
     private var statisticsValue = ConnectionStatistics()
     private var idleTask: Task<Void, Never>?
     private var idleConfiguration: (interval: TimeInterval, text: String)?
-    private var lastActivityAt: ContinuousClock.Instant?
     private var pingStartedAt: ContinuousClock.Instant?
     private var localEchoEnabled: Bool
     private var localEchoColor = RGBColor(red: 0, green: 205, blue: 205)
+    private let idleSleep: @Sendable (Duration) async throws -> Void
+    private let idleNow: @Sendable () -> TimeInterval
+    private var lastIdleActivityAt: TimeInterval?
 
     public init(
         transport: any SessionTransport,
@@ -116,6 +118,22 @@ public actor SessionActor {
         self.transport = transport
         self.processor = processor
         self.localEchoEnabled = localEcho
+        idleSleep = { try await Task.sleep(for: $0) }
+        idleNow = { ProcessInfo.processInfo.systemUptime }
+    }
+
+    init(
+        transport: any SessionTransport,
+        processor: any ByteStreamProcessor,
+        localEcho: Bool = false,
+        idleSleep: @escaping @Sendable (Duration) async throws -> Void,
+        idleNow: @escaping @Sendable () -> TimeInterval
+    ) {
+        self.transport = transport
+        self.processor = processor
+        self.localEchoEnabled = localEcho
+        self.idleSleep = idleSleep
+        self.idleNow = idleNow
     }
 
     deinit { transportTask?.cancel(); idleTask?.cancel() }
@@ -266,7 +284,7 @@ public actor SessionActor {
             case .connected:
                 isConnected = true
                 connectedAt = .now
-                lastActivityAt = .now
+                lastIdleActivityAt = idleNow()
                 statisticsValue.connectionCount += 1
                 startIdleActionIfNeeded()
             case .disconnected, .failed:
@@ -336,9 +354,10 @@ public actor SessionActor {
             return (interval: interval, text: character.idleText)
         }
         guard let configured else { return }
+        let idleSleep = self.idleSleep
         idleTask = Task { [weak self] in
             while !Task.isCancelled {
-                do { try await Task.sleep(for: .seconds(configured.interval)) }
+                do { try await idleSleep(.seconds(configured.interval)) }
                 catch { return }
                 guard !Task.isCancelled else { return }
                 await self?.sendIdleTextIfNeeded(configured.text, after: configured.interval)
@@ -347,14 +366,14 @@ public actor SessionActor {
     }
 
     private func recordActivity() {
-        lastActivityAt = .now
+        lastIdleActivityAt = idleNow()
         if isConnected { startIdleActionIfNeeded() }
     }
 
     private func sendIdleTextIfNeeded(_ text: String, after interval: TimeInterval) async {
         guard isConnected,
-              let lastActivityAt,
-              Self.seconds(from: lastActivityAt.duration(to: .now)) >= interval else { return }
+              let lastIdleActivityAt,
+              idleNow() - lastIdleActivityAt >= interval else { return }
         await send(text, echo: true, countsAsActivity: false)
     }
 

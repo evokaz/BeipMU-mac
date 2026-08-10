@@ -8,6 +8,12 @@ line_count=${BEIPMU_APP_SOAK_LINES:-50000}
 hold_seconds=${BEIPMU_APP_SOAK_HOLD_SECONDS:-10}
 history_limit=${BEIPMU_APP_SOAK_HISTORY_LIMIT:-10000}
 max_rss_bytes=${BEIPMU_APP_SOAK_MAX_RSS_BYTES:-268435456}
+report_only=${BEIPMU_PERFORMANCE_REPORT_ONLY:-0}
+case "$report_only" in
+    0) verifier_mode="" ;;
+    1) verifier_mode="--report-only" ;;
+    *) echo "BEIPMU_PERFORMANCE_REPORT_ONLY must be 0 or 1" >&2; exit 2 ;;
+esac
 if [ -n "${BEIPMU_EVIDENCE_DIR:-}" ]; then
     record_root="$BEIPMU_EVIDENCE_DIR/app-soak"
     if [ -e "$record_root" ]; then
@@ -98,7 +104,8 @@ if python3 Scripts/verify-app-soak.py \
     "$leaks_path" \
     "$line_count" \
     "$history_limit" \
-    "$max_rss_bytes" >"$record_root/verification.txt"; then
+    "$max_rss_bytes" \
+    ${verifier_mode:+"$verifier_mode"} >"$record_root/verification.txt"; then
     cat "$record_root/verification.txt"
 else
     status=$?

@@ -878,6 +878,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             guard let self, let window = self.window, window.isVisible else { return }
             window.contentView?.layoutSubtreeIfNeeded()
             self.restoreInputHeight()
+            self.inputLayoutRestorationGenerationForTesting &+= 1
         }
     }
 
@@ -1353,6 +1354,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     var quickConnectMenuForTesting: NSMenu { quickConnectMenu() }
     var sessionTabContextMenuForTesting: NSMenu { sessionTabContextMenu() }
     var inputHeightPreferenceForTesting: Double { preferences.inputHeight }
+    private(set) var inputLayoutRestorationGenerationForTesting: UInt64 = 0
     var isInputHistoryPaneVisibleForTesting: Bool { isInputHistoryPaneVisible }
     var inputSplitArrangedIdentifiersForTesting: [String] {
         inputSplitView.arrangedSubviews.compactMap { $0.accessibilityIdentifier() }

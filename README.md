@@ -46,6 +46,13 @@ You need:
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen)
 - Python 3 for fixture, UI-baseline, and verification scripts
 
+Depending on the active developer directory, you may need to select Xcode’s
+command-line tools before building:
+
+```sh
+sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
+```
+
 Create a release build and a ZIP under `dist/`:
 
 ```sh

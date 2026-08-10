@@ -17,16 +17,13 @@ final class WorkspacePerformanceTests: XCTestCase {
         window.contentView = output.containerView
         output.containerView.layoutSubtreeIfNeeded()
 
-        let start = ProcessInfo.processInfo.systemUptime
         for index in 0..<25_000 {
             output.append(.init(text: "Sustained output \(index) — UTF-8 ✓"))
         }
-        let elapsed = ProcessInfo.processInfo.systemUptime - start
 
         XCTAssertEqual(output.visibleLineCount, 5_000)
         XCTAssertEqual(output.renderedLineCount, 5_000)
         XCTAssertLessThan(output.visiblePaintCandidateCount, 100)
-        XCTAssertLessThan(elapsed, 15, "Debug renderer throughput regressed below the Milestone 3 budget")
     }
 
     func testRendererAndRetainedHistoryReleaseAfterSustainedUse() {

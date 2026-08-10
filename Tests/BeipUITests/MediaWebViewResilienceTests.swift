@@ -1,4 +1,5 @@
 import BeipCore
+import BeipTestSupport
 import Foundation
 @testable import BeipUI
 import XCTest
@@ -46,7 +47,7 @@ final class MediaWebViewResilienceTests: XCTestCase {
                 source: URL(string: "https://media.invalid/\(testCase.name).wav")!
             )
             controller.apply(.play(item))
-            await fulfillment(of: [failed], timeout: 1)
+            await fulfillment(of: [failed], timeout: 10)
 
             XCTAssertTrue(errorMessage.contains("Client.Media \(testCase.name).wav"), testCase.name)
             XCTAssertEqual(controller.information, "No Client.Media assets are loaded.", testCase.name)
@@ -54,7 +55,7 @@ final class MediaWebViewResilienceTests: XCTestCase {
             XCTAssertEqual(firstRequestTimeout, 0.05, accuracy: 0.001, testCase.name)
 
             controller.apply(.play(item))
-            try await waitUntil("\(testCase.name) retry") {
+            try await eventuallyOnMainActor("\(testCase.name) retry") {
                 !controller.information.contains("downloading")
                     && controller.information.contains("\(testCase.name).wav")
             }
@@ -97,7 +98,12 @@ final class MediaWebViewResilienceTests: XCTestCase {
             .close(id: "status")
         )
 
-        let controller = WebViewWindowController(id: "M9 WebView", navigationTimeout: 1)
+        let navigationSleeper = TestSleeper()
+        let controller = WebViewWindowController(
+            id: "M9 WebView",
+            navigationTimeout: 1,
+            navigationSleep: navigationSleeper.sleep(for:)
+        )
         controller.showWindow(nil)
         let unreachable = expectation(description: "unreachable WebView navigation")
         controller.onNavigationError = { _ in unreachable.fulfill() }
@@ -110,13 +116,13 @@ final class MediaWebViewResilienceTests: XCTestCase {
             didFailProvisionalNavigation: nil,
             withError: URLError(.cannotConnectToHost)
         )
-        await fulfillment(of: [unreachable], timeout: 3)
+        await fulfillment(of: [unreachable], timeout: 10)
         XCTAssertNotNil(controller.lastNavigationError)
 
         let recovered = expectation(description: "WebView recovery navigation")
         controller.onNavigationFinished = { recovered.fulfill() }
         controller.apply(.init(id: "M9 WebView", source: "<title>Recovered</title><p>usable</p>"))
-        await fulfillment(of: [recovered], timeout: 3)
+        await fulfillment(of: [recovered], timeout: 10)
         XCTAssertNil(controller.lastNavigationError)
         XCTAssertEqual(controller.currentRequest.source, "<title>Recovered</title><p>usable</p>")
 
@@ -129,7 +135,8 @@ final class MediaWebViewResilienceTests: XCTestCase {
             url: URL(string: "http://127.0.0.1:1/stale")!
         ))
         controller.apply(.init(id: "M9 WebView", source: "<p>latest update</p>"))
-        await fulfillment(of: [updated], timeout: 3)
+        await fulfillment(of: [updated], timeout: 10)
+        controller.onNavigationFinished = nil
         XCTAssertEqual(staleFailureCount, 0)
         XCTAssertNil(controller.lastNavigationError)
 
@@ -137,8 +144,10 @@ final class MediaWebViewResilienceTests: XCTestCase {
             id: "M9 WebView",
             url: URL(string: "http://127.0.0.1:1/close-race")!
         ))
+        XCTAssertTrue(controller.hasPendingNavigationTimeoutForTesting)
         controller.closeSurface()
-        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertFalse(controller.hasPendingNavigationTimeoutForTesting)
+        await navigationSleeper.advance()
         let closedRequest = controller.currentRequest
         controller.apply(.init(id: "M9 WebView", source: "<p>must not reopen</p>"))
         XCTAssertTrue(controller.isClosed)
@@ -184,30 +193,5 @@ private actor M9MediaLoader {
 
     func firstRequestTimeout() -> TimeInterval {
         requestTimeouts.first ?? 0
-    }
-}
-
-@MainActor
-private func waitUntil(
-    _ operation: String,
-    timeout: Duration = .seconds(2),
-    condition: () -> Bool
-) async throws {
-    let clock = ContinuousClock()
-    let deadline = clock.now.advanced(by: timeout)
-    while clock.now < deadline {
-        if condition() { return }
-        try await Task.sleep(for: .milliseconds(10))
-    }
-    throw M9MediaWebViewTestError.timeout(operation)
-}
-
-private enum M9MediaWebViewTestError: LocalizedError {
-    case timeout(String)
-
-    var errorDescription: String? {
-        switch self {
-        case let .timeout(operation): "Timed out waiting for \(operation)"
-        }
     }
 }

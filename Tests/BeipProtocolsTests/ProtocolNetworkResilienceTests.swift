@@ -370,30 +370,6 @@ private actor M9SessionRecorder {
     }
 }
 
-private enum M9ResilienceTestError: LocalizedError {
-    case timeout(String)
-
-    var errorDescription: String? {
-        switch self {
-        case let .timeout(operation): "Timed out waiting for \(operation)"
-        }
-    }
-}
-
-private func eventually(
-    _ operation: String,
-    timeout: Duration = .seconds(3),
-    condition: @escaping @Sendable () async -> Bool
-) async throws {
-    let clock = ContinuousClock()
-    let deadline = clock.now.advanced(by: timeout)
-    while clock.now < deadline {
-        if await condition() { return }
-        try await Task.sleep(for: .milliseconds(10))
-    }
-    throw M9ResilienceTestError.timeout(operation)
-}
-
 private extension Data {
     var hex: String { map { String(format: "%02x", $0) }.joined() }
 }

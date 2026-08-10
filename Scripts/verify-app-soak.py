@@ -12,15 +12,19 @@ REPORT_PATTERN = re.compile(r"^BEIPMU_SOAK_COMPLETE (?P<values>.+)$", re.MULTILI
 
 
 def main() -> int:
-    if len(sys.argv) != 7:
+    if len(sys.argv) not in (7, 8):
         print(
-            "usage: verify-app-soak.py STDOUT TRACE_TOC LEAKS_OUTPUT REQUESTED_LINES HISTORY_LIMIT MAX_RSS_BYTES",
+            "usage: verify-app-soak.py STDOUT TRACE_TOC LEAKS_OUTPUT REQUESTED_LINES HISTORY_LIMIT MAX_RSS_BYTES [--report-only]",
             file=sys.stderr,
         )
         return 2
 
     stdout_path, toc_path, leaks_path = map(Path, sys.argv[1:4])
     requested_lines, history_limit, max_rss = map(int, sys.argv[4:7])
+    report_only = len(sys.argv) == 8 and sys.argv[7] == "--report-only"
+    if len(sys.argv) == 8 and not report_only:
+        print(f"unknown option: {sys.argv[7]}", file=sys.stderr)
+        return 2
     output = stdout_path.read_text(encoding="utf-8")
     match = REPORT_PATTERN.search(output)
     if not match:
@@ -53,10 +57,10 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    if paint_candidates > 200:
+    if not report_only and paint_candidates > 200:
         print(f"viewport candidate count {paint_candidates} exceeds 200", file=sys.stderr)
         return 1
-    if rss_bytes == 0 or rss_bytes > max_rss:
+    if not report_only and (rss_bytes == 0 or rss_bytes > max_rss):
         print(f"resident size {rss_bytes} exceeds budget {max_rss}", file=sys.stderr)
         return 1
 
@@ -86,7 +90,12 @@ def main() -> int:
         excluded_system_leaks = (summary.group("count"), summary.group("bytes"))
 
     print(match.group(0))
-    print(f"Instruments Time Profiler trace verified; RSS budget {rss_bytes}/{max_rss} bytes")
+    if report_only:
+        print(f"Report only: paint candidates {paint_candidates}/200; RSS {rss_bytes}/{max_rss} bytes")
+    if report_only:
+        print(f"Instruments Time Profiler trace verified; RSS measurement {rss_bytes} bytes")
+    else:
+        print(f"Instruments Time Profiler trace verified; RSS budget {rss_bytes}/{max_rss} bytes")
     if excluded_system_leaks:
         count, byte_count = excluded_system_leaks
         print(

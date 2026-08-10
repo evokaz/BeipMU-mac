@@ -16,8 +16,15 @@ public actor DelayScheduler {
 
     private var scheduled: [String: Scheduled] = [:]
     private var nextID = 1
+    private let sleep: @Sendable (Duration) async throws -> Void
 
-    public init() {}
+    public init() {
+        sleep = { try await Task.sleep(for: $0) }
+    }
+
+    init(sleep: @escaping @Sendable (Duration) async throws -> Void) {
+        self.sleep = sleep
+    }
 
     deinit { for value in scheduled.values { value.task.cancel() } }
 
@@ -35,9 +42,10 @@ public actor DelayScheduler {
         let entry = Entry(id: id, command: command, seconds: seconds, repeating: repeating)
         let token = UUID()
         let duration = Duration.milliseconds(Int64(max(0, seconds) * 1_000))
+        let sleep = self.sleep
         let task = Task { [weak self] in
             repeat {
-                do { try await Task.sleep(for: duration) } catch { return }
+                do { try await sleep(duration) } catch { return }
                 guard !Task.isCancelled else { return }
                 await action(command)
                 if !repeating { await self?.removeCompleted(id, token: token) }

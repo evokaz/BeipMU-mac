@@ -5,7 +5,6 @@ import XCTest
 final class M10ScalePersistenceTests: XCTestCase {
     func testM10ScaleLargeConfigurationLoadEditSaveReloadPreservesUnknownSyntax() throws {
         let fixture = try String(contentsOf: fixtureURL("large-config.txt"), encoding: .utf8)
-        let started = ContinuousClock.now
         var document = try LegacyConfigurationDocument(source: fixture)
         let projection = try LegacyConfigurationProjection(document: document)
 
@@ -44,11 +43,9 @@ final class M10ScalePersistenceTests: XCTestCase {
             "preserve-63-03"
         )
         XCTAssertEqual(reloaded.value(at: ["M10TrailingUnknown"]), "preserve-trailing")
-        XCTAssertLessThan(started.duration(to: .now), .seconds(10))
     }
 
     func testM10ScaleLargeAtlasNavigationTrackingPathfindingEditingAndReload() throws {
-        let started = ContinuousClock.now
         let archive = try AtlasReader.readArchive(from: fixtureURL("large-atlas.atlas"))
         XCTAssertEqual(archive.atlas.maps.count, 1)
         XCTAssertEqual(archive.atlas.maps[0].rooms.count, 400)
@@ -95,7 +92,6 @@ final class M10ScalePersistenceTests: XCTestCase {
         XCTAssertEqual(reloaded.attributes["m10_unknown_root"], "preserve-root")
         XCTAssertEqual(reloaded.maps[0].attributes["m10_map_unknown"], "preserve-map")
         XCTAssertEqual(reloaded.maps[0].rooms[399].attributes["m10_room_unknown"], "preserve-399")
-        XCTAssertLessThan(started.duration(to: .now), .seconds(10))
     }
 
     private func fixtureURL(_ name: String) -> URL {

@@ -1,5 +1,6 @@
 import AppKit
 import BeipCore
+import BeipTestSupport
 import CoreText
 @testable import BeipUI
 import XCTest
@@ -145,7 +146,7 @@ final class VirtualizedOutputViewTests: XCTestCase {
         XCTAssertFalse(view.isMarked(itemID: id))
     }
 
-    func testInactiveOutputMarksFirstNewLineAndUserScrollToBottomClearsIt() {
+    func testInactiveOutputMarksFirstNewLineAndUserScrollToBottomClearsIt() async {
         let output = OutputTextView()
         let host = NSView(frame: NSRect(x: 0, y: 0, width: 500, height: 80))
         output.containerView.frame = host.bounds
@@ -161,7 +162,7 @@ final class VirtualizedOutputViewTests: XCTestCase {
         XCTAssertEqual(output.primaryOutputViewForTesting.newContentBoundaryItemIDForTesting, firstNewLine.id)
 
         output.primaryOutputViewForTesting.scrollToEnd()
-        RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        await awaitMainActorQuiescence()
 
         XCTAssertNil(output.newContentBoundaryIDForTesting)
         XCTAssertNil(output.primaryOutputViewForTesting.newContentBoundaryItemIDForTesting)
@@ -234,7 +235,7 @@ final class VirtualizedOutputViewTests: XCTestCase {
         XCTAssertEqual(output.capturedText(lineCount: 3, skipping: 99), "")
     }
 
-    func testSplitKeepsUpperScrollbackStationaryWhileLowerOutputFollowsNewText() throws {
+    func testSplitKeepsUpperScrollbackStationaryWhileLowerOutputFollowsNewText() async throws {
         let output = OutputTextView()
         let host = NSView(frame: NSRect(x: 0, y: 0, width: 500, height: 320))
         output.containerView.frame = host.bounds
@@ -245,7 +246,7 @@ final class VirtualizedOutputViewTests: XCTestCase {
         XCTAssertGreaterThan(output.primaryScrollViewForTesting.contentView.bounds.origin.y, 0)
 
         output.toggleSplit()
-        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        await awaitMainActorQuiescence()
         output.containerView.layoutSubtreeIfNeeded()
 
         let upperScrollback = try XCTUnwrap(output.secondaryScrollViewForTesting)
@@ -261,7 +262,7 @@ final class VirtualizedOutputViewTests: XCTestCase {
         XCTAssertGreaterThan(output.primaryScrollViewForTesting.contentView.bounds.origin.y, liveOrigin)
     }
 
-    func testPageUpAndPageDownNavigateSplitScrollbackAndCloseAtBottom() throws {
+    func testPageUpAndPageDownNavigateSplitScrollbackAndCloseAtBottom() async throws {
         let output = OutputTextView()
         let host = NSView(frame: NSRect(x: 0, y: 0, width: 500, height: 320))
         output.containerView.frame = host.bounds
@@ -272,7 +273,7 @@ final class VirtualizedOutputViewTests: XCTestCase {
         let liveBottom = output.primaryScrollViewForTesting.contentView.bounds.origin.y
 
         XCTAssertTrue(output.performPageUp())
-        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        await awaitMainActorQuiescence()
         output.containerView.layoutSubtreeIfNeeded()
 
         let upperScrollback = try XCTUnwrap(output.secondaryScrollViewForTesting)
@@ -281,13 +282,13 @@ final class VirtualizedOutputViewTests: XCTestCase {
         XCTAssertLessThan(afterPageUp, liveBottom)
 
         XCTAssertTrue(output.performPageDown())
-        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        await awaitMainActorQuiescence()
         output.containerView.layoutSubtreeIfNeeded()
         XCTAssertGreaterThan(upperScrollback.contentView.bounds.origin.y, afterPageUp)
 
         for _ in 0..<20 where output.isSplit && !isAtBottom(upperScrollback) {
             XCTAssertTrue(output.performPageDown())
-            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+            await awaitMainActorQuiescence()
         }
         XCTAssertTrue(output.isSplit)
         XCTAssertTrue(isAtBottom(upperScrollback))
@@ -436,11 +437,13 @@ final class VirtualizedOutputViewTests: XCTestCase {
         XCTAssertNotEqual(largerMenloInterval, monacoInterval, accuracy: 0.01)
     }
 
-    func testLiteralTabsRemainInCapturedAndSelectedPlainText() throws {
+    func testLiteralTabsRemainInCapturedAndSelectedPlainText() async throws {
         let output = OutputTextView()
         let text = "12\t1234\tEnd"
         output.append(.init(text: text))
+        await awaitMainActorQuiescence()
         output.selectAll()
+        await awaitMainActorQuiescence()
 
         XCTAssertEqual(output.capturedText(lineCount: 1, skipping: 0), text + "\n")
         XCTAssertEqual(output.primaryOutputViewForTesting.selectedString(), text + "\n")

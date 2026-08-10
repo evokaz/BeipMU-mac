@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import BeipCore
 import BeipPersistence
+import BeipTestSupport
 @testable import BeipUI
 import XCTest
 
@@ -113,7 +114,7 @@ final class WorkspacePreferencesTests: XCTestCase {
     }
 
     @MainActor
-    func testFirstShownTabRestoresInputHeightAfterHiddenLayout() throws {
+    func testFirstShownTabRestoresInputHeightAfterHiddenLayout() async throws {
         var workspace = try LegacyConfigurationWorkspace.empty(isDirty: false)
         _ = workspace.addServer(named: "World")
         let server = try XCTUnwrap(workspace.servers.first).profile
@@ -138,7 +139,11 @@ final class WorkspacePreferencesTests: XCTestCase {
                 .compactMap { $0 as? NSSplitView }
                 .first { $0.accessibilityIdentifier() == "commandInputSplit" }
         )
+        first.showWindow(nil)
         firstSplit.layoutSubtreeIfNeeded()
+        try await eventuallyOnMainActor("first tab layout restoration") {
+            first.inputLayoutRestorationGenerationForTesting > 0
+        }
         XCTAssertGreaterThan(firstSplit.bounds.height, 0)
 
         let group = ClientTabGroup(first)
@@ -147,9 +152,11 @@ final class WorkspacePreferencesTests: XCTestCase {
         firstSplit.setPosition(100, ofDividerAt: 0)
         XCTAssertNotEqual(firstSplit.subviews[1].frame.height, 137, accuracy: 1)
 
+        let restorationGeneration = first.inputLayoutRestorationGenerationForTesting
         group.select(first, sender: nil)
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
-        first.window?.contentView?.layoutSubtreeIfNeeded()
+        try await eventuallyOnMainActor("first tab input divider restoration") {
+            first.inputLayoutRestorationGenerationForTesting > restorationGeneration
+        }
 
         XCTAssertEqual(firstSplit.subviews[1].frame.height, 137, accuracy: 1)
     }
@@ -1651,7 +1658,7 @@ final class WorkspacePreferencesTests: XCTestCase {
         let loaded = expectation(description: "web content loaded")
         controller.onNavigationFinished = { loaded.fulfill() }
         controller.apply(.init(source: "<title>Bridge Test</title><main>Ready</main><iframe srcdoc='<p>isolated</p>'></iframe>"))
-        await fulfillment(of: [loaded], timeout: 3)
+        await fulfillment(of: [loaded], timeout: 10)
 
         let shape = try await controller.webView.callAsyncJavaScript(
             "return [typeof window.beipClient, typeof window.chrome.webview.hostObjects.client.SendGMCP, typeof window.beipClient.setOnDisplay]",

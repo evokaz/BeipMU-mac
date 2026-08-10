@@ -7,6 +7,12 @@ cd "$repo_dir"
 swift build -c release --product BeipWorkspaceBenchmark
 bin_dir=$(swift build -c release --show-bin-path)
 benchmark="$bin_dir/BeipWorkspaceBenchmark"
+report_only=${BEIPMU_PERFORMANCE_REPORT_ONLY:-0}
+case "$report_only" in
+    0) benchmark_mode="" ;;
+    1) benchmark_mode="--report-only" ;;
+    *) echo "BEIPMU_PERFORMANCE_REPORT_ONLY must be 0 or 1" >&2; exit 2 ;;
+esac
 
 echo "Workspace throughput and resident-memory run"
 if [ -n "${BEIPMU_EVIDENCE_DIR:-}" ]; then
@@ -33,20 +39,23 @@ cleanup() {
     fi
 }
 trap cleanup EXIT HUP INT TERM
-/usr/bin/time -l -o "$metrics_file" "$benchmark" "$@" >"$report_file"
+/usr/bin/time -l -o "$metrics_file" "$benchmark" ${benchmark_mode:+"$benchmark_mode"} "$@" >"$report_file"
 cat "$report_file"
 cat "$metrics_file"
 
 peak_resident=$(awk '/maximum resident set size/ { print $1 }' "$metrics_file")
 peak_resident_limit=${BEIPMU_BENCHMARK_MAX_RSS_BYTES:-134217728}
-if [ -z "$peak_resident" ] || [ "$peak_resident" -gt "$peak_resident_limit" ]; then
+if [ "$report_only" = "0" ] && { [ -z "$peak_resident" ] || [ "$peak_resident" -gt "$peak_resident_limit" ]; }; then
     echo "Workspace benchmark exceeded the $peak_resident_limit-byte RSS budget" >&2
     exit 1
+fi
+if [ "$report_only" = "1" ]; then
+    printf 'Report only: RSS measured at %s bytes (reference budget %s bytes)\n' "${peak_resident:-unknown}" "$peak_resident_limit"
 fi
 
 if command -v leaks >/dev/null 2>&1; then
     echo "Workspace allocation leak smoke run"
-    if leaks -q --atExit -- "$benchmark" \
+    if leaks -q --atExit -- "$benchmark" ${benchmark_mode:+"$benchmark_mode"} \
         --lines 50000 \
         --history-limit 5000 \
         --queries 20000 \

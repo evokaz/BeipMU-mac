@@ -1,5 +1,5 @@
 import BeipCore
-import BeipScriptRuntime
+@testable import BeipScriptRuntime
 import BeipTestSupport
 import XCTest
 
@@ -161,14 +161,21 @@ final class ScriptRuntimeTests: XCTestCase {
     }
 
     func testTimeoutRunsAsynchronouslyAndPreservesUserData() async throws {
-        let runtime = ScriptRuntime()
+        let sleeper = TestSleeper()
+        let runtime = ScriptRuntime(timerSleep: sleeper.sleep(for:))
         let result = await runtime.evaluate(
             "app.CreateTimeout(10, function(value) { app.OutputDebugText('timeout:' + value); }, 'payload')"
         )
         XCTAssertNil(result.error)
         XCTAssertTrue(result.outputs.isEmpty)
 
-        try await Task.sleep(for: .milliseconds(80))
+        try await eventually("JavaScript timeout to be scheduled") {
+            await sleeper.pendingCount() == 1
+        }
+        await sleeper.advance()
+        try await eventually("JavaScript timeout callback") {
+            await runtime.asyncOutputCountForTesting() == 1
+        }
         let outputs = await runtime.drainAsyncOutputs()
 
         XCTAssertEqual(outputs, [
@@ -177,13 +184,26 @@ final class ScriptRuntimeTests: XCTestCase {
     }
 
     func testIntervalStopsWhenCallbackReturnsTrueAndKillIsIdempotent() async throws {
-        let runtime = ScriptRuntime()
+        let sleeper = TestSleeper()
+        let runtime = ScriptRuntime(timerSleep: sleeper.sleep(for:))
         let created = await runtime.evaluate(
             "var ticks = 0; var timer = app.CreateInterval(5, function() { ticks++; app.OutputDebugText(ticks); return ticks === 2; }); timer.Active"
         )
         XCTAssertEqual(created.value, "true")
 
-        try await Task.sleep(for: .milliseconds(100))
+        try await eventually("JavaScript interval to be scheduled") {
+            await sleeper.pendingCount() == 1
+        }
+        await sleeper.advance()
+        try await eventually("first JavaScript interval callback") {
+            let outputCount = await runtime.asyncOutputCountForTesting()
+            let pendingCount = await sleeper.pendingCount()
+            return outputCount == 1 && pendingCount == 1
+        }
+        await sleeper.advance()
+        try await eventually("second JavaScript interval callback") {
+            await runtime.asyncOutputCountForTesting() == 2
+        }
         let outputs = await runtime.drainAsyncOutputs()
         let state = await runtime.evaluate("timer.Active + '|' + timers.Count")
         let killed = await runtime.evaluate("timer.Kill(); timer.Kill()")
@@ -205,15 +225,12 @@ final class ScriptRuntimeTests: XCTestCase {
         )
         XCTAssertNil(lookup.error)
 
-        for _ in 0..<50 {
-            try await Task.sleep(for: .milliseconds(20))
-            let outputs = await runtime.drainAsyncOutputs()
-            if !outputs.isEmpty {
-                XCTAssertEqual(outputs, [.init(kind: .debugText, value: "dns:true")])
-                return
-            }
-        }
-        XCTFail("DNS callback did not complete")
+        let outputs = try await eventually(
+            "DNS callback",
+            observe: { await runtime.drainAsyncOutputs() },
+            until: { !$0.isEmpty }
+        )
+        XCTAssertEqual(outputs, [.init(kind: .debugText, value: "dns:true")])
     }
 
     func testNativeSocketConnectSendReceiveAndDisconnectCallbacks() async throws {
@@ -238,12 +255,12 @@ final class ScriptRuntimeTests: XCTestCase {
         )
         XCTAssertNil(setup.error)
 
-        var observed: [ScriptOutput] = []
-        for _ in 0..<100 {
-            try await Task.sleep(for: .milliseconds(20))
-            observed.append(contentsOf: await runtime.drainAsyncOutputs())
-            if observed.contains(where: { $0.value == "connect:marker" }) { break }
-        }
+        let collector = ScriptOutputCollector()
+        var observed = try await eventually(
+            "script socket connection callback",
+            observe: { await collector.collect(from: runtime) },
+            until: { $0.contains(where: { $0.value == "connect:marker" }) }
+        )
         XCTAssertTrue(observed.contains(.init(kind: .debugText, value: "connect:marker")))
         let connected = await runtime.evaluate("socket.IsConnected()")
         XCTAssertEqual(connected.value, "true")
@@ -251,11 +268,11 @@ final class ScriptRuntimeTests: XCTestCase {
         let sent = await runtime.evaluate("socket.Send('ping')")
         XCTAssertNil(sent.error)
         try await serverTask.value
-        for _ in 0..<100 {
-            try await Task.sleep(for: .milliseconds(20))
-            observed.append(contentsOf: await runtime.drainAsyncOutputs())
-            if observed.contains(where: { $0.value == "disconnect:false" }) { break }
-        }
+        observed = try await eventually(
+            "script socket receive and disconnect callbacks",
+            observe: { await collector.collect(from: runtime) },
+            until: { $0.contains(where: { $0.value == "disconnect:false" }) }
+        )
         server.stop()
 
         XCTAssertTrue(observed.contains(.init(kind: .debugText, value: "receive:pong")))
@@ -509,5 +526,14 @@ final class ScriptRuntimeTests: XCTestCase {
 
         XCTAssertEqual(paused.outputs, [.init(kind: .debugText, value: "paused:true")])
         XCTAssertEqual(state.value, "true")
+    }
+}
+
+private actor ScriptOutputCollector {
+    private var outputs: [ScriptOutput] = []
+
+    func collect(from runtime: ScriptRuntime) async -> [ScriptOutput] {
+        outputs.append(contentsOf: await runtime.drainAsyncOutputs())
+        return outputs
     }
 }

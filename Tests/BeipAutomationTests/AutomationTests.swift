@@ -1,5 +1,6 @@
-import BeipAutomation
+@testable import BeipAutomation
 import BeipCore
+import BeipTestSupport
 import Foundation
 import XCTest
 
@@ -964,7 +965,8 @@ final class AutomationTests: XCTestCase {
             .delay(.schedule(id: "pulse", repeating: true, seconds: 120, command: "look"))
         )
 
-        let scheduler = DelayScheduler()
+        let sleeper = TestSleeper()
+        let scheduler = DelayScheduler(sleep: sleeper.sleep(for:))
         let fired = expectation(description: "delayed action")
         let id = await scheduler.schedule(repeating: false, seconds: 0.01, command: "look") { command in
             XCTAssertEqual(command, "look")
@@ -973,14 +975,21 @@ final class AutomationTests: XCTestCase {
         XCTAssertEqual(id, "1")
         let initialEntries = await scheduler.entries()
         XCTAssertEqual(initialEntries.map(\.id), ["1"])
-        await fulfillment(of: [fired], timeout: 1)
-        try await Task.sleep(for: .milliseconds(10))
+        try await eventually("delay scheduler to begin sleeping") {
+            await sleeper.pendingCount() == 1
+        }
+        await sleeper.advance()
+        await fulfillment(of: [fired], timeout: 10)
+        try await eventually("one-shot delay removal") {
+            await scheduler.entries().isEmpty
+        }
         let finalEntries = await scheduler.entries()
         XCTAssertTrue(finalEntries.isEmpty)
     }
 
     func testReplacingTimerIDCannotEraseItsReplacementAfterOldActionCompletes() async throws {
-        let scheduler = DelayScheduler()
+        let sleeper = TestSleeper()
+        let scheduler = DelayScheduler(sleep: sleeper.sleep(for:))
         let oldStarted = expectation(description: "old timer action started")
         let releaseOld = expectation(description: "release old timer action")
         let replacementFired = expectation(description: "replacement timer fired")
@@ -991,14 +1000,25 @@ final class AutomationTests: XCTestCase {
             await oldReleaseGate.wait()
             releaseOld.fulfill()
         }
-        await fulfillment(of: [oldStarted], timeout: 1)
+        try await eventually("old delay to begin sleeping") {
+            await sleeper.pendingCount() == 1
+        }
+        await sleeper.advance()
+        await fulfillment(of: [oldStarted], timeout: 10)
         _ = await scheduler.schedule(id: "shared", repeating: false, seconds: 0.05, command: "new") { command in
             XCTAssertEqual(command, "new")
             replacementFired.fulfill()
         }
         await oldReleaseGate.open()
-        await fulfillment(of: [releaseOld, replacementFired], timeout: 1)
-        try await Task.sleep(for: .milliseconds(10))
+        await fulfillment(of: [releaseOld], timeout: 10)
+        try await eventually("replacement delay to begin sleeping") {
+            await sleeper.pendingCount() == 1
+        }
+        await sleeper.advance()
+        await fulfillment(of: [replacementFired], timeout: 10)
+        try await eventually("replacement delay removal") {
+            await scheduler.entries().isEmpty
+        }
         let entries = await scheduler.entries()
         XCTAssertTrue(entries.isEmpty)
     }

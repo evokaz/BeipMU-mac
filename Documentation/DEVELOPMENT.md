@@ -35,7 +35,7 @@ Generate the project with:
 ./Scripts/generate-project.sh
 ```
 
-## Fast verification
+## Correctness verification
 
 Run all Swift package tests:
 
@@ -44,13 +44,38 @@ Run all Swift package tests:
 ```
 
 The wrapper first verifies that the checked-in Milestone 10 scale fixtures
-match `Scripts/generate-m10-fixtures.py`, then runs `swift test` with a local
-module cache. To intentionally regenerate those fixtures:
+match `Scripts/generate-m10-fixtures.py`, then runs the complete suite with a
+local module cache and explicit `--no-parallel`. This is the deterministic
+correctness gate: it has no retry behavior and no hardware-speed budgets.
+Functional deadlines are generous hang protection around observable state.
+To intentionally regenerate the fixtures:
 
 ```sh
 python3 Scripts/generate-m10-fixtures.py
 ./Scripts/test.sh
 ```
+
+For a release candidate, require ten consecutive clean serial runs on both a
+faster and a slower supported Mac.
+
+## Parallel stress and isolation
+
+Run the complete correctness suite repeatedly with four parallel workers:
+
+```sh
+./Scripts/test-stress.sh
+```
+
+This lane defaults to three iterations and looks for races, shared-state leaks,
+temporary-file collisions, listener lifecycle bugs, and AppKit isolation
+failures. It contains no performance thresholds. Its controls are:
+
+| Variable | Default | Meaning |
+| --- | ---: | --- |
+| `BEIPMU_STRESS_ITERATIONS` | `3` | Number of complete parallel suite runs |
+| `BEIPMU_STRESS_WORKERS` | `4` | Swift test worker count |
+
+Use `Scripts/test.sh`, not this stress lane, as the required correctness gate.
 
 Build the complete application and embedded XPC service:
 
@@ -97,7 +122,11 @@ Set `BEIPMU_EVIDENCE_DIR` to a new, nonexistent directory when UI, benchmark,
 or soak artifacts must be retained. The scripts refuse to mix results into an
 existing evidence subdirectory.
 
-## Performance verification
+## Controlled performance verification
+
+Absolute throughput, resident-memory, paint-candidate, and leak budgets are
+enforced only by the release benchmark and full AppKit soak on designated
+reference hardware. They are intentionally absent from ordinary XCTest runs.
 
 Run the standalone workspace benchmark:
 
@@ -128,6 +157,18 @@ hold, and a 256 MiB resident-memory ceiling. The relevant controls are:
 
 The verifier also requires no more than 200 paint candidates and rejects
 unknown or app-owned leaks.
+
+On other supported Macs, use report-only mode to collect the same timing,
+throughput, paint, and RSS measurements without enforcing machine-dependent
+speed or memory ceilings:
+
+```sh
+BEIPMU_PERFORMANCE_REPORT_ONLY=1 ./Scripts/benchmark-workspace.sh
+BEIPMU_PERFORMANCE_REPORT_ONLY=1 ./Scripts/profile-app-soak.sh
+```
+
+Report-only mode still verifies structural correctness such as bounded
+retention, soak completion, trace validity, and app-owned leak detection.
 
 ## Release verification
 

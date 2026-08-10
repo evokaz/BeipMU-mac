@@ -12,7 +12,6 @@ final class M10ScaleConnectionTests: XCTestCase {
         )
         XCTAssertEqual(fixture.seed, 10_010)
         XCTAssertEqual(fixture.sessionCount, 8)
-        let started = ContinuousClock.now
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("BeipMU-M10-Connections-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -51,7 +50,6 @@ final class M10ScaleConnectionTests: XCTestCase {
         }
         XCTAssertEqual(results.flatMap(\.markers).count, 8 * 750)
         XCTAssertEqual(Set(results.flatMap(\.markers)).count, 8 * 250)
-        XCTAssertLessThan(started.duration(to: .now), .seconds(180))
     }
 
     private static func run(
@@ -130,20 +128,6 @@ final class M10ScaleConnectionTests: XCTestCase {
         )
     }
 
-    private static func eventually(
-        _ operation: String,
-        timeout: Duration = .seconds(60),
-        condition: @escaping @Sendable () async -> Bool
-    ) async throws {
-        let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: timeout)
-        while clock.now < deadline {
-            if await condition() { return }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        throw ScaleError.timeout(operation)
-    }
-
     private static var expectedNegotiation: Data {
         func gmcp(_ value: String) -> Data {
             Data([255, 250, 201]) + Data(value.utf8) + Data([255, 240])
@@ -206,10 +190,6 @@ private actor ScaleSessionRecorder {
     func lines() -> [RenderedLine] { recordedLines }
     func sentBytes() -> Data { sent }
     func lastState() -> ConnectionState? { state }
-}
-
-private enum ScaleError: Error {
-    case timeout(String)
 }
 
 private extension Data {

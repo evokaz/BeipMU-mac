@@ -204,8 +204,17 @@ public actor ScriptRuntime {
     private var disconnectedSockets: Set<Int> = []
     private var generation = UUID()
     private var didInstallNativeBridge = false
+    private let timerSleep: @Sendable (Duration) async throws -> Void
 
     public init() {
+        timerSleep = { try await Task.sleep(for: $0) }
+        virtualMachine = JSVirtualMachine()
+        context = JSContext(virtualMachine: virtualMachine)!
+        Self.configure(context)
+    }
+
+    init(timerSleep: @escaping @Sendable (Duration) async throws -> Void) {
+        self.timerSleep = timerSleep
         virtualMachine = JSVirtualMachine()
         context = JSContext(virtualMachine: virtualMachine)!
         Self.configure(context)
@@ -339,6 +348,8 @@ public actor ScriptRuntime {
         return asyncOutputs
     }
 
+    func asyncOutputCountForTesting() -> Int { asyncOutputs.count }
+
     private func installNativeBridgeIfNeeded() {
         guard !didInstallNativeBridge else { return }
         didInstallNativeBridge = true
@@ -393,9 +404,10 @@ public actor ScriptRuntime {
         asyncTasks.removeValue(forKey: identifier)?.cancel()
         let delay = min(max(milliseconds, 0), 86_400_000)
         let activeGeneration = generation
+        let timerSleep = self.timerSleep
         asyncTasks[identifier] = Task { [weak self] in
             do {
-                try await Task.sleep(for: .milliseconds(delay))
+                try await timerSleep(.milliseconds(delay))
             } catch {
                 return
             }

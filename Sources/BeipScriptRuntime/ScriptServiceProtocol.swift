@@ -37,6 +37,7 @@ public actor ScriptServiceClient {
     private var asyncOutputHandler: (@MainActor @Sendable ([ScriptOutput]) -> Void)?
     private let requestWatchdogInterval: TimeInterval
     private let connectionFactory: @Sendable () -> NSXPCConnection
+    private let watchdogSleep: @Sendable (Duration) async throws -> Void
     /// Matches the three-second watchdog before the Windows client exposes
     /// its script-abort UI. A fresh XPC connection gives macOS a recoverable
     /// boundary even though JavaScriptCore cannot interrupt a tight loop.
@@ -50,6 +51,7 @@ public actor ScriptServiceClient {
 
     public init() {
         requestWatchdogInterval = Self.watchdogInterval
+        watchdogSleep = { try await Task.sleep(for: $0) }
         let serviceName = Self.serviceName(for: Bundle.main.bundleIdentifier)
         connectionFactory = {
             NSXPCConnection(serviceName: serviceName)
@@ -58,9 +60,11 @@ public actor ScriptServiceClient {
 
     init(
         watchdogInterval: TimeInterval,
+        watchdogSleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
         connectionFactory: @escaping @Sendable () -> NSXPCConnection
     ) {
         requestWatchdogInterval = watchdogInterval
+        self.watchdogSleep = watchdogSleep
         self.connectionFactory = connectionFactory
     }
 
@@ -206,6 +210,12 @@ public actor ScriptServiceClient {
         await asyncOutputHandler(outputs)
     }
 
+    func pollAsyncOutputsForTesting() async { await pollAsyncOutputs() }
+
+    func pendingRequestCountForTesting() -> Int { pending.count }
+
+    func hasActiveConnectionForTesting() -> Bool { connection != nil }
+
     private func activeConnection() -> NSXPCConnection {
         if let connection { return connection }
         let connection = connectionFactory()
@@ -228,9 +238,10 @@ public actor ScriptServiceClient {
     private func register(_ continuation: CheckedContinuation<ScriptEvaluation, Never>, id: UUID) {
         pending[id] = continuation
         let interval = requestWatchdogInterval
+        let watchdogSleep = self.watchdogSleep
         watchdogs[id] = Task { [weak self] in
             do {
-                try await Task.sleep(for: .seconds(interval))
+                try await watchdogSleep(.seconds(interval))
             } catch {
                 return
             }

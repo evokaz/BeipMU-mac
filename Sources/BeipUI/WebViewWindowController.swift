@@ -38,8 +38,10 @@ final class WebViewWindowController: NSWindowController, NSWindowDelegate, WKNav
     private(set) var isClosed = false
     private var activeNavigation: WKNavigation?
     private var navigationTimeoutTask: Task<Void, Never>?
+    var hasPendingNavigationTimeoutForTesting: Bool { navigationTimeoutTask != nil }
     private var navigationGeneration: UInt64 = 0
     private let navigationTimeout: TimeInterval
+    private let navigationSleep: @Sendable (Duration) async throws -> Void
     private(set) var isDocked = false
     private var displayHooks: [Int: DisplayHook] = [:]
     private var captureHooks: [Int: CaptureHook] = [:]
@@ -62,11 +64,13 @@ final class WebViewWindowController: NSWindowController, NSWindowDelegate, WKNav
         id: String,
         request: WebViewOpenRequest = .init(),
         allowsFileNavigation: Bool = true,
-        navigationTimeout: TimeInterval = 15
+        navigationTimeout: TimeInterval = 15,
+        navigationSleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) {
         logicalID = id
         self.allowsFileNavigation = allowsFileNavigation
         self.navigationTimeout = max(0.05, navigationTimeout)
+        self.navigationSleep = navigationSleep
         currentRequest = request
         let configuration = WKWebViewConfiguration()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
@@ -380,8 +384,9 @@ final class WebViewWindowController: NSWindowController, NSWindowDelegate, WKNav
 
     private func scheduleNavigationTimeout() {
         let generation = navigationGeneration
+        let navigationSleep = self.navigationSleep
         navigationTimeoutTask = Task { [weak self] in
-            do { try await Task.sleep(for: .seconds(self?.navigationTimeout ?? 0.05)) }
+            do { try await navigationSleep(.seconds(self?.navigationTimeout ?? 0.05)) }
             catch { return }
             guard !Task.isCancelled else { return }
             self?.navigationTimedOut(generation: generation)
