@@ -43,17 +43,29 @@ Run all Swift package tests:
 ./Scripts/test.sh
 ```
 
-The wrapper first verifies that the checked-in Milestone 10 scale fixtures
-match `Scripts/generate-m10-fixtures.py`, then runs the complete suite with a
+The wrapper first verifies that the checked-in scale fixtures
+match `Scripts/generate-scale-fixtures.py`, then runs the complete suite with a
 local module cache and explicit `--no-parallel`. This is the deterministic
 correctness gate: it has no retry behavior and no hardware-speed budgets.
 Functional deadlines are generous hang protection around observable state.
 To intentionally regenerate the fixtures:
 
 ```sh
-python3 Scripts/generate-m10-fixtures.py
+python3 Scripts/generate-scale-fixtures.py
 ./Scripts/test.sh
 ```
+
+Run only the scale-focused package tests when iterating on large fixtures or
+throughput-sensitive behavior:
+
+```sh
+./Scripts/test-scale.sh
+```
+
+This filter currently selects `ConnectionScaleTests`, `PersistenceScaleTests`,
+`OutputRenderingScaleTests`, and `AutomationEditorScaleTests`. The complete
+serial and parallel scripts include the same tests through their unfiltered
+package-test runs.
 
 For a release candidate, require ten consecutive clean serial runs on both a
 faster and a slower supported Mac.
@@ -91,10 +103,10 @@ xcodebuild -project BeipMU.xcodeproj -scheme BeipMU \
 | --- | --- |
 | `BeipCoreTests` | Rendered lines, layout indexing, GMCP, media, WebViews |
 | `BeipProtocolsTests` | Telnet, decoding, MCP, network/TLS resilience, connection scale |
-| `BeipPersistenceTests` | Lossless config, backup recovery, crash journals, Atlas, scale |
-| `BeipAutomationTests` | Matching, aliases, triggers, macros, commands, delays |
+| `BeipPersistenceTests` | Lossless v331 parsing, migration, projections, editable workspaces, backup recovery, crash journals, Atlas, scale |
+| `BeipAutomationTests` | Matching and expansion, aliases, triggers, macros, slash commands, delays |
 | `BeipScriptRuntimeTests` | JavaScript host API, XPC watchdog and recovery |
-| `BeipUITests` | AppKit controllers, preferences, virtualization, live propagation |
+| `BeipUITests` | AppKit editors, docking, scoped preferences, tools, trigger spawning, virtualization, live propagation |
 | `BeipMUXCUITests` | Launched-app workflows, accessibility, screenshots, scale |
 
 Run the launched-app UI suite after generating the Xcode project:
@@ -111,6 +123,10 @@ BEIPMU_RECORD_BASELINES=1 ./Scripts/test-ui.sh
 
 Review every changed PNG under `UITests/Baselines/`; baseline recording should
 not be used merely to hide an unexpected visual regression.
+
+`Scripts/test-ui.sh` runs the complete `BeipMUXCUITests` target, including its
+launched-app scale scenario. Set `BEIPMU_EVIDENCE_DIR` as described below when
+the `.xcresult`, attachments, and scale-result JSON need to be retained.
 
 Debug application builds use
 `~/Library/Application Support/BeipMU-Debug/`, keeping developer profiles,

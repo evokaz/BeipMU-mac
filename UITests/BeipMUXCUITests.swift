@@ -408,11 +408,11 @@ private enum BaselineError: Error {
 }
 
 @MainActor
-final class M10ScaleUITests: XCTestCase {
-    func testM10ScaleInteractiveResponsivenessRSSAndCleanup() throws {
+final class WorkspaceScaleUITests: XCTestCase {
+    func testWorkspaceScaleInteractiveResponsivenessRSSAndCleanup() throws {
         continueAfterFailure = false
         let resultURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("beipmu-m10-scale-ui-result.json")
+            .appendingPathComponent("beipmu-scale-ui-result.json")
         try FileManager.default.createDirectory(
             at: resultURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
@@ -421,8 +421,8 @@ final class M10ScaleUITests: XCTestCase {
 
         let app = XCUIApplication()
         UITestStateSandbox.shared.configure(app)
-        app.launchEnvironment["BEIPMU_M10_SCALE"] = "1"
-        app.launchEnvironment["BEIPMU_M10_SCALE_RESULT"] = resultURL.path
+        app.launchEnvironment["BEIPMU_SCALE_TEST"] = "1"
+        app.launchEnvironment["BEIPMU_SCALE_TEST_RESULT"] = resultURL.path
         app.launch()
         defer { app.terminate() }
 
@@ -431,11 +431,11 @@ final class M10ScaleUITests: XCTestCase {
         let output = window.descendants(matching: .textView)["MU star output"]
         let input = window.descendants(matching: .textView)["Command input"]
         XCTAssertTrue(waitUntil(timeout: 30) {
-            (output.value as? String)?.contains("M10_SCALE_COMPLETE") == true
+            (output.value as? String)?.contains("BEIPMU_SCALE_TEST_COMPLETE") == true
         })
 
         input.click()
-        input.typeText("m10-responsive")
+        input.typeText("scale-responsive")
         input.typeKey(.return, modifierFlags: [])
         XCTAssertTrue(waitUntil(timeout: 3) {
             (output.value as? String)?.contains("Not connected.") == true
@@ -449,7 +449,7 @@ final class M10ScaleUITests: XCTestCase {
         XCTAssertLessThanOrEqual(report?["retainedRendererRows"] as? Int ?? .max, 10_000)
 
         let attachment = XCTAttachment(screenshot: window.screenshot())
-        attachment.name = "m10-scale-responsive"
+        attachment.name = "scale-responsive"
         attachment.lifetime = .keepAlways
         add(attachment)
     }

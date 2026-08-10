@@ -4,8 +4,8 @@ import BeipTestSupport
 import Foundation
 import XCTest
 
-final class M10ScaleConnectionTests: XCTestCase {
-    func testM10ScaleEightConcurrentScriptedSessionsReconnectWithoutContamination() async throws {
+final class ConnectionScaleTests: XCTestCase {
+    func testConnectionScaleEightConcurrentScriptedSessionsReconnectWithoutContamination() async throws {
         let fixture = try JSONDecoder().decode(
             ConnectionFixture.self,
             from: Data(contentsOf: fixtureURL)
@@ -13,7 +13,7 @@ final class M10ScaleConnectionTests: XCTestCase {
         XCTAssertEqual(fixture.seed, 10_010)
         XCTAssertEqual(fixture.sessionCount, 8)
         let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("BeipMU-M10-Connections-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("BeipMU-Scale-Connections-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
 
@@ -44,7 +44,7 @@ final class M10ScaleConnectionTests: XCTestCase {
             XCTAssertEqual(result.logLineCount, 768)
             XCTAssertFalse(result.lines.contains { line in
                 (0..<8).contains { other in
-                    other != index && line.contains("[M10:\(other):")
+                    other != index && line.contains("[Scale:\(other):")
                 }
             })
         }
@@ -52,7 +52,7 @@ final class M10ScaleConnectionTests: XCTestCase {
         XCTAssertEqual(Set(results.flatMap(\.markers)).count, 8 * 250)
     }
 
-    private static func run(
+    static func run(
         _ specification: ConnectionFixture.Session,
         logDirectory: URL
     ) async throws -> ConnectionResult {
@@ -128,7 +128,7 @@ final class M10ScaleConnectionTests: XCTestCase {
         )
     }
 
-    private static var expectedNegotiation: Data {
+    static var expectedNegotiation: Data {
         func gmcp(_ value: String) -> Data {
             Data([255, 250, 201]) + Data(value.utf8) + Data([255, 240])
         }
@@ -137,15 +137,15 @@ final class M10ScaleConnectionTests: XCTestCase {
             + gmcp(#"Core.Supports.Set [ "WebView 1", "Beip.Stats 1", "Beip.Tilemap 1", "Beip.Id 1", "Client.Media 1" ]"#)
     }
 
-    private var fixtureURL: URL {
+    var fixtureURL: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-            .appendingPathComponent("Fixtures/M10/concurrent-connections.json")
+            .appendingPathComponent("Fixtures/Scale/concurrent-connections.json")
     }
 }
 
-private struct ConnectionFixture: Decodable {
+struct ConnectionFixture: Decodable {
     struct Session: Decodable, Sendable {
         var id: String
         var reconnects: Int
@@ -158,7 +158,7 @@ private struct ConnectionFixture: Decodable {
     var sessions: [Session]
 }
 
-private struct ConnectionResult: Sendable {
+struct ConnectionResult: Sendable {
     var id: String
     var connectionCount: UInt64
     var styledLineCount: Int
@@ -172,7 +172,7 @@ private struct ConnectionResult: Sendable {
     var markers: [String]
 }
 
-private actor ScaleSessionRecorder {
+actor ScaleSessionRecorder {
     private var recordedLines: [RenderedLine] = []
     private var sent = Data()
     private var state: ConnectionState?
@@ -192,7 +192,7 @@ private actor ScaleSessionRecorder {
     func lastState() -> ConnectionState? { state }
 }
 
-private extension Data {
+extension Data {
     func nonoverlappingCount(of needle: Data) -> Int {
         guard !needle.isEmpty else { return 0 }
         var count = 0

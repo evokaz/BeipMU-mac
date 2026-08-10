@@ -8,7 +8,7 @@ final class MediaWebViewResilienceTests: XCTestCase {
     @MainActor
     func testClientMediaFailureMatrixIsBoundedRetryableAndRemainsUsable() async throws {
         let validMedia = try Data(contentsOf: Self.fixtureURL("notify.wav"))
-        let cases: [(name: String, step: M9MediaLoader.Step)] = [
+        let cases: [(name: String, step: ResilienceMediaLoader.Step)] = [
             ("dns", .urlError(.cannotFindHost)),
             ("refusal", .urlError(.cannotConnectToHost)),
             ("timeout", .urlError(.timedOut)),
@@ -23,7 +23,7 @@ final class MediaWebViewResilienceTests: XCTestCase {
         ]
 
         for testCase in cases {
-            let loader = M9MediaLoader(steps: [
+            let loader = ResilienceMediaLoader(steps: [
                 testCase.step,
                 .response(
                     data: validMedia,
@@ -100,7 +100,7 @@ final class MediaWebViewResilienceTests: XCTestCase {
 
         let navigationSleeper = TestSleeper()
         let controller = WebViewWindowController(
-            id: "M9 WebView",
+            id: "Resilience WebView",
             navigationTimeout: 1,
             navigationSleep: navigationSleeper.sleep(for:)
         )
@@ -108,7 +108,7 @@ final class MediaWebViewResilienceTests: XCTestCase {
         let unreachable = expectation(description: "unreachable WebView navigation")
         controller.onNavigationError = { _ in unreachable.fulfill() }
         controller.apply(.init(
-            id: "M9 WebView",
+            id: "Resilience WebView",
             url: URL(string: "http://127.0.0.1:1/unreachable")!
         ))
         controller.webView(
@@ -121,7 +121,7 @@ final class MediaWebViewResilienceTests: XCTestCase {
 
         let recovered = expectation(description: "WebView recovery navigation")
         controller.onNavigationFinished = { recovered.fulfill() }
-        controller.apply(.init(id: "M9 WebView", source: "<title>Recovered</title><p>usable</p>"))
+        controller.apply(.init(id: "Resilience WebView", source: "<title>Recovered</title><p>usable</p>"))
         await fulfillment(of: [recovered], timeout: 10)
         XCTAssertNil(controller.lastNavigationError)
         XCTAssertEqual(controller.currentRequest.source, "<title>Recovered</title><p>usable</p>")
@@ -131,17 +131,17 @@ final class MediaWebViewResilienceTests: XCTestCase {
         var staleFailureCount = 0
         controller.onNavigationError = { _ in staleFailureCount += 1 }
         controller.apply(.init(
-            id: "M9 WebView",
+            id: "Resilience WebView",
             url: URL(string: "http://127.0.0.1:1/stale")!
         ))
-        controller.apply(.init(id: "M9 WebView", source: "<p>latest update</p>"))
+        controller.apply(.init(id: "Resilience WebView", source: "<p>latest update</p>"))
         await fulfillment(of: [updated], timeout: 10)
         controller.onNavigationFinished = nil
         XCTAssertEqual(staleFailureCount, 0)
         XCTAssertNil(controller.lastNavigationError)
 
         controller.apply(.init(
-            id: "M9 WebView",
+            id: "Resilience WebView",
             url: URL(string: "http://127.0.0.1:1/close-race")!
         ))
         XCTAssertTrue(controller.hasPendingNavigationTimeoutForTesting)
@@ -149,7 +149,7 @@ final class MediaWebViewResilienceTests: XCTestCase {
         XCTAssertFalse(controller.hasPendingNavigationTimeoutForTesting)
         await navigationSleeper.advance()
         let closedRequest = controller.currentRequest
-        controller.apply(.init(id: "M9 WebView", source: "<p>must not reopen</p>"))
+        controller.apply(.init(id: "Resilience WebView", source: "<p>must not reopen</p>"))
         XCTAssertTrue(controller.isClosed)
         XCTAssertEqual(controller.currentRequest, closedRequest)
         XCTAssertEqual(staleFailureCount, 0)
@@ -164,7 +164,7 @@ final class MediaWebViewResilienceTests: XCTestCase {
     }
 }
 
-private actor M9MediaLoader {
+private actor ResilienceMediaLoader {
     enum Step: Sendable {
         case urlError(URLError.Code)
         case response(data: Data, statusCode: Int?, expectedLength: Int64)

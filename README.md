@@ -75,6 +75,16 @@ xcodebuild -project BeipMU.xcodeproj -scheme BeipMU \
 
 `BeipMU.xcodeproj` is generated from `project.yml`; edit the specification and
 regenerate instead of treating the generated project as the source of truth.
+`test.sh` is the complete deterministic package-test gate. During
+scale-specific work, use the quicker focused lane:
+
+```sh
+./Scripts/test-scale.sh
+```
+
+It covers large-fixture, connection, rendering, and automation-editor scale
+tests. The development guide also documents parallel stress, benchmark, soak,
+and baseline-recording workflows.
 
 ## First run
 

@@ -1,4 +1,4 @@
-// Milestone 4 acceptance fixture, derived from BeipMU v331 Root.prp and
+// V331 acceptance fixture, derived from BeipMU v331 Root.prp and
 // Connection.cpp at 3d43fe9327e18dcc30a38b2f7422f558b95a4c3c.
 Version=331
 Connections {

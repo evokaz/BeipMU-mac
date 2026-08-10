@@ -4,8 +4,8 @@ import BeipCore
 import XCTest
 
 @MainActor
-final class WorkspacePerformanceTests: XCTestCase {
-    func testSustainedRendererKeepsRetentionAndPaintWorkBounded() {
+final class OutputRenderingScaleTests: XCTestCase {
+    func testOutputRenderingScaleKeepsRetentionAndPaintWorkBounded() {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 900, height: 650),
             styleMask: [.borderless],
@@ -26,7 +26,7 @@ final class WorkspacePerformanceTests: XCTestCase {
         XCTAssertLessThan(output.visiblePaintCandidateCount, 100)
     }
 
-    func testRendererAndRetainedHistoryReleaseAfterSustainedUse() {
+    func testOutputRenderingScaleReleasesRetainedHistory() {
         weak var releasedOutput: OutputTextView?
         weak var releasedContainer: NSSplitView?
         autoreleasepool {

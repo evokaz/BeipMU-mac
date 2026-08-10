@@ -1580,9 +1580,9 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         }
     }
 
-    func startM10ScaleIfRequested() {
+    func startScaleTestIfRequested() {
         let environment = ProcessInfo.processInfo.environment
-        guard environment["BEIPMU_M10_SCALE"] == "1" else { return }
+        guard environment["BEIPMU_SCALE_TEST"] == "1" else { return }
         preferences.outputHistoryLimit = 10_000
         output.historyLimit = 10_000
         preferences.workspaceLayout = .splitSidebars
@@ -1592,7 +1592,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             guard let self else { return }
             let started = Date()
             for session in 0..<8 {
-                output.append(.init(text: "[M10:\(session)] connected (attempt 3/3)"))
+                output.append(.init(text: "[Scale:\(session)] connected (attempt 3/3)"))
                 for line in 0..<250 {
                     let color = RGBColor(
                         red: UInt8(48 + session * 20),
@@ -1600,7 +1600,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
                         blue: UInt8(96 + session * 16)
                     )
                     output.append(.init(
-                        text: String(format: "[M10:%d:%03d] styled payload ✓ %d", session, line, line * 7_919 % 100_003),
+                        text: String(format: "[Scale:%d:%03d] styled payload ✓ %d", session, line, line * 7_919 % 100_003),
                         runs: [.init(range: 0..<11, style: .init(foreground: color, bold: true))]
                     ))
                     if line == 49 || line == 149 {
@@ -1609,7 +1609,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
                     }
                     if line.isMultiple(of: 50) { await Task.yield() }
                 }
-                output.append(.init(text: "[M10:\(session)] log closed; session cleaned"))
+                output.append(.init(text: "[Scale:\(session)] log closed; session cleaned"))
                 dockController.setLayout(session.isMultiple(of: 2) ? .stackedRight : .splitSidebars)
             }
             dockController.setLayout(.splitSidebars)
@@ -1629,13 +1629,13 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
                 "peakRSSBytes": Self.currentResidentSize(),
                 "completionSeconds": Date().timeIntervalSince(started),
             ]
-            if let path = environment["BEIPMU_M10_SCALE_RESULT"],
+            if let path = environment["BEIPMU_SCALE_TEST_RESULT"],
                let data = try? JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys]) {
                 try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
             }
-            output.append(.init(text: "M10_SCALE_COMPLETE activeSessions=0 openLogs=0"))
+            output.append(.init(text: "BEIPMU_SCALE_TEST_COMPLETE activeSessions=0 openLogs=0"))
             refreshDiagnostics()
-            if environment["BEIPMU_M10_SCALE_AUTO_TERMINATE"] == "1" {
+            if environment["BEIPMU_SCALE_TEST_AUTO_TERMINATE"] == "1" {
                 try? await Task.sleep(for: .seconds(1))
                 NSApplication.shared.terminate(nil)
             }

@@ -190,7 +190,7 @@ final class PersistenceResilienceTests: XCTestCase {
 
     private func temporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("M9Resilience-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("Resilience-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
     }

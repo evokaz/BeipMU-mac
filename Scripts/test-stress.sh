@@ -14,7 +14,7 @@ case "$workers" in
 esac
 
 mkdir -p "$module_cache"
-python3 "$repo_dir/Scripts/generate-m10-fixtures.py" --check
+python3 "$repo_dir/Scripts/generate-scale-fixtures.py" --check
 
 iteration=1
 while [ "$iteration" -le "$iterations" ]; do

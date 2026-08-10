@@ -85,7 +85,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         presentRecoveryReviewIfNeeded()
         NSApplication.shared.activate(ignoringOtherApps: true)
         activeController?.startPerformanceSoakIfRequested()
-        activeController?.startM10ScaleIfRequested()
+        activeController?.startScaleTestIfRequested()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }

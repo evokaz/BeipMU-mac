@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the deterministic Milestone 10 scale fixtures."""
+"""Generate the deterministic scale fixtures."""
 
 from __future__ import annotations
 
@@ -12,13 +12,13 @@ import zipfile
 
 
 ROOT = Path(__file__).resolve().parent.parent
-FIXTURES = ROOT / "Tests" / "Fixtures" / "M10"
+FIXTURES = ROOT / "Tests" / "Fixtures" / "Scale"
 
 
 def large_configuration() -> bytes:
     lines = [
         "Version=331",
-        "M10UnknownRoot=preserve-root",
+        "ScaleUnknownRoot=preserve-root",
         "Connections",
         "{",
         "  Logging.RestoreBufferSize=10000",
@@ -28,12 +28,12 @@ def large_configuration() -> bytes:
     for world in range(64):
         lines.extend(
             [
-                f'    "M10 World {world:02d}"',
+                f'    "Scale World {world:02d}"',
                 "    {",
                 f'      Host="127.0.0.1:{46000 + world}"',
                 f'      Info="Deterministic scale world {world:02d}"',
                 "      Encoding=UTF8",
-                f"      M10WindowsOnly{world:02d}=preserve-world-{world:02d}",
+                f"      ScaleWindowsOnly{world:02d}=preserve-world-{world:02d}",
                 "      Characters",
                 "      {",
             ]
@@ -43,7 +43,7 @@ def large_configuration() -> bytes:
                 [
                     f'        "Character {world:02d}-{character:02d}"',
                     "        {",
-                    f'          Connect="connect m10-{world:02d}-{character:02d} fixture-password"',
+                    f'          Connect="connect scale-{world:02d}-{character:02d} fixture-password"',
                     "          MainWindowSettings.InputSize=25",
                     "          Triggers",
                     "          {",
@@ -53,7 +53,7 @@ def large_configuration() -> bytes:
                 lines.extend(
                     [
                         "            {",
-                        f'              Description="M10 trigger {trigger:02d}"',
+                        f'              Description="Scale trigger {trigger:02d}"',
                         f'              FindString.MatchText="HP{trigger:02d}:"',
                         f'              Replace="score {world:02d}-{character:02d}-{trigger:02d}"',
                         "            }",
@@ -64,8 +64,8 @@ def large_configuration() -> bytes:
                 lines.extend(
                     [
                         "            {",
-                        f'              Description="M10 alias {alias:02d}"',
-                        f'              FindString.MatchText="m10-{alias:02d}"',
+                        f'              Description="Scale alias {alias:02d}"',
+                        f'              FindString.MatchText="scale-{alias:02d}"',
                         f'              Replace="say alias {world:02d}-{character:02d}-{alias:02d}"',
                         "            }",
                     ]
@@ -73,12 +73,12 @@ def large_configuration() -> bytes:
             lines.extend(
                 [
                     "          }",
-                    f'          M10UnknownCharacter="preserve-{world:02d}-{character:02d}"',
+                    f'          ScaleUnknownCharacter="preserve-{world:02d}-{character:02d}"',
                     "        }",
                 ]
             )
         lines.extend(["      }", "    }"])
-    lines.extend(["  }", "}", "M10TrailingUnknown=preserve-trailing", ""])
+    lines.extend(["  }", "}", "ScaleTrailingUnknown=preserve-trailing", ""])
     return "\n".join(lines).encode()
 
 
@@ -86,11 +86,11 @@ def large_atlas() -> bytes:
     size = 20
     xml = [
         '<?xml version="1.0" encoding="UTF-8"?>',
-        "<atlas version='2' m10_unknown_root='preserve-root'>",
+        "<atlas version='2' scale_unknown_root='preserve-root'>",
         "<font_rooms name='Helvetica' size='10'/>",
-        "<palette name='M10' background='#101820' foreground='#f2f2f2'/>",
-        "<m10_extension payload='preserve-unknown-xml'/>",
-        "<map name='M10 Grid' m10_map_unknown='preserve-map'>",
+        "<palette name='Scale' background='#101820' foreground='#f2f2f2'/>",
+        "<scale_extension payload='preserve-unknown-xml'/>",
+        "<map name='Scale Grid' scale_map_unknown='preserve-map'>",
     ]
     for row in range(size):
         for column in range(size):
@@ -99,7 +99,7 @@ def large_atlas() -> bytes:
             xml.append(
                 f"<room name='Room {index:03d}' rect='{x},{y},{x + 80},{y + 50}' "
                 f"color='#{(index * 2654435761) & 0xFFFFFF:06x}' "
-                f"m10_room_unknown='preserve-{index:03d}'/>"
+                f"scale_room_unknown='preserve-{index:03d}'/>"
             )
             if column:
                 xml.append(
@@ -113,7 +113,7 @@ def large_atlas() -> bytes:
                 )
     xml.extend(
         [
-            "<label rect='0,1420,420,1460' text='M10 deterministic 20x20 atlas' color='#ffffff'/>",
+            "<label rect='0,1420,420,1460' text='Scale deterministic 20x20 atlas' color='#ffffff'/>",
             "</map>",
             "</atlas>",
             "",
@@ -136,8 +136,8 @@ def concurrent_connections() -> bytes:
             {"expect_hex": "fffd19fffdc9"},
             {
                 "send": (
-                    f"\u001b[38;5;{32 + session}m[M10:{session}] ready\u001b[0m\r\n"
-                    f'Core.Hello {{"client":"m10-{session}"}}\r\n'
+                    f"\u001b[38;5;{32 + session}m[Scale:{session}] ready\u001b[0m\r\n"
+                    f'Core.Hello {{"client":"scale-{session}"}}\r\n'
                 ),
                 "chunks": [1, 2, 5, 13],
             },
@@ -146,7 +146,7 @@ def concurrent_connections() -> bytes:
             actions.append(
                 {
                     "send": (
-                        f"\u001b[1;3{session % 8}m[M10:{session}:{burst:03d}]\u001b[0m "
+                        f"\u001b[1;3{session % 8}m[Scale:{session}:{burst:03d}]\u001b[0m "
                         f"styled payload \u2713 {burst * 7919 % 100003}\r\n"
                     ),
                     "chunks": [1, 4, 11],
@@ -157,7 +157,7 @@ def concurrent_connections() -> bytes:
                     {
                         "send": (
                             f'Client.Media.Play {{"name":"fixture-{session}-{burst}.wav","volume":25}}\r\n'
-                            f'WebView.Open {{"id":"m10-{session}","url":"http://127.0.0.1/m10/{burst}"}}\r\n'
+                            f'WebView.Open {{"id":"scale-{session}","url":"http://127.0.0.1/scale/{burst}"}}\r\n'
                         )
                     }
                 )
@@ -173,7 +173,7 @@ def concurrent_connections() -> bytes:
                 "id": f"session-{session:02d}",
                 "port": 47000 + session,
                 "reconnects": 2,
-                "logStem": f"m10-session-{session:02d}",
+                "logStem": f"scale-session-{session:02d}",
                 "actions": actions,
             }
         )
@@ -209,10 +209,10 @@ def main() -> int:
             path.write_bytes(expected)
             print(path.relative_to(ROOT))
     if failures:
-        print("stale M10 fixtures: " + ", ".join(failures), file=sys.stderr)
+        print("stale Scale fixtures: " + ", ".join(failures), file=sys.stderr)
         return 1
     if args.check:
-        print("M10 deterministic fixtures are current")
+        print("Scale deterministic fixtures are current")
     return 0
 
 

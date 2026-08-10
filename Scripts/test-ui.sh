@@ -7,7 +7,7 @@ cd "$repo_dir"
 record_marker="$repo_dir/UITests/.record-baselines"
 record_root=""
 evidence_root=${BEIPMU_EVIDENCE_DIR:-}
-scale_result="${TMPDIR:-/tmp}/beipmu-m10-scale-ui-result.json"
+scale_result="${TMPDIR:-/tmp}/beipmu-scale-ui-result.json"
 rm -f "$record_marker"
 rm -f "$scale_result"
 cleanup() {

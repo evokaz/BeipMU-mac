@@ -70,7 +70,7 @@ final class NetworkTransportTests: XCTestCase {
         await transport.disconnect()
     }
 
-    func testProtocolMatrixScriptCanEmitAllMilestoneServerStimuli() async throws {
+    func testProtocolMatrixScriptCanEmitAllSupportedServerStimuli() async throws {
         let fixtureURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()

@@ -128,9 +128,13 @@ hardened runtime for both application targets.
 ## Test strategy
 
 The Swift package tests domain and UI components without launching the full
-application. `BeipTestSupport` supplies a scripted local MU server for network
-and service resilience tests. Deterministic fixtures exercise large profiles,
-many concurrent sessions, recovery journals, and Atlas round trips.
+application. Test files are grouped by subsystem and behavior so automation,
+legacy-configuration, and AppKit workspace failures can be run and diagnosed
+independently. `BeipTestSupport` supplies a scripted local MU server for
+network and service resilience tests. Deterministic fixtures under
+`Tests/Fixtures/Scale/` exercise large profiles, many concurrent sessions,
+recovery journals, and Atlas round trips; the fixture generator is checked
+before the serial, stress, and focused scale lanes run.
 
 XCUITests cover complete application flows and compare named screenshots with
 checked-in baselines. Separate workspace and full-app soak scripts enforce

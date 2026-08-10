@@ -38,15 +38,15 @@ final class ProtocolNetworkResilienceTests: XCTestCase {
             return String(decoding: data, as: UTF8.self)
         }, ["still usable"])
 
-        var mcp = MCPParser(authenticationKey: "m9-key")
+        var mcp = MCPParser(authenticationKey: "resilience-key")
         _ = mcp.consume("#$#mcp version: 2.1 to: 2.1")
         for index in 0..<MCPParser.maximumPendingMessages {
             XCTAssertTrue(mcp.consume(
-                "#$#dns-org-mud-moo-simpleedit m9-key content*: \"\" _data-tag: tag\(index)"
+                "#$#dns-org-mud-moo-simpleedit resilience-key content*: \"\" _data-tag: tag\(index)"
             ).isEmpty)
         }
         let overflow = mcp.consume(
-            "#$#dns-org-mud-moo-simpleedit m9-key content*: \"\" _data-tag: overflow"
+            "#$#dns-org-mud-moo-simpleedit resilience-key content*: \"\" _data-tag: overflow"
         )
         XCTAssertTrue(overflow.contains {
             guard case let .diagnostic(message) = $0 else { return false }
@@ -55,7 +55,7 @@ final class ProtocolNetworkResilienceTests: XCTestCase {
         mcp.reset()
         _ = mcp.consume("#$#mcp version: 2.1 to: 2.1")
         XCTAssertTrue(mcp.consume(
-            "#$#dns-org-mud-moo-simpleedit m9-key content*: \"\" _data-tag: large"
+            "#$#dns-org-mud-moo-simpleedit resilience-key content*: \"\" _data-tag: large"
         ).isEmpty)
         let multilineOverflow = mcp.consume(
             "#$#* large content: " + String(repeating: "x", count: MCPParser.maximumMultilineBytes)
@@ -94,7 +94,7 @@ final class ProtocolNetworkResilienceTests: XCTestCase {
                 payload: Data(
                     """
                     #$#mcp version: 2.1 to: 2.1
-                    #$#dns-org-mud-moo-simpleedit m9-key content*: "" _data-tag: pending
+                    #$#dns-org-mud-moo-simpleedit resilience-key content*: "" _data-tag: pending
                     #$#* pending content: partial
                     """.utf8
                 )
@@ -111,17 +111,17 @@ final class ProtocolNetworkResilienceTests: XCTestCase {
             transport: NetworkTransport(),
             processor: MUDProtocolPipeline(
                 mcp: true,
-                mcpAuthenticationKey: "m9-key",
+                mcpAuthenticationKey: "resilience-key",
                 pueblo: true
             )
         )
-        let recorder = M9SessionRecorder()
+        let recorder = ResilienceSessionRecorder()
         let stream = await session.events()
         let eventTask = Task {
             for await event in stream { await recorder.append(event) }
         }
         defer { eventTask.cancel() }
-        let request = ConnectionRequest(server: .init(name: "M9 boundaries", host: "127.0.0.1", port: port))
+        let request = ConnectionRequest(server: .init(name: "Resilience boundaries", host: "127.0.0.1", port: port))
 
         for boundary in boundaries {
             let connectedBefore = await recorder.connectedCount()
@@ -189,13 +189,13 @@ final class ProtocolNetworkResilienceTests: XCTestCase {
         let port = try await server.start()
         defer { server.stop() }
         let session = SessionActor(transport: NetworkTransport(), processor: MUDProtocolPipeline())
-        let recorder = M9SessionRecorder()
+        let recorder = ResilienceSessionRecorder()
         let stream = await session.events()
         let eventTask = Task {
             for await event in stream { await recorder.append(event) }
         }
         defer { eventTask.cancel() }
-        let request = ConnectionRequest(server: .init(name: "M9 lifecycle", host: "127.0.0.1", port: port))
+        let request = ConnectionRequest(server: .init(name: "Resilience lifecycle", host: "127.0.0.1", port: port))
 
         await session.connect(request)
         let stalledTask = Task {
@@ -281,8 +281,8 @@ final class ProtocolNetworkResilienceTests: XCTestCase {
         }
         let failedSession = SessionActor(transport: NetworkTransport(), processor: MUDProtocolPipeline())
         let healthySession = SessionActor(transport: NetworkTransport(), processor: MUDProtocolPipeline())
-        let failedRecorder = M9SessionRecorder()
-        let healthyRecorder = M9SessionRecorder()
+        let failedRecorder = ResilienceSessionRecorder()
+        let healthyRecorder = ResilienceSessionRecorder()
         let failedStream = await failedSession.events()
         let healthyStream = await healthySession.events()
         let failedEvents = Task {
@@ -335,7 +335,7 @@ final class ProtocolNetworkResilienceTests: XCTestCase {
     }
 }
 
-private actor M9SessionRecorder {
+private actor ResilienceSessionRecorder {
     private var events: [SessionEvent] = []
 
     func append(_ event: SessionEvent) { events.append(event) }

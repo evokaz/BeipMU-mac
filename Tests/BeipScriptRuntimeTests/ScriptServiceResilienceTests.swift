@@ -4,7 +4,7 @@ import BeipTestSupport
 import Foundation
 import XCTest
 
-private final class M9ScriptService: NSObject, ScriptServiceProtocol, @unchecked Sendable {
+private final class ResilienceScriptService: NSObject, ScriptServiceProtocol, @unchecked Sendable {
     private let connectionNumber: Int
     private weak var connection: NSXPCConnection?
     private let lock = NSLock()
@@ -109,7 +109,7 @@ private final class M9ScriptService: NSObject, ScriptServiceProtocol, @unchecked
     }
 }
 
-private final class M9ScriptServiceListener: NSObject, NSXPCListenerDelegate, @unchecked Sendable {
+private final class ResilienceScriptServiceListener: NSObject, NSXPCListenerDelegate, @unchecked Sendable {
     let listener = NSXPCListener.anonymous()
     private let lock = NSLock()
     private var connections: [NSXPCConnection] = []
@@ -137,7 +137,7 @@ private final class M9ScriptServiceListener: NSObject, NSXPCListenerDelegate, @u
         let connectionNumber = connections.count
         lock.unlock()
         connection.exportedInterface = NSXPCInterface(with: ScriptServiceProtocol.self)
-        connection.exportedObject = M9ScriptService(
+        connection.exportedObject = ResilienceScriptService(
             connectionNumber: connectionNumber,
             connection: connection
         )
@@ -294,8 +294,8 @@ final class ScriptServiceResilienceTests: XCTestCase {
 
     private func makeClient(
         watchdogSleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
-    ) -> (ScriptServiceClient, M9ScriptServiceListener) {
-        let listener = M9ScriptServiceListener()
+    ) -> (ScriptServiceClient, ResilienceScriptServiceListener) {
+        let listener = ResilienceScriptServiceListener()
         let client = ScriptServiceClient(
             watchdogInterval: watchdogInterval,
             watchdogSleep: watchdogSleep,

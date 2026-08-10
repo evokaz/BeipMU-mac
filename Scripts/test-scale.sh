@@ -9,4 +9,8 @@ python3 "$repo_dir/Scripts/generate-scale-fixtures.py" --check
 
 CLANG_MODULE_CACHE_PATH="$module_cache" \
 SWIFTPM_MODULECACHE_OVERRIDE="$module_cache" \
-swift test --package-path "$repo_dir" --disable-sandbox --no-parallel
+swift test \
+    --package-path "$repo_dir" \
+    --disable-sandbox \
+    --no-parallel \
+    --filter ScaleTests

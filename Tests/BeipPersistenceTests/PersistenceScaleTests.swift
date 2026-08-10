@@ -2,24 +2,27 @@ import BeipPersistence
 import Foundation
 import XCTest
 
-final class M10ScalePersistenceTests: XCTestCase {
-    func testM10ScaleLargeConfigurationLoadEditSaveReloadPreservesUnknownSyntax() throws {
-        let fixture = try String(contentsOf: fixtureURL("large-config.txt"), encoding: .utf8)
+final class PersistenceScaleTests: XCTestCase {
+    func testPersistenceScaleLargeConfigurationLoadEditSaveReloadPreservesUnknownSyntax() throws {
+        let fixture = try String(
+            contentsOf: LegacyConfigurationTestSupport.fixtureURL("Scale/large-config.txt"),
+            encoding: .utf8
+        )
         var document = try LegacyConfigurationDocument(source: fixture)
         let projection = try LegacyConfigurationProjection(document: document)
 
         XCTAssertEqual(projection.servers.count, 64)
         XCTAssertEqual(projection.servers.flatMap(\.characters).count, 256)
-        XCTAssertEqual(fixture.components(separatedBy: "Description=\"M10 trigger ").count - 1, 2_048)
-        XCTAssertEqual(fixture.components(separatedBy: "Description=\"M10 alias ").count - 1, 2_048)
+        XCTAssertEqual(fixture.components(separatedBy: "Description=\"Scale trigger ").count - 1, 2_048)
+        XCTAssertEqual(fixture.components(separatedBy: "Description=\"Scale alias ").count - 1, 2_048)
 
         try document.setValue(
             "127.0.0.1:47999",
-            at: ["Connections", "Shortcuts", "M10 World 63", "Host"]
+            at: ["Connections", "Shortcuts", "Scale World 63", "Host"]
         )
         let saved = document.serialized()
         let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("BeipMU-M10-Config-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("BeipMU-Scale-Config-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let output = directory.appendingPathComponent("Config.txt")
@@ -29,30 +32,32 @@ final class M10ScalePersistenceTests: XCTestCase {
         let reloaded = try LegacyConfigurationDocument(source: reloadedSource)
         let reloadedProjection = try LegacyConfigurationProjection(document: reloaded)
         XCTAssertEqual(reloadedProjection.servers.count, 64)
-        XCTAssertEqual(reloaded.value(at: ["Connections", "Shortcuts", "M10 World 63", "Host"]), "127.0.0.1:47999")
-        XCTAssertEqual(reloaded.value(at: ["M10UnknownRoot"]), "preserve-root")
+        XCTAssertEqual(reloaded.value(at: ["Connections", "Shortcuts", "Scale World 63", "Host"]), "127.0.0.1:47999")
+        XCTAssertEqual(reloaded.value(at: ["ScaleUnknownRoot"]), "preserve-root")
         XCTAssertEqual(
-            reloaded.value(at: ["Connections", "Shortcuts", "M10 World 00", "M10WindowsOnly00"]),
+            reloaded.value(at: ["Connections", "Shortcuts", "Scale World 00", "ScaleWindowsOnly00"]),
             "preserve-world-00"
         )
         XCTAssertEqual(
             reloaded.value(at: [
-                "Connections", "Shortcuts", "M10 World 63", "Characters",
-                "Character 63-03", "M10UnknownCharacter",
+                "Connections", "Shortcuts", "Scale World 63", "Characters",
+                "Character 63-03", "ScaleUnknownCharacter",
             ]),
             "preserve-63-03"
         )
-        XCTAssertEqual(reloaded.value(at: ["M10TrailingUnknown"]), "preserve-trailing")
+        XCTAssertEqual(reloaded.value(at: ["ScaleTrailingUnknown"]), "preserve-trailing")
     }
 
-    func testM10ScaleLargeAtlasNavigationTrackingPathfindingEditingAndReload() throws {
-        let archive = try AtlasReader.readArchive(from: fixtureURL("large-atlas.atlas"))
+    func testPersistenceScaleLargeAtlasNavigationTrackingPathfindingEditingAndReload() throws {
+        let archive = try AtlasReader.readArchive(
+            from: LegacyConfigurationTestSupport.fixtureURL("Scale/large-atlas.atlas")
+        )
         XCTAssertEqual(archive.atlas.maps.count, 1)
         XCTAssertEqual(archive.atlas.maps[0].rooms.count, 400)
         XCTAssertEqual(archive.atlas.maps[0].exits.count, 760)
-        XCTAssertEqual(archive.atlas.attributes["m10_unknown_root"], "preserve-root")
-        XCTAssertEqual(archive.atlas.maps[0].attributes["m10_map_unknown"], "preserve-map")
-        XCTAssertEqual(archive.atlas.maps[0].rooms[399].attributes["m10_room_unknown"], "preserve-399")
+        XCTAssertEqual(archive.atlas.attributes["scale_unknown_root"], "preserve-root")
+        XCTAssertEqual(archive.atlas.maps[0].attributes["scale_map_unknown"], "preserve-map")
+        XCTAssertEqual(archive.atlas.maps[0].rooms[399].attributes["scale_room_unknown"], "preserve-399")
 
         var editor = AtlasEditor(atlas: archive.atlas)
         editor.viewport.zoom(by: 1.75, around: .init(x: 500, y: 350))
@@ -69,7 +74,7 @@ final class M10ScalePersistenceTests: XCTestCase {
 
         let originalLabelCount = editor.atlas.maps[0].labels.count
         _ = editor.addLabel(
-            text: "M10 edited label",
+            text: "Scale edited label",
             rect: .init(x1: 20, y1: 1_500, x2: 280, y2: 1_540),
             color: "#00ffcc"
         )
@@ -80,24 +85,17 @@ final class M10ScalePersistenceTests: XCTestCase {
         XCTAssertEqual(editor.atlas.maps[0].labels.count, originalLabelCount + 1)
 
         let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("BeipMU-M10-Atlas-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("BeipMU-Scale-Atlas-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let output = directory.appendingPathComponent("M10-RoundTrip.atlas")
+        let output = directory.appendingPathComponent("Scale-RoundTrip.atlas")
         try AtlasWriter.write(.init(atlas: editor.atlas, resources: archive.resources), to: output)
         let reloaded = try AtlasReader.readArchive(from: output).atlas
         XCTAssertEqual(reloaded.maps[0].rooms.count, 400)
         XCTAssertEqual(reloaded.maps[0].exits.count, 760)
-        XCTAssertEqual(reloaded.maps[0].labels.last?.text, "M10 edited label")
-        XCTAssertEqual(reloaded.attributes["m10_unknown_root"], "preserve-root")
-        XCTAssertEqual(reloaded.maps[0].attributes["m10_map_unknown"], "preserve-map")
-        XCTAssertEqual(reloaded.maps[0].rooms[399].attributes["m10_room_unknown"], "preserve-399")
-    }
-
-    private func fixtureURL(_ name: String) -> URL {
-        URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("Fixtures/M10/\(name)")
+        XCTAssertEqual(reloaded.maps[0].labels.last?.text, "Scale edited label")
+        XCTAssertEqual(reloaded.attributes["scale_unknown_root"], "preserve-root")
+        XCTAssertEqual(reloaded.maps[0].attributes["scale_map_unknown"], "preserve-map")
+        XCTAssertEqual(reloaded.maps[0].rooms[399].attributes["scale_room_unknown"], "preserve-399")
     }
 }

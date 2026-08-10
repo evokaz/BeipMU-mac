@@ -1,4 +1,4 @@
-// Phase 5 trigger interoperability corpus for BeipMU Windows v331.
+// V331 trigger interoperability corpus for BeipMU Windows v331.
 // Comments, unknown fields, inactive/defaulted actions, and extension payloads
 // are intentionally part of the fixture contract.
 Version=331
