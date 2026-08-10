@@ -11,6 +11,7 @@ enum SettingsSection: String, CaseIterable, Hashable {
     case input
     case scripting
     case shortcuts
+    case advanced
 
     var title: String {
         switch self {
@@ -19,6 +20,7 @@ enum SettingsSection: String, CaseIterable, Hashable {
         case .input: "Input"
         case .scripting: "Scripting"
         case .shortcuts: "Shortcuts"
+        case .advanced: "Advanced"
         }
     }
 
@@ -118,6 +120,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     private let onShortcutsMutation: ([ShortcutAction: KeyboardShortcut]) -> Void
     private let nativeShortcutConflict: ([ShortcutAction: KeyboardShortcut]) -> String?
     private let presentShortcutConflict: @MainActor (String) -> Void
+    var onFactoryResetRequest: (() -> Void)?
 
     private var context: SettingsPresentationContext
     private(set) var selectedSection: SettingsSection = .appearance
@@ -234,7 +237,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         onPreferencesMutation: @escaping () -> Void,
         onShortcutsMutation: @escaping ([ShortcutAction: KeyboardShortcut]) -> Void,
         nativeShortcutConflict: @escaping ([ShortcutAction: KeyboardShortcut]) -> String? = { _ in nil },
-        presentShortcutConflict: @escaping @MainActor (String) -> Void = SettingsWindowController.showShortcutConflict
+        presentShortcutConflict: @escaping @MainActor (String) -> Void = SettingsWindowController.showShortcutConflict,
+        onFactoryResetRequest: (() -> Void)? = nil
     ) {
         self.profileLibrary = profileLibrary
         self.preferencesProvider = preferencesProvider
@@ -245,6 +249,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         self.onShortcutsMutation = onShortcutsMutation
         self.nativeShortcutConflict = nativeShortcutConflict
         self.presentShortcutConflict = presentShortcutConflict
+        self.onFactoryResetRequest = onFactoryResetRequest
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 840, height: 680),
@@ -375,6 +380,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
             case .input: buildInput()
             case .scripting: buildScripting()
             case .shortcuts: buildShortcuts()
+            case .advanced: buildAdvanced()
             }
             cachedSectionViews[selectedSection] = contentStack.arrangedSubviews
         }
@@ -390,6 +396,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         case .input: loadInputControls()
         case .scripting: loadScriptingControls()
         case .shortcuts: loadShortcutControls()
+        case .advanced: break
         }
     }
 
@@ -594,6 +601,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         case .input: inputChanged(sender)
         case .scripting: scriptingChanged(sender)
         case .shortcuts: break
+        case .advanced: break
         }
     }
 
@@ -1163,6 +1171,54 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
             NSTextField(wrappingLabelWithString: "The path may be entered manually, left empty, or chosen from JavaScript files."),
         ], identifier: "settings.scripting.group"))
         loadScriptingControls()
+    }
+
+    private func buildAdvanced() {
+        let separator = NSBox()
+        separator.boxType = .separator
+        separator.translatesAutoresizingMaskIntoConstraints = false
+        separator.widthAnchor.constraint(equalToConstant: 500).isActive = true
+
+        let reset = NSButton(
+            title: "Reset Configuration…",
+            target: self,
+            action: #selector(factoryResetRequested(_:))
+        )
+        reset.bezelStyle = .rounded
+        reset.contentTintColor = .systemRed
+        reset.setAccessibilityLabel("Reset Configuration")
+        reset.setAccessibilityIdentifier("resetConfigurationButton")
+        reset.setAccessibilityHelp("Erase BeipMU-managed state while preserving logs, maps, scripts, and exported files.")
+
+        let explanation = NSTextField(wrappingLabelWithString:
+            "This erases profiles, automation, preferences, shortcuts, tabs, layouts, recovery data, and the automatic Config.backup.txt. Logs, maps, scripts, and exported files are preserved."
+        )
+        explanation.setAccessibilityIdentifier("resetConfigurationExplanation")
+
+        let destructiveArea = NSStackView(views: [
+            NSTextField(labelWithString: "Destructive actions"),
+            explanation,
+            reset,
+        ])
+        destructiveArea.orientation = .vertical
+        destructiveArea.alignment = .leading
+        destructiveArea.spacing = 10
+        destructiveArea.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
+        destructiveArea.widthAnchor.constraint(equalToConstant: 500).isActive = true
+        destructiveArea.wantsLayer = true
+        destructiveArea.layer?.backgroundColor = NSColor.systemRed.withAlphaComponent(0.08).cgColor
+        destructiveArea.layer?.cornerRadius = 8
+        destructiveArea.setAccessibilityIdentifier("settings.advanced.destructive")
+
+        contentStack.addArrangedSubview(group(
+            "Advanced",
+            [separator, destructiveArea],
+            identifier: "settings.advanced.group"
+        ))
+    }
+
+    @objc private func factoryResetRequested(_ sender: Any?) {
+        onFactoryResetRequest?()
     }
 
     private func loadScriptingControls() {

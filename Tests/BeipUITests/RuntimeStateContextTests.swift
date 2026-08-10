@@ -158,6 +158,35 @@ final class RuntimeStateContextTests: XCTestCase {
         XCTAssertNil(context.defaults.object(forKey: "RuntimeStateContextTests.key"))
     }
 
+    @MainActor
+    func testClearActivePreferencesDomainRemovesWorkspaceAndFrameStateOnly() {
+        let support = temporaryDirectory()
+        let suiteName = "RuntimeStateContextTests.\(UUID().uuidString)"
+        defer {
+            UserDefaults.standard.removePersistentDomain(forName: suiteName)
+            try? FileManager.default.removeItem(at: support)
+        }
+
+        let context = RuntimeStateContext.resolve(
+            environment: [
+                "BEIPMU_UI_TESTING": "1",
+                "BEIPMU_UI_TEST_STATE_DIRECTORY": support.appendingPathComponent("state").path,
+                "BEIPMU_UI_TEST_DEFAULTS_SUITE": suiteName,
+            ],
+            bundleIdentifier: RuntimeStateContext.releaseBundleIdentifier,
+            applicationSupportDirectory: support
+        )
+        context.defaults.set("workspace", forKey: "BeipMU.WorkspacePreferences.v1")
+        context.defaults.set("frame", forKey: "NSWindow Frame BeipMUClientWindow")
+        context.defaults.set("other", forKey: "RuntimeStateContextTests.other")
+
+        context.clearActivePreferencesDomain()
+
+        XCTAssertNil(context.defaults.object(forKey: "BeipMU.WorkspacePreferences.v1"))
+        XCTAssertNil(context.defaults.object(forKey: "NSWindow Frame BeipMUClientWindow"))
+        XCTAssertNil(context.defaults.object(forKey: "RuntimeStateContextTests.other"))
+    }
+
     private func temporaryDirectory() -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("BeipMU.RuntimeStateContextTests.\(UUID().uuidString)", isDirectory: true)

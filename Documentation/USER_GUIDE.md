@@ -50,10 +50,17 @@ Settings, Help, and Quit remain fixed.
 ## Customize the workspace
 
 **Settings…** opens a retained window with Appearance, Output, Input,
-Scripting, and Shortcuts sections. Output and input settings can apply to the
+Scripting, Shortcuts, and Advanced sections. Output and input settings can apply to the
 global default or to the active world, character, or tab. A non-global scope
 can inherit the default or keep its own font, colors, sizing, spacing, and
 behavior. Changes apply to open windows as they are committed.
+
+The **Advanced** section contains **Reset Configuration…**, which uses the same
+confirmation and factory-reset workflow as `/resetconfig`. It erases profiles,
+automation, preferences, shortcuts, saved tabs and layouts, recovery data, and
+the automatic `Config.backup.txt`. Logs, maps, scripts, and exported files are
+preserved. A confirmed reset closes the current workspace and opens one clean
+980×700 main window.
 
 Right-click the output or input area to open the relevant settings directly
 for the active tab. The output context menu also provides pause, split, copy,
@@ -85,6 +92,7 @@ Common commands include:
 | `/shelp` | Show scripting help |
 | `/debugaliases`, `/debugtriggers`, `/debugnetwork` | Open diagnostic tools |
 | `/new`, `/newtab`, `/newinput`, `/newedit` | Open workspace windows |
+| `/resetconfig` | Confirm and run the complete factory reset |
 
 `/silent/<command>` suppresses informational output from a client command.
 The exact syntax for advanced commands such as `/delay`, `/newedit`, `/naws`,
@@ -162,6 +170,13 @@ The app-owned data directory is:
   restored tab groups.
 - `Recovery.dat` is the bounded crash-recovery journal. It can contain rendered
   server output, sent input, input history, spawn output, and GMCP state.
+
+`/resetconfig` and Settings → Advanced → Reset Configuration… delete only the
+BeipMU-managed state listed above and the active app preferences domain. They
+do not delete logs, maps, scripts, Atlas files, exported configurations, or
+other user-created files in the Application Support directory. Canceling the
+confirmation leaves all files, windows, preferences, and recovery records
+unchanged.
 
 Debug builds use `~/Library/Application Support/BeipMU-Debug/` so development
 runs do not read or overwrite release data. UI tests use a temporary isolated

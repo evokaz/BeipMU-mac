@@ -90,6 +90,23 @@ final class SessionRecoveryStoreTests: XCTestCase {
         XCTAssertEqual(store.session(id: second)?.records.count, 1)
     }
 
+    func testResetEmptiesAndDurablyCompactsTheOpenJournal() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("Recovery.dat")
+        let store = try SessionRecoveryStore(url: url)
+        let id = try store.beginSession(serverName: "World")
+        try store.append(.sentInput("secret"), to: id)
+
+        try store.reset()
+
+        XCTAssertEqual(store.sessionCount, 0)
+        XCTAssertTrue(store.sessions.isEmpty)
+        let reopened = try SessionRecoveryStore(url: url)
+        XCTAssertTrue(reopened.sessions.isEmpty)
+        XCTAssertEqual(try Data(contentsOf: url), Data("BeipMU Recovery 1\n".utf8))
+    }
+
     private func temporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("BeipMU.SessionRecoveryStoreTests.\(UUID().uuidString)", isDirectory: true)

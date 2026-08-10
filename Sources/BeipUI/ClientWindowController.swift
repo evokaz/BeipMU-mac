@@ -702,6 +702,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private var scriptTitlePrefix = ""
     private var isMuted = false
     private var bypassLastTabReplacement = false
+    private var suppressPersistence = false
     private var connectionStateText = "Disconnected"
     private weak var taskbarView: NSStackView?
     private var tracksInputHeight = false
@@ -720,6 +721,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     var onTextWindowSettingsChange: (() -> Void)?
     var onWorkspacePreferencesChange: (() -> Void)?
     var onSettingsRequest: ((SettingsSection, TextWindowSettingsEditorView.Scope?) -> Void)?
+    var onFactoryResetRequest: (() -> Void)?
     var onInputHeightChange: ((Double) -> Void)?
     var timestampsEnabled: Bool {
         let settings = activeTextWindowSettings
@@ -887,7 +889,14 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         NotificationCenter.default.removeObserver(self, name: .NSSystemTimeZoneDidChange, object: nil)
         profileLibrary.removeChangeObserver(profileLibraryObserverID)
         profileLibraryObserverID = nil
-        sessionTabGroup?.controllerWillClose(self)
+        if applicationTerminationPrepared {
+            // Factory reset closes every tab in the group; letting the group
+            // select a survivor here would recreate a window while the reset
+            // coordinator is tearing the workspace down.
+            sessionTabGroup = nil
+        } else {
+            sessionTabGroup?.controllerWillClose(self)
+        }
         if let puppet = currentPuppet {
             puppetMaster?.detachPuppetChild(puppet.id)
             puppetMaster = nil
@@ -924,6 +933,12 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         mediaController.flush()
         scriptWindows.values.forEach { $0.close() }
         scriptWindows.removeAll()
+        if applicationTerminationPrepared {
+            automationEditors.forEach { $0.prepareForFactoryReset(); $0.close() }
+            automationEditors.removeAll()
+            helpWindow?.close()
+            helpWindow = nil
+        }
         saveAtlasSurfacePreferences()
         closeAtlasSurface()
         automationDebugWindows.values.forEach { $0.close() }
@@ -980,6 +995,16 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     func closeForTabReplacement() {
         bypassLastTabReplacement = true
         close()
+    }
+
+    func prepareForFactoryReset() {
+        applicationTerminationPrepared = true
+        bypassLastTabReplacement = true
+        suppressPersistence = true
+        suppressSessionData = true
+        dockController?.prepareForOwnerClose()
+        aiRequestTask?.cancel()
+        aiRequestTask = nil
     }
 
     func tabStateDidChange() {
@@ -2579,6 +2604,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         since baseline: ConnectionStatistics,
         lastUsed: Date? = nil
     ) {
+        guard !suppressPersistence else { return }
         let delta = ConnectionStatistics(
             bytesSent: statistics.bytesSent >= baseline.bytesSent
                 ? statistics.bytesSent - baseline.bytesSent : 0,
@@ -4088,27 +4114,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             sendToSession("@pemit me=\(grabPrefix!)&\(property) \(object)=[get(\(object)/\(property))]")
         case let .recall(lineCount, search): recallOutput(lineCount: lineCount, search: search)
         case .resetConfiguration:
-            var controllers = Self.openControllers
-            if !controllers.contains(where: { $0 === self }) { controllers.append(self) }
-            controllers.forEach { $0.disconnect() }
-            do {
-                try profileLibrary.newConfiguration()
-                try profileLibrary.clearOpenTabGroups()
-                controllers.forEach { $0.resetWorkspaceStateAfterConfigurationReset() }
-                WorkspacePreferencesStore.reset()
-                Self.removeSpawnWindowFrameAutosaves()
-                currentServer = nil
-                currentCharacter = nil
-                currentPuppet = nil
-                reloadCurrentAutomation()
-                appendClient("Configuration and workspace persistence reset; closing open tabs.")
-                controllers.forEach { $0.closeForTabReplacement() }
-                // Closing a controller can briefly save the remaining tabs via
-                // ApplicationDelegate. Remove that transient snapshot after
-                // the final controller has closed.
-                WorkspacePreferencesStore.reset()
-                try? profileLibrary.clearOpenTabGroups()
-            } catch { appendError("Unable to reset configuration: \(error.localizedDescription)") }
+            onFactoryResetRequest?()
         case .rollTest:
             appendClient(DiceFairnessReport.run().displayText)
         case let .compatibilityTest(kind): runCompatibilityTest(kind)
@@ -4211,6 +4217,10 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         NSApplication.shared.windows.compactMap { $0.windowController as? ClientWindowController }
     }
 
+    static func resetProcessStateAfterFactoryReset() {
+        didRunStartupScript = false
+    }
+
     private static func updateDockBadge() {
         let total = openControllers.reduce(0) { $0 + $1.unreadCount }
         NSApplication.shared.dockTile.badgeLabel = total > 0 ? String(total) : nil
@@ -4302,41 +4312,11 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     private func savePreferences() {
+        guard !suppressPersistence else { return }
         preferences = WorkspacePreferencesStore.saveMergingSessionState(
             preferences,
             sessionKey: notesKey
         )
-    }
-
-    private func resetWorkspaceStateAfterConfigurationReset() {
-        closeSpawnSurfaces()
-        closeAtlasSurface()
-        closeWebViews()
-        closeAIWindow(preservingDockPlacement: false)
-        tileMapWindows.values.forEach { $0.close() }
-        tileMapWindows.removeAll()
-
-        currentServer = nil
-        currentCharacter = nil
-        currentPuppet = nil
-        spawnCapture = nil
-        preferences = .init()
-        dockController.apply(placement: .hidden, thickness: preferences.dockThickness)
-        dockController.setLayout(.mainOnly)
-        dockController.setNotes("")
-        applyPreferences()
-        reloadCurrentAutomation(resetRuntimeState: true)
-    }
-
-    private static func removeSpawnWindowFrameAutosaves() {
-        let autosavePrefix = "NSWindow Frame "
-        let spawnPrefix = "BeipMUSpawn"
-        let names = RuntimeStateContext.current.defaults.dictionaryRepresentation().keys.compactMap { key -> String? in
-            guard key.hasPrefix(autosavePrefix) else { return nil }
-            let name = String(key.dropFirst(autosavePrefix.count))
-            return name.hasPrefix(spawnPrefix) ? name : nil
-        }
-        names.forEach { NSWindow.removeFrame(usingName: $0) }
     }
 
     private var textWindowIdentity: TextWindowSettingsIdentity {
@@ -5318,7 +5298,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     private func saveSpawnSurfacePreferences() {
-        guard !suppressSpawnPersistence else { return }
+        guard !suppressSpawnPersistence, !suppressPersistence else { return }
         let standalone = triggerSpawnWindows.keys.sorted()
         let groups = triggerSpawnTabGroups.sorted { $0.key < $1.key }.map { title, controller in
             SpawnTabGroupPreferences(title: title, tabs: controller.tabTitles, selectedTab: controller.selectedTitle)
@@ -5940,7 +5920,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     private func saveAtlasSurfacePreferences() {
-        guard let atlasWindow else { return }
+        guard !suppressPersistence, let atlasWindow else { return }
         preferences.atlasSurfaces[notesKey] = atlasWindow.surfacePreferences
         savePreferences()
     }

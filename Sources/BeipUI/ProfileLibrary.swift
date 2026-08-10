@@ -149,6 +149,32 @@ final class ProfileLibrary {
         notifyChangeObservers()
     }
 
+    /// Replaces the app-owned configuration with the pristine empty document
+    /// used for a first launch. Unlike `newConfiguration()`, this deliberately
+    /// removes the automatic backup and the complete Mac sidecar, including
+    /// shortcuts, path mappings, legacy selection state, and saved tabs.
+    func resetToPristineConfiguration() throws {
+        let pristine = try LegacyConfigurationWorkspace.empty(isDirty: persistentConfigURL == nil)
+
+        if let persistentConfigURL {
+            try Self.write(pristine.document, to: persistentConfigURL)
+            try removeIfPresent(backupURL(for: persistentConfigURL))
+        }
+        try removeIfPresent(sidecarURL)
+
+        if let persistentConfigURL {
+            workspace = try LegacyConfigurationWorkspace(
+                document: pristine.document,
+                sourceURL: persistentConfigURL,
+                isDirty: false
+            )
+        } else {
+            workspace = pristine
+        }
+        workspaceRevision &+= 1
+        notifyChangeObservers()
+    }
+
     /// Imports a plaintext backup and atomically replaces the app-owned
     /// configuration. Parsing and projection happen before the live state is
     /// touched, so an invalid backup cannot damage the current configuration.
@@ -239,6 +265,11 @@ final class ProfileLibrary {
             try current.write(to: backupURL(for: url), options: .atomic)
         }
         try Self.write(document, to: url)
+    }
+
+    private func removeIfPresent(_ url: URL) throws {
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        try FileManager.default.removeItem(at: url)
     }
 
     private func backupURL(for url: URL) -> URL {

@@ -1354,6 +1354,10 @@ final class ConfigurationManagerWindowController: NSWindowController, NSOutlineV
         }
     }
 
+    func prepareForFactoryReset() {
+        bypassClosePrompt = true
+    }
+
     private func checked(_ key: String) -> Bool { checks[key]?.state == .on }
 
     private func parseEndpoint(_ value: String, fallbackPort: String?) -> (host: String, port: UInt16)? {

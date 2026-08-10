@@ -52,6 +52,8 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     private var shortcutItems: [ShortcutAction: NSMenuItem] = [:]
     private var isRestoringTabs = false
     private var isTerminating = false
+    private var isResetting = false
+    private var isFactoryResetConfirmationPending = false
     private var tabDragState: TabDragState?
     private var tabDragEventMonitor: Any?
 
@@ -207,10 +209,12 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         controller.onClose = { [weak self, weak controller] in
             guard let self, let controller else { return }
             self.windows.removeAll { $0 === controller }
+            guard !self.isResetting else { return }
             self.saveOpenTabs()
         }
         controller.onRequestCloseLastTab = { [weak self] controller in
             guard let self,
+                  !self.isResetting,
                   !self.isTerminating,
                   ClientWindowClosePolicy.shouldReplaceLastTab(
                       controller,
@@ -222,7 +226,10 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
             }
             return true
         }
-        controller.onTabStateChange = { [weak self] in self?.saveOpenTabs() }
+        controller.onTabStateChange = { [weak self] in
+            guard let self, !self.isResetting else { return }
+            self.saveOpenTabs()
+        }
         controller.onQuickConnectProfile = { [weak self] source, server, character in
             self?.openQuickConnectTab(from: source, server: server, character: character)
         }
@@ -239,6 +246,9 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         }
         controller.onSettingsRequest = { [weak self] section, scope in
             self?.presentSettings(section: section, initialScope: scope)
+        }
+        controller.onFactoryResetRequest = { [weak self, weak controller] in
+            self?.requestFactoryReset(from: controller?.window)
         }
         controller.onInputHeightChange = { [weak self] height in
             self?.windows.forEach { $0.synchronizeInputHeight(height) }
@@ -490,7 +500,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     }
 
     private func saveOpenTabs() {
-        guard !isRestoringTabs, !isTerminating, !windows.isEmpty else { return }
+        guard !isRestoringTabs, !isTerminating, !isResetting, !windows.isEmpty else { return }
         var seenGroups: Set<ObjectIdentifier> = []
         var groups: [MacConfigurationSidecar.OpenTabGroup] = []
 
@@ -518,6 +528,93 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
             }
         }
         try? profileLibrary.saveOpenTabGroups(groups)
+    }
+
+    private func requestFactoryReset(from initiatingWindow: NSWindow?) {
+        guard !isResetting, !isFactoryResetConfirmationPending else { return }
+        isFactoryResetConfirmationPending = true
+
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        alert.messageText = "Reset BeipMU configuration?"
+        alert.informativeText = "This permanently erases profiles, automation, preferences, shortcuts, saved tabs and layouts, recovery data, Config.txt's automatic backup, and other BeipMU-managed state. Logs, maps, scripts, and exported files are preserved."
+        alert.addButton(withTitle: "Reset Configuration")
+        alert.addButton(withTitle: "Cancel")
+
+        let finish: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            guard let self else { return }
+            self.isFactoryResetConfirmationPending = false
+            guard response == .alertFirstButtonReturn else { return }
+            self.performFactoryReset()
+        }
+
+        if let initiatingWindow, initiatingWindow.isVisible {
+            alert.beginSheetModal(for: initiatingWindow, completionHandler: finish)
+        } else {
+            finish(alert.runModal())
+        }
+    }
+
+    private func performFactoryReset() {
+        guard !isResetting else { return }
+        isResetting = true
+        isRestoringTabs = false
+        tabDragState = nil
+        endTabDragMonitor()
+
+        let clientControllers = windows
+        clientControllers.forEach { $0.prepareForFactoryReset() }
+        clientControllers.forEach { $0.disconnect() }
+
+        settingsWindowController?.close()
+        settingsWindowController = nil
+
+        configurationManager?.prepareForFactoryReset()
+        configurationManager?.close()
+        configurationManager = nil
+
+        recoveryReview?.onRestore = nil
+        recoveryReview?.onDiscard = nil
+        recoveryReview?.onSkip = nil
+        recoveryReview?.close()
+        recoveryReview = nil
+
+        aboutWindowController?.close()
+        aboutWindowController = nil
+
+        clientControllers.forEach { $0.close() }
+        windows.removeAll()
+
+        // A client owns most auxiliary surfaces, but closing any remaining
+        // application window here also covers detached panes and retained
+        // tool windows that are not represented by a delegate property.
+        NSApplication.shared.windows.forEach { window in
+            window.close()
+        }
+
+        do {
+            try profileLibrary.resetToPristineConfiguration()
+            try recoveryStore.reset()
+            stateContext.clearActivePreferencesDomain()
+            ClientWindowController.resetProcessStateAfterFactoryReset()
+            keyboardShortcuts = KeyboardShortcutStore.load(from: profileLibrary.keyEquivalents)
+            lastSettingsSection = .appearance
+            configureMenu()
+            isResetting = false
+            createFreshFactoryResetWindow()
+        } catch {
+            isResetting = false
+            NSApplication.shared.presentError(error)
+        }
+    }
+
+    private func createFreshFactoryResetWindow() {
+        let controller = makeController()
+        controller.window?.setContentSize(NSSize(width: 980, height: 700))
+        controller.window?.center()
+        controller.showWindow(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
+        controller.focusCommandInput()
     }
 
     @objc func connect(_ sender: Any?) { activeController?.showConnectDialog() }
@@ -682,6 +779,10 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
                 },
                 nativeShortcutConflict: { [weak self] values in
                     self?.nativeShortcutConflictMessage(for: values)
+                },
+                onFactoryResetRequest: { [weak self] in
+                    guard let self else { return }
+                    self.requestFactoryReset(from: self.settingsWindowController?.window ?? self.activeController?.window)
                 }
             )
             settingsWindowController = settings

@@ -271,6 +271,17 @@ public final class SessionRecoveryStore: @unchecked Sendable {
         try openForAppend()
     }
 
+    /// Removes every recovery session and durably replaces the currently open
+    /// journal with an empty, valid journal header.
+    public func reset() throws {
+        try fileHandle?.synchronize()
+        try fileHandle?.close()
+        fileHandle = nil
+        try replaceDurably(with: Self.magic)
+        sessionsByID.removeAll(keepingCapacity: false)
+        try openForAppend()
+    }
+
     /// Synchronizes the append handle. Each append already calls this method;
     /// exposing it makes normal-quit handling explicit and testable.
     public func flush() throws { try fileHandle?.synchronize() }

@@ -32,6 +32,7 @@ struct RuntimeStateContext {
     let releaseConfigurationDirectory: URL
     let configurationDirectory: URL
     let defaultsSuiteName: String?
+    let defaultsDomainName: String?
     let isUITesting: Bool
 
     var defaults: UserDefaults {
@@ -80,6 +81,7 @@ struct RuntimeStateContext {
                 releaseConfigurationDirectory: releaseDirectory,
                 configurationDirectory: selectedDirectory,
                 defaultsSuiteName: suiteName,
+                defaultsDomainName: suiteName,
                 isUITesting: true
             )
         }
@@ -90,8 +92,39 @@ struct RuntimeStateContext {
             releaseConfigurationDirectory: releaseDirectory,
             configurationDirectory: isDebug ? debugDirectory : releaseDirectory,
             defaultsSuiteName: nil,
+            defaultsDomainName: bundleIdentifier,
             isUITesting: false
         )
+    }
+
+    /// Clears the complete preferences domain owned by this launch identity.
+    ///
+    /// AppKit stores frame autosaves as ordinary `NSWindow Frame ...` keys, so
+    /// they are removed along with the rest of the active domain.  No other
+    /// BeipMU configuration root or unrelated file is touched here.
+    @MainActor
+    func clearActivePreferencesDomain() {
+        let activeDefaults = defaults
+        let frameKeys = activeDefaults.dictionaryRepresentation().keys.filter {
+            $0.hasPrefix("NSWindow Frame ")
+        }
+
+        if let defaultsDomainName {
+            UserDefaults.standard.removePersistentDomain(forName: defaultsDomainName)
+        }
+
+        frameKeys.forEach { key in
+            activeDefaults.removeObject(forKey: key)
+            let frameName = String(key.dropFirst("NSWindow Frame ".count))
+            NSWindow.removeFrame(usingName: frameName)
+        }
+    }
+
+    /// Compatibility spelling for callers that describe the operation as a
+    /// preferences reset rather than a domain clear.
+    @MainActor
+    func resetPreferences() {
+        clearActivePreferencesDomain()
     }
 
     /// Removes only the temporary state explicitly assigned to this UI-test

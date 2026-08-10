@@ -449,6 +449,10 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
 
     func windowWillClose(_ notification: Notification) { onClose?() }
 
+    func prepareForFactoryReset() {
+        bypassClosePrompt = true
+    }
+
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         if bypassClosePrompt {
             bypassClosePrompt = false

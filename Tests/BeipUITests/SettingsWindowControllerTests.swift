@@ -5,7 +5,7 @@ import XCTest
 
 final class SettingsWindowControllerTests: XCTestCase {
     @MainActor
-    func testRetainedWindowHasFiveDestinationsAndExpectedSizing() throws {
+    func testRetainedWindowHasSixDestinationsAndExpectedSizing() throws {
         let library = ProfileLibrary(workspace: try .empty(isDirty: false))
         let controller = SettingsWindowController(
             profileLibrary: library,
@@ -22,7 +22,7 @@ final class SettingsWindowControllerTests: XCTestCase {
 
         XCTAssertEqual(controller.window?.title, "Settings")
         XCTAssertEqual(controller.window?.minSize, NSSize(width: 760, height: 560))
-        XCTAssertEqual(controller.sidebarTitlesForTesting, ["Appearance", "Output", "Input", "Scripting", "Shortcuts"])
+        XCTAssertEqual(controller.sidebarTitlesForTesting, ["Appearance", "Output", "Input", "Scripting", "Shortcuts", "Advanced"])
         XCTAssertEqual(controller.selectedSectionForTesting, .appearance)
         XCTAssertNotNil(findView(withIdentifier: "settingsSidebar", in: controller.window?.contentView))
         XCTAssertNotNil(findView(withIdentifier: "settingsContent", in: controller.window?.contentView))
@@ -92,6 +92,31 @@ final class SettingsWindowControllerTests: XCTestCase {
                 )
             }
         }
+    }
+
+    @MainActor
+    func testAdvancedSectionExposesFactoryResetCopyAndRoutesThroughCallback() throws {
+        let library = ProfileLibrary(workspace: try .empty(isDirty: false))
+        var requests = 0
+        let controller = SettingsWindowController(
+            profileLibrary: library,
+            shortcutsProvider: { KeyboardShortcutStore.load() },
+            context: .init(
+                section: .advanced,
+                initialScope: nil,
+                identity: .init(world: "World", character: "Character", tab: "Main")
+            ),
+            onPreferencesMutation: {},
+            onShortcutsMutation: { _ in },
+            onFactoryResetRequest: { requests += 1 }
+        )
+        defer { controller.close() }
+
+        let content = try XCTUnwrap(controller.window?.contentView)
+        let reset = try XCTUnwrap(findView(withIdentifier: "resetConfigurationButton", in: content) as? NSButton)
+        XCTAssertNotNil(findView(withIdentifier: "resetConfigurationExplanation", in: content))
+        reset.performClick(nil)
+        XCTAssertEqual(requests, 1)
     }
 
     @MainActor

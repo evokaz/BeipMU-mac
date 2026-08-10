@@ -18,6 +18,34 @@ final class ProfileLibraryPersistenceTests: XCTestCase {
         XCTAssertNil(library.openTabGroups)
     }
 
+    func testResetToPristineConfigurationRemovesManagedStateButPreservesUserFiles() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BeipMU.ProfileLibraryTests.\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let library = try ProfileLibrary(storageDirectory: directory)
+        _ = try library.mutate { _ = $0.addServer(named: "Erase Me") }
+        try library.saveKeyEquivalents(["newTab": "⌘T"])
+        try library.saveOpenTabGroups([.init(tabs: [.init(serverName: "Erase Me")])])
+        try Data("old backup".utf8).write(to: directory.appendingPathComponent("Config.backup.txt"))
+        let userFile = directory.appendingPathComponent("Logs", isDirectory: true)
+            .appendingPathComponent("keep.log")
+        try FileManager.default.createDirectory(at: userFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("keep".utf8).write(to: userFile)
+
+        try library.resetToPristineConfiguration()
+
+        XCTAssertTrue(library.workspace.servers.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("Config.backup.txt").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("Config.mac.json").path))
+        XCTAssertNil(library.openTabGroups)
+        XCTAssertTrue(library.keyEquivalents.isEmpty)
+        XCTAssertEqual(try String(contentsOf: userFile), "keep")
+
+        let relaunched = try ProfileLibrary(storageDirectory: directory)
+        XCTAssertTrue(relaunched.workspace.servers.isEmpty)
+    }
+
     func testImportOverwritesPersistentConfigurationAndExportRetainsAppState() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("BeipMU.ProfileLibraryTests.\(UUID().uuidString)", isDirectory: true)
