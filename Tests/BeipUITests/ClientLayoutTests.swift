@@ -8,6 +8,15 @@ import XCTest
 
 final class ClientLayoutTests: XCTestCase {
     @MainActor
+    func testMainWindowDisablesAnimation() throws {
+        let library = ProfileLibrary(workspace: try .empty(isDirty: false))
+        let controller = ClientWindowController(profileLibrary: library)
+        defer { controller.close() }
+
+        XCTAssertEqual(try XCTUnwrap(controller.window).animationBehavior, .none)
+    }
+
+    @MainActor
     func testMainWindowSupportsVerticalResize() throws {
         let library = ProfileLibrary(workspace: try .empty(isDirty: false))
         let controller = ClientWindowController(profileLibrary: library)

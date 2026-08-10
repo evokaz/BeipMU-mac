@@ -817,6 +817,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             backing: .buffered,
             defer: false
         )
+        window.animationBehavior = .none
         window.title = "BeipMU"
         window.setAccessibilityIdentifier("mainWindow")
         super.init(window: window)
