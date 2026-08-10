@@ -211,6 +211,11 @@ enum ApplicationMenuBuilder {
             action: #selector(ApplicationDelegate.showHelp(_:)),
             shortcut: FixedShortcut.help
         ))
+        helpMenu.addItem(.separator())
+        helpMenu.addItem(applicationMenuItem(
+            title: "About…",
+            action: #selector(ApplicationDelegate.showAbout(_:))
+        ))
         menu.addItem(submenuItem(title: "Help", menu: helpMenu))
     }
 

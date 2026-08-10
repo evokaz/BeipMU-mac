@@ -478,12 +478,23 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
         XCTAssertNotNil(menu.item(withTitle: "Help")?.submenu)
         XCTAssertEqual(menu.item(withTitle: "Settings…")?.keyEquivalent, FixedShortcut.settings.keyEquivalent)
         XCTAssertEqual(menu.item(withTitle: "Settings…")?.keyEquivalentModifierMask, FixedShortcut.settings.modifiers)
+        let helpMenu = try XCTUnwrap(menu.item(withTitle: "Help")?.submenu)
+        XCTAssertEqual(helpMenu.items.map(\.title), ["BeipMU Help", "", "About…"])
+        XCTAssertTrue(helpMenu.items[1].isSeparatorItem)
         XCTAssertEqual(
-            menu.item(withTitle: "Help")?.submenu?.item(withTitle: "BeipMU Help")?.keyEquivalent,
+            helpMenu.item(withTitle: "About…")?.action,
+            #selector(ApplicationDelegate.showAbout(_:))
+        )
+        XCTAssertEqual(
+            helpMenu.item(withTitle: "BeipMU Help")?.action,
+            #selector(ApplicationDelegate.showHelp(_:))
+        )
+        XCTAssertEqual(
+            helpMenu.item(withTitle: "BeipMU Help")?.keyEquivalent,
             FixedShortcut.help.keyEquivalent
         )
         XCTAssertEqual(
-            menu.item(withTitle: "Help")?.submenu?.item(withTitle: "BeipMU Help")?.keyEquivalentModifierMask,
+            helpMenu.item(withTitle: "BeipMU Help")?.keyEquivalentModifierMask,
             FixedShortcut.help.modifiers
         )
         XCTAssertEqual(menu.item(withTitle: "Close all Windows and Exit")?.keyEquivalent, FixedShortcut.quit.keyEquivalent)
