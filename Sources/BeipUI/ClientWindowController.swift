@@ -14,15 +14,32 @@ enum WorldTabDragInsertion {
     }
 }
 
+enum SessionTabScrollOffset {
+    static func clamped(
+        current: CGFloat,
+        horizontalDelta: CGFloat,
+        verticalDelta: CGFloat,
+        contentWidth: CGFloat,
+        viewportWidth: CGFloat
+    ) -> CGFloat {
+        let maximum = max(0, contentWidth - viewportWidth)
+        let proposed = current - horizontalDelta - verticalDelta
+        return min(max(proposed, 0), maximum)
+    }
+}
+
 @MainActor
 private final class SessionTabStripView: NSStackView {
     static let pasteboardType = NSPasteboard.PasteboardType("org.beipmu.world-tab")
+    static let minimumTabWidth: CGFloat = 112
 
     weak var owner: ClientWindowController?
+    weak var viewport: SessionTabScrollView?
     private var tabControllers: [ClientWindowController] = []
     private var cells: [UUID: SessionWindowTabItemView] = [:]
     private var draggedTabID: UUID?
     private var dropInsertionIndex: Int?
+    private var widthConstraints: [NSLayoutConstraint] = []
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -39,6 +56,8 @@ private final class SessionTabStripView: NSStackView {
 
     func setTabs(_ controllers: [ClientWindowController], selectedController: ClientWindowController) {
         tabControllers = controllers
+        widthConstraints.forEach { $0.isActive = false }
+        widthConstraints.removeAll(keepingCapacity: true)
         arrangedSubviews.forEach {
             removeArrangedSubview($0)
             $0.removeFromSuperview()
@@ -57,7 +76,62 @@ private final class SessionTabStripView: NSStackView {
             cells[controller.tabDragIdentifier] = tab
             addArrangedSubview(tab)
         }
+        viewport?.setNeedsLayoutAndRevealSelection()
         needsDisplay = true
+    }
+
+    var tabWidths: [CGFloat] {
+        tabControllers.compactMap { cells[$0.tabDragIdentifier]?.frame.width }
+    }
+
+    var tabTooltips: [String?] {
+        tabControllers.map { cells[$0.tabDragIdentifier]?.toolTip }
+    }
+
+    var selectedTab: SessionWindowTabItemView? {
+        tabControllers
+            .compactMap { cells[$0.tabDragIdentifier] }
+            .first { $0.isSelectedForLayout }
+    }
+
+    @discardableResult
+    func layoutForViewport(width viewportWidth: CGFloat) -> CGFloat {
+        let naturalWidths = tabControllers.compactMap { cells[$0.tabDragIdentifier]?.naturalWidth }
+        guard naturalWidths.count == tabControllers.count else {
+            setFrameSize(NSSize(width: max(1, viewportWidth), height: 28))
+            return max(1, viewportWidth)
+        }
+
+        let minimumWidths = naturalWidths.map { _ in Self.minimumTabWidth }
+        let naturalTotal = naturalWidths.reduce(0, +) + CGFloat(max(0, naturalWidths.count - 1)) * spacing
+        let minimumTotal = minimumWidths.reduce(0, +) + CGFloat(max(0, minimumWidths.count - 1)) * spacing
+        let availableWidth = max(1, viewportWidth)
+        let targetWidth = naturalTotal <= availableWidth
+            ? naturalTotal
+            : max(minimumTotal, availableWidth)
+        let widths: [CGFloat]
+        if targetWidth >= naturalTotal || naturalWidths.isEmpty {
+            widths = naturalWidths
+        } else if targetWidth <= minimumTotal {
+            widths = minimumWidths
+        } else {
+            let compressible = naturalTotal - minimumTotal
+            let scale = compressible > 0
+                ? (naturalTotal - targetWidth) / compressible
+                : 1
+            widths = zip(naturalWidths, minimumWidths).map { natural, minimum in
+                natural - (natural - minimum) * scale
+            }
+        }
+
+        widthConstraints = zip(tabControllers, widths).compactMap { controller, width in
+            guard let cell = cells[controller.tabDragIdentifier] else { return nil }
+            return cell.widthAnchor.constraint(equalToConstant: max(Self.minimumTabWidth, width))
+        }
+        NSLayoutConstraint.activate(widthConstraints)
+        setFrameSize(NSSize(width: max(1, targetWidth), height: 28))
+        layoutSubtreeIfNeeded()
+        return targetWidth
     }
 
     func setDragging(_ id: UUID?, active: Bool) {
@@ -159,6 +233,72 @@ private final class SessionTabStripView: NSStackView {
 }
 
 @MainActor
+private final class SessionTabScrollView: NSScrollView {
+    private weak var strip: SessionTabStripView?
+    private var shouldRevealSelection = false
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        drawsBackground = false
+        backgroundColor = .clear
+        borderType = .noBorder
+        hasVerticalScroller = false
+        hasHorizontalScroller = true
+        autohidesScrollers = true
+        horizontalScrollElasticity = .none
+        verticalScrollElasticity = .none
+        scrollerStyle = .overlay
+        setAccessibilityRole(.group)
+        setAccessibilityLabel("Session tabs")
+        setAccessibilityIdentifier("sessionTabViewport")
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    func attach(_ strip: SessionTabStripView) {
+        self.strip = strip
+        strip.viewport = self
+        documentView = strip
+    }
+
+    func setNeedsLayoutAndRevealSelection() {
+        shouldRevealSelection = true
+        needsLayout = true
+    }
+
+    func revealSelectedTab() {
+        guard let strip, let selected = strip.selectedTab else { return }
+        layoutSubtreeIfNeeded()
+        contentView.scrollToVisible(selected.frame.insetBy(dx: -3, dy: 0))
+        shouldRevealSelection = false
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        guard let documentView else { return }
+        let currentOrigin = contentView.bounds.origin
+        let nextX = SessionTabScrollOffset.clamped(
+            current: currentOrigin.x,
+            horizontalDelta: event.scrollingDeltaX,
+            verticalDelta: event.scrollingDeltaY,
+            contentWidth: documentView.bounds.width,
+            viewportWidth: contentView.bounds.width
+        )
+        guard nextX != currentOrigin.x else { return }
+        contentView.scroll(to: NSPoint(x: nextX, y: currentOrigin.y))
+        reflectScrolledClipView(contentView)
+    }
+
+    override func layout() {
+        super.layout()
+        guard let strip else { return }
+        strip.layoutForViewport(width: contentView.bounds.width)
+        if shouldRevealSelection {
+            revealSelectedTab()
+        }
+    }
+}
+
+@MainActor
 private final class SessionWindowTabItemView: NSView, NSDraggingSource {
     private let tabID: UUID
     weak var targetController: ClientWindowController?
@@ -179,6 +319,15 @@ private final class SessionWindowTabItemView: NSView, NSDraggingSource {
     private var hovered = false
     private var dragging = false
     private var dragStarted = false
+
+    var isSelectedForLayout: Bool { selected }
+    var naturalWidth: CGFloat {
+        let titleWidth = titleLabel.intrinsicContentSize.width
+        let indicatorWidth = trailingIndicatorLabel.intrinsicContentSize.width
+        let indicatorSpacing: CGFloat = trailingIndicatorLabel.stringValue.isEmpty ? 0 : 5
+        let fixedWidth: CGFloat = 7 + 16 + 5 + indicatorSpacing + 10
+        return max(SessionTabStripView.minimumTabWidth, fixedWidth + titleWidth + indicatorWidth)
+    }
 
     init(
         tabID: UUID,
@@ -203,11 +352,11 @@ private final class SessionWindowTabItemView: NSView, NSDraggingSource {
         titleLabel.font = .systemFont(ofSize: 13, weight: selected ? .semibold : .regular)
         titleLabel.lineBreakMode = .byClipping
         titleLabel.maximumNumberOfLines = 1
-        titleLabel.allowsExpansionToolTips = true
+        titleLabel.allowsExpansionToolTips = false
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         titleLabel.setAccessibilityIdentifier("sessionTabTitle")
-        titleLabel.setContentHuggingPriority(.required, for: .horizontal)
-        titleLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        titleLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         addSubview(titleLabel)
 
         trailingIndicatorLabel.stringValue = trailingIndicators
@@ -234,13 +383,14 @@ private final class SessionWindowTabItemView: NSView, NSDraggingSource {
         closeButton.setAccessibilityIdentifier("sessionTabClose")
         addSubview(closeButton)
 
+        toolTip = title
+
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
-        setAccessibilityLabel("\([title, trailingIndicators].filter { !$0.isEmpty }.joined(separator: " ")) tab")
+        setAccessibilityLabel("\(title) tab")
         setAccessibilityIdentifier(selected ? "activeSessionTab" : "sessionTab")
 
-        let minimumWidth = widthAnchor.constraint(greaterThanOrEqualToConstant: 132)
-        minimumWidth.priority = .defaultLow
+        let minimumWidth = widthAnchor.constraint(greaterThanOrEqualToConstant: SessionTabStripView.minimumTabWidth)
         let titleToIndicators = titleLabel.trailingAnchor.constraint(
             equalTo: trailingIndicatorLabel.leadingAnchor,
             constant: trailingIndicators.isEmpty ? 0 : -5
@@ -625,6 +775,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private let quickConnectButton = NSButton()
     private let profilesButton = NSButton()
     private let sessionTabs = SessionTabStripView(frame: .zero)
+    private let sessionTabViewport = SessionTabScrollView(frame: .zero)
     private let titlebarStatistics = SessionTitlebarStatisticsController()
     private let commandRegistry = CommandRegistry()
     private let delayScheduler = DelayScheduler()
@@ -1435,6 +1586,12 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     var tabBarArrangedIdentifiersForTesting: [String] {
         taskbarView?.arrangedSubviews.compactMap { $0.accessibilityIdentifier() } ?? []
     }
+    var sessionTabViewportForTesting: NSScrollView { sessionTabViewport }
+    var sessionTabWidthsForTesting: [CGFloat] { sessionTabs.tabWidths }
+    var sessionTabTooltipsForTesting: [String?] { sessionTabs.tabTooltips }
+    var sessionTabContentWidthForTesting: CGFloat { sessionTabs.frame.width }
+    var sessionBarFrameForTesting: NSRect { taskbarView?.frame ?? .zero }
+    var workspaceHostFrameForTesting: NSRect { dockController?.hostView.frame ?? .zero }
 
     func disconnect() {
         if let puppet = currentPuppet, let master = puppetMaster {
@@ -2234,9 +2391,10 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
 
         let taskbar = NSStackView()
         taskbarView = taskbar
+        taskbar.setAccessibilityIdentifier("sessionBar")
         taskbar.orientation = .horizontal
         taskbar.alignment = .centerY
-        taskbar.edgeInsets = NSEdgeInsets(top: 6, left: 8, bottom: 6, right: 8)
+        taskbar.edgeInsets = NSEdgeInsets(top: 3, left: 8, bottom: 3, right: 8)
         taskbar.spacing = 8
         taskbar.wantsLayer = true
         taskbar.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
@@ -2271,15 +2429,20 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         stateLabel.setAccessibilityIdentifier("connectionState")
         stateLabel.setContentHuggingPriority(.required, for: .horizontal)
         activityLabel.textColor = .secondaryLabelColor
+        activityLabel.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
+        activityLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
         sessionTabs.orientation = .horizontal
         sessionTabs.alignment = .centerY
         sessionTabs.distribution = .fill
         sessionTabs.spacing = 4
         sessionTabs.owner = self
-        sessionTabs.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        sessionTabs.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        sessionTabs.setAccessibilityIdentifier("sessionTabs")
-        taskbar.addArrangedSubview(sessionTabs)
+        sessionTabViewport.attach(sessionTabs)
+        sessionTabViewport.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        sessionTabViewport.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        sessionTabViewport.setAccessibilityIdentifier("sessionTabs")
+        sessionTabs.setAccessibilityIdentifier("sessionTabStrip")
+        taskbar.addArrangedSubview(sessionTabViewport)
+        taskbar.addArrangedSubview(stateLabel)
         taskbar.addArrangedSubview(activityLabel)
         taskbar.addArrangedSubview(NSView())
         taskbar.addArrangedSubview(titlebarStatistics.view)
@@ -2332,9 +2495,10 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         inputSplitView.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
 
         root.addArrangedSubview(taskbar)
-        root.addArrangedSubview(inputSplitView)
-        let dockController = WorkspaceDockController(mainView: root, ownerWindow: window)
+        let dockController = WorkspaceDockController(mainView: inputSplitView, ownerWindow: window)
         self.dockController = dockController
+        dockController.hostView.setAccessibilityIdentifier("workspaceDockHost")
+        root.addArrangedSubview(dockController.hostView)
         dockController.onPlacementChange = { [weak self] placement, thickness in
             guard let self else { return }
             self.preferences.dockPlacement = placement
@@ -2357,16 +2521,22 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         }
         dockController.setNotes(preferences.characterNotes[notesKey] ?? "")
         dockController.applyTheme(preferences.theme.palette)
-        // Keep the Auto Layout-driven dock tree behind an autoresizing wrapper.
-        // Making the dock host the NSWindow content view directly lets its
-        // fitting height become a WindowServer live-resize boundary.
+        // Keep the Auto Layout-driven root behind an autoresizing wrapper.
+        // The session bar is outside the dock host so it spans the complete
+        // window even when the workspace is split into docked panes.
         let contentBounds = window.contentView?.bounds
             ?? NSRect(origin: .zero, size: window.contentRect(forFrameRect: window.frame).size)
         let windowContent = NSView(frame: contentBounds)
         windowContent.autoresizingMask = [.width, .height]
-        dockController.hostView.frame = windowContent.bounds
-        dockController.hostView.autoresizingMask = [.width, .height]
-        windowContent.addSubview(dockController.hostView)
+        root.frame = windowContent.bounds
+        root.autoresizingMask = [.width, .height]
+        windowContent.addSubview(root)
+        NSLayoutConstraint.activate([
+            root.leadingAnchor.constraint(equalTo: windowContent.leadingAnchor),
+            root.trailingAnchor.constraint(equalTo: windowContent.trailingAnchor),
+            root.topAnchor.constraint(equalTo: windowContent.topAnchor),
+            root.bottomAnchor.constraint(equalTo: windowContent.bottomAnchor),
+        ])
         let verticalResizeHandle = VerticalWindowResizeHandle(
             frame: NSRect(x: 0, y: 0, width: windowContent.bounds.width, height: 8)
         )
@@ -4280,8 +4450,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     func containsSessionTabStrip(screenPoint: NSPoint) -> Bool {
         guard let window, window.isVisible else { return false }
         let windowPoint = window.convertPoint(fromScreen: screenPoint)
-        let localPoint = sessionTabs.convert(windowPoint, from: nil)
-        return sessionTabs.bounds.contains(localPoint)
+        let localPoint = sessionTabViewport.convert(windowPoint, from: nil)
+        return sessionTabViewport.bounds.contains(localPoint)
     }
 
     func focusCommandInput() {

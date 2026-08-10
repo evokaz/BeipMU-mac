@@ -67,6 +67,62 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
         XCTAssertEqual(WorldTabDragInsertion.index(midpoints: [40, 100, 160], x: 220), 3)
     }
 
+    func testSessionTabScrollOffsetCombinesAxesAndClampsToContent() {
+        XCTAssertEqual(
+            SessionTabScrollOffset.clamped(
+                current: 100,
+                horizontalDelta: 0,
+                verticalDelta: 20,
+                contentWidth: 600,
+                viewportWidth: 200
+            ),
+            80
+        )
+        XCTAssertEqual(
+            SessionTabScrollOffset.clamped(
+                current: 100,
+                horizontalDelta: 12,
+                verticalDelta: 8,
+                contentWidth: 600,
+                viewportWidth: 200
+            ),
+            80
+        )
+        XCTAssertEqual(
+            SessionTabScrollOffset.clamped(
+                current: 20,
+                horizontalDelta: 100,
+                verticalDelta: 100,
+                contentWidth: 600,
+                viewportWidth: 200
+            ),
+            0
+        )
+        XCTAssertEqual(
+            SessionTabScrollOffset.clamped(
+                current: 380,
+                horizontalDelta: -100,
+                verticalDelta: -100,
+                contentWidth: 600,
+                viewportWidth: 200
+            ),
+            400
+        )
+    }
+
+    func testSessionTabScrollOffsetDoesNothingWhenTabsFitViewport() {
+        XCTAssertEqual(
+            SessionTabScrollOffset.clamped(
+                current: 0,
+                horizontalDelta: 0,
+                verticalDelta: 20,
+                contentWidth: 180,
+                viewportWidth: 200
+            ),
+            0
+        )
+    }
+
     @MainActor
     func testWorldTabGroupReordersWithoutChangingSelection() throws {
         let library = ProfileLibrary(workspace: try .empty(isDirty: false))

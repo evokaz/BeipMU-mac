@@ -41,15 +41,20 @@ final class SessionTitlebarStatisticsController: NSViewController {
         let title = NSTextField(labelWithString: label)
         title.textColor = .secondaryLabelColor
         title.font = .systemFont(ofSize: 12)
+        title.setContentHuggingPriority(.required, for: .horizontal)
+        title.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         value.textColor = .labelColor
         value.font = .monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
         value.setContentHuggingPriority(.required, for: .horizontal)
+        value.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         let stack = NSStackView(views: [title, value])
         stack.orientation = .horizontal
         stack.alignment = .firstBaseline
         stack.spacing = 3
+        stack.setContentHuggingPriority(.required, for: .horizontal)
+        stack.setContentCompressionResistancePriority(.required, for: .horizontal)
         return stack
     }
 }
