@@ -34,7 +34,48 @@ struct SettingsPresentationContext: Equatable {
 }
 
 private final class SettingsDocumentView: NSView {
+    var onLayout: (() -> Void)?
+
     override var isFlipped: Bool { true }
+
+    override func layout() {
+        super.layout()
+        onLayout?()
+    }
+}
+
+@MainActor
+private final class SettingsScrollCueView: NSView {
+    override var isFlipped: Bool { true }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard bounds.height > 0, bounds.width > 0 else { return }
+
+        let fadeRect = NSRect(
+            x: bounds.minX,
+            y: bounds.minY,
+            width: bounds.width,
+            height: min(46, bounds.height)
+        )
+        let background = NSColor.windowBackgroundColor
+        NSGradient(
+            colors: [
+                background.withAlphaComponent(0),
+                background.withAlphaComponent(0.9),
+            ]
+        )?.draw(in: fadeRect, angle: 90)
+
+        let chevron = NSBezierPath()
+        let center = NSPoint(x: bounds.midX, y: bounds.maxY - 14)
+        chevron.move(to: NSPoint(x: center.x - 5, y: center.y - 2))
+        chevron.line(to: center)
+        chevron.line(to: NSPoint(x: center.x + 5, y: center.y - 2))
+        chevron.lineWidth = 1.5
+        NSColor.secondaryLabelColor.setStroke()
+        chevron.stroke()
+    }
 }
 
 @MainActor
@@ -132,7 +173,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     private let sidebarScroll = NSScrollView()
     private let contentScroll = NSScrollView()
     private let contentDocument = SettingsDocumentView()
+    private let contentScrollCue = SettingsScrollCueView()
     private let contentStack = NSStackView()
+    private var contentIsOverflowing = false
+    private var updatingContentScrollCue = false
     private var cachedSectionViews: [SettingsSection: [NSView]] = [:]
     private var contentWidthConstraints: [ObjectIdentifier: NSLayoutConstraint] = [:]
     private var errorLabels: [ObjectIdentifier: NSTextField] = [:]
@@ -284,6 +328,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         reloadContent()
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
+        window?.contentView?.layoutSubtreeIfNeeded()
+        updateContentScrollCue()
         NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
@@ -296,6 +342,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     var selectedSectionForTesting: SettingsSection { selectedSection }
     var presentationContextForTesting: SettingsPresentationContext { context }
     var sidebarTitlesForTesting: [String] { SettingsSection.allCases.map(\.title) }
+    var contentIsOverflowingForTesting: Bool { contentIsOverflowing }
+    var contentScrollShowsVerticalScrollerForTesting: Bool { contentScroll.hasVerticalScroller }
+    var contentScrollCueIsVisibleForTesting: Bool { !contentScrollCue.isHidden }
 
     func setShortcutValueForTesting(_ value: String, for action: ShortcutAction) {
         shortcutFields[action]?.stringValue = value
@@ -323,6 +372,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         sidebarScroll.translatesAutoresizingMaskIntoConstraints = false
 
         contentDocument.translatesAutoresizingMaskIntoConstraints = false
+        contentDocument.onLayout = { [weak self] in self?.updateContentScrollCue() }
         contentStack.orientation = .vertical
         contentStack.alignment = .width
         contentStack.distribution = .gravityAreas
@@ -333,10 +383,25 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         contentStack.setAccessibilityIdentifier("settingsContent")
         contentDocument.addSubview(contentStack)
         contentScroll.documentView = contentDocument
-        contentScroll.hasVerticalScroller = true
+        contentScroll.hasVerticalScroller = false
         contentScroll.autohidesScrollers = true
         contentScroll.drawsBackground = false
         contentScroll.translatesAutoresizingMaskIntoConstraints = false
+        contentScroll.setAccessibilityIdentifier("settingsContentScroll")
+        contentScroll.setAccessibilityLabel("Settings content")
+        contentScroll.setAccessibilityRole(.scrollArea)
+        contentScroll.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(contentBoundsChanged(_:)),
+            name: NSView.boundsDidChangeNotification,
+            object: contentScroll.contentView
+        )
+
+        contentScrollCue.setAccessibilityIdentifier("settingsContentOverflowCue")
+        contentScrollCue.setAccessibilityElement(false)
+        contentScrollCue.translatesAutoresizingMaskIntoConstraints = false
+        contentScroll.addSubview(contentScrollCue)
 
         let split = NSSplitView()
         split.isVertical = true
@@ -356,6 +421,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
             contentStack.trailingAnchor.constraint(equalTo: contentDocument.trailingAnchor, constant: -22),
             contentStack.topAnchor.constraint(equalTo: contentDocument.topAnchor, constant: 22),
             contentStack.bottomAnchor.constraint(lessThanOrEqualTo: contentDocument.bottomAnchor, constant: -22),
+            contentScrollCue.leadingAnchor.constraint(equalTo: contentScroll.contentView.leadingAnchor),
+            contentScrollCue.trailingAnchor.constraint(equalTo: contentScroll.contentView.trailingAnchor),
+            contentScrollCue.bottomAnchor.constraint(equalTo: contentScroll.contentView.bottomAnchor),
+            contentScrollCue.heightAnchor.constraint(equalToConstant: 46),
         ])
     }
 
@@ -387,6 +456,35 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         constrainContentViewsToStack()
         contentStack.needsLayout = true
         contentDocument.needsLayout = true
+        contentDocument.layoutSubtreeIfNeeded()
+        updateContentScrollCue()
+    }
+
+    private func updateContentScrollCue() {
+        guard !updatingContentScrollCue else { return }
+        guard contentScroll.contentView.bounds.height > 1 else { return }
+
+        updatingContentScrollCue = true
+        defer { updatingContentScrollCue = false }
+
+        contentDocument.layoutSubtreeIfNeeded()
+        let viewportHeight = contentScroll.contentView.bounds.height
+        let documentHeight = contentDocument.bounds.height
+        let overflowing = documentHeight > viewportHeight + 1
+
+        if contentIsOverflowing != overflowing {
+            contentIsOverflowing = overflowing
+            contentScroll.hasVerticalScroller = overflowing
+            contentScroll.autohidesScrollers = !overflowing
+        }
+
+        let hasMoreBelow = contentScroll.contentView.bounds.maxY < contentDocument.bounds.maxY - 1
+        contentScrollCue.isHidden = !overflowing || !hasMoreBelow
+        contentScrollCue.needsDisplay = true
+    }
+
+    @objc private func contentBoundsChanged(_ notification: Notification) {
+        updateContentScrollCue()
     }
 
     private func refreshControls(for section: SettingsSection) {
@@ -1513,6 +1611,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     }
 
     // MARK: - NSWindowDelegate
+
+    func windowDidResize(_ notification: Notification) {
+        window?.contentView?.layoutSubtreeIfNeeded()
+        updateContentScrollCue()
+    }
 
     func windowWillClose(_ notification: Notification) {
         // The delegate owns this controller. Closing hides the retained

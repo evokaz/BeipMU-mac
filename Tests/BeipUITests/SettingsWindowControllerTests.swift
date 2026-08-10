@@ -176,6 +176,78 @@ final class SettingsWindowControllerTests: XCTestCase {
     }
 
     @MainActor
+    func testContentOverflowCueTracksSectionAndWindowSize() throws {
+        let library = ProfileLibrary(workspace: try .empty(isDirty: false))
+        let controller = SettingsWindowController(
+            profileLibrary: library,
+            shortcutsProvider: { KeyboardShortcutStore.load() },
+            context: .init(
+                section: .appearance,
+                initialScope: nil,
+                identity: .init(world: "World", character: "Character", tab: "Main")
+            ),
+            onPreferencesMutation: {},
+            onShortcutsMutation: { _ in }
+        )
+        defer { controller.close() }
+
+        let window = try XCTUnwrap(controller.window)
+        window.contentView?.layoutSubtreeIfNeeded()
+        let contentScroll = try XCTUnwrap(
+            findView(withIdentifier: "settingsContentScroll", in: window.contentView) as? NSScrollView
+        )
+        XCTAssertEqual(contentScroll.accessibilityLabel(), "Settings content")
+        XCTAssertFalse(controller.contentIsOverflowingForTesting)
+        XCTAssertFalse(controller.contentScrollShowsVerticalScrollerForTesting)
+        XCTAssertTrue(contentScroll.autohidesScrollers)
+        XCTAssertFalse(controller.contentScrollCueIsVisibleForTesting)
+
+        controller.present(context: .init(
+            section: .output,
+            initialScope: nil,
+            identity: .init(world: "World", character: "Character", tab: "Main")
+        ))
+        window.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertTrue(controller.contentIsOverflowingForTesting)
+        XCTAssertTrue(controller.contentScrollShowsVerticalScrollerForTesting)
+        XCTAssertFalse(contentScroll.autohidesScrollers)
+        XCTAssertTrue(controller.contentScrollCueIsVisibleForTesting)
+
+        let documentHeight = contentScroll.documentView?.bounds.height ?? 0
+        let viewportHeight = contentScroll.contentView.bounds.height
+        contentScroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, documentHeight - viewportHeight)))
+        contentScroll.reflectScrolledClipView(contentScroll.contentView)
+        XCTAssertFalse(controller.contentScrollCueIsVisibleForTesting)
+        contentScroll.contentView.scroll(to: .zero)
+        contentScroll.reflectScrolledClipView(contentScroll.contentView)
+        XCTAssertTrue(controller.contentScrollCueIsVisibleForTesting)
+
+        window.setContentSize(NSSize(width: 840, height: 400))
+        window.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertTrue(controller.contentIsOverflowingForTesting)
+        XCTAssertTrue(controller.contentScrollShowsVerticalScrollerForTesting)
+        XCTAssertFalse(contentScroll.autohidesScrollers)
+        XCTAssertTrue(controller.contentScrollCueIsVisibleForTesting)
+
+        window.setContentSize(NSSize(width: 840, height: 680))
+        window.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertTrue(controller.contentIsOverflowingForTesting)
+        XCTAssertTrue(controller.contentScrollShowsVerticalScrollerForTesting)
+        XCTAssertTrue(controller.contentScrollCueIsVisibleForTesting)
+
+        controller.present(context: .init(
+            section: .scripting,
+            initialScope: nil,
+            identity: .init(world: "World", character: "Character", tab: "Main")
+        ))
+        window.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertFalse(controller.contentIsOverflowingForTesting)
+        XCTAssertFalse(controller.contentScrollShowsVerticalScrollerForTesting)
+        XCTAssertTrue(contentScroll.autohidesScrollers)
+        XCTAssertFalse(controller.contentScrollCueIsVisibleForTesting)
+    }
+
+    @MainActor
     func testShortcutConflictIsPresentedAndNotPersisted() throws {
         let library = ProfileLibrary(workspace: try .empty(isDirty: false))
         var prompts: [String] = []
