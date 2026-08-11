@@ -848,14 +848,7 @@ public struct AtlasEditor: Sendable {
     public var selection: Set<AtlasObjectID>
     public var selectionFilter: AtlasSelectionFilter
     public var viewport: AtlasViewport
-    public var liveTracking: Bool {
-        didSet {
-            if !liveTracking { pendingTraversal = nil }
-        }
-    }
-    public private(set) var typedExitNames: Set<String>
-    public private(set) var seenExitNames: Set<String>
-    private var pendingTraversal: PendingTraversal?
+    public var liveTracking: Bool
     private var undoStack: [Snapshot] = []
     private var redoStack: [Snapshot] = []
     private let historyLimit = 100
@@ -868,9 +861,6 @@ public struct AtlasEditor: Sendable {
         selectionFilter = .all
         viewport = .init()
         liveTracking = false
-        typedExitNames = []
-        seenExitNames = []
-        pendingTraversal = nil
     }
 
     public var canUndo: Bool { !undoStack.isEmpty }
@@ -1191,204 +1181,32 @@ public struct AtlasEditor: Sendable {
         }
     }
 
-    public mutating func recordTypedExit(_ command: String) -> AtlasLocation? {
-        guard let currentLocation else { return nil }
-        let normalized = command.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalized.isEmpty else { return nil }
-        let edge = edges(from: currentLocation).first(where: {
-            $0.command.caseInsensitiveCompare(normalized) == .orderedSame
-        })
-        if liveTracking, edge != nil || Self.directionVector(normalized) != nil {
-            pendingTraversal = .init(source: currentLocation, command: normalized)
-        }
-        guard let edge else { return nil }
-        typedExitNames.insert(normalized.lowercased())
-        setCurrentLocation(edge.destination)
-        return edge.destination
-    }
-
     public mutating func observeOutput(_ text: String) -> AtlasLocation? {
-        guard liveTracking else { return nil }
-        if let traversal = pendingTraversal, Self.indicatesMovementFailure(text) {
-            pendingTraversal = nil
-            setCurrentLocation(traversal.source)
-            return traversal.source
-        }
-        var candidateSources: [AtlasLocation] = []
-        if let source = pendingTraversal?.source ?? currentLocation { candidateSources.append(source) }
-        if let currentLocation, !candidateSources.contains(currentLocation) { candidateSources.append(currentLocation) }
-        for source in candidateSources {
-            let candidates = edges(from: source).sorted {
-                room(at: $0.destination).name.count > room(at: $1.destination).name.count
-            }
-            for edge in candidates {
-                let room = room(at: edge.destination)
-                if !room.name.isEmpty, text.range(of: room.name, options: [.caseInsensitive, .diacriticInsensitive]) != nil {
-                    seenExitNames.insert(edge.command.lowercased())
-                    pendingTraversal = nil
-                    setCurrentLocation(edge.destination)
-                    return edge.destination
-                }
-            }
-        }
-
-        guard let name = Self.roomNameCandidate(from: text) else { return nil }
-        if let traversal = pendingTraversal {
-            let location = integrateObservedRoom(named: name, from: traversal.source, command: traversal.command)
-            pendingTraversal = nil
-            return location
-        }
-
-        if let currentLocation {
-            let currentRoom = room(at: currentLocation)
-            if Self.roomIdentity(currentRoom.name) == Self.roomIdentity(name) { return currentLocation }
-            return nil
-        }
-
-        if let existing = location(ofRoomNamed: name, preferredMap: mapIndex) {
-            setCurrentLocation(existing)
-            return existing
-        }
-        if atlas.maps.isEmpty { _ = addMap(named: "Map") }
-        guard let id = addRoom(name: name, rect: .init(x1: 0, y1: 0, x2: 100, y2: 70), map: mapIndex) else { return nil }
-        let location = AtlasLocation(mapIndex: mapIndex, roomIndex: roomIndex(forElement: id.elementIndex, in: mapIndex) ?? 0)
-        setCurrentLocation(location)
-        return location
-    }
-
-    private mutating func integrateObservedRoom(named name: String, from source: AtlasLocation, command: String) -> AtlasLocation? {
-        guard atlas.maps.indices.contains(source.mapIndex), atlas.maps[source.mapIndex].rooms.indices.contains(source.roomIndex) else { return nil }
-        let destination: AtlasLocation
-        if let existing = location(ofRoomNamed: name, preferredMap: source.mapIndex) {
-            destination = existing
-        } else {
-            let rect = automaticRoomRect(from: source, command: command)
-            guard let id = addRoom(name: name, rect: rect, map: source.mapIndex),
-                  let roomIndex = roomIndex(forElement: id.elementIndex, in: source.mapIndex) else { return nil }
-            destination = .init(mapIndex: source.mapIndex, roomIndex: roomIndex)
-        }
-
-        if destination != source,
-           !edges(from: source).contains(where: { $0.command.caseInsensitiveCompare(command) == .orderedSame }) {
-            _ = addExit(
-                from: source.roomIndex,
-                to: destination.roomIndex,
-                nameFrom: command,
-                nameTo: Self.oppositeDirection(command),
-                map: source.mapIndex,
-                destinationMap: destination.mapIndex
-            )
-        }
-        typedExitNames.insert(command.lowercased())
-        seenExitNames.insert(command.lowercased())
+        guard liveTracking, let currentLocation else { return nil }
+        let candidates = edges(from: currentLocation)
+        guard let destination = candidates.first(where: { edge in
+            let name = atlas.maps[edge.destination.mapIndex].rooms[edge.destination.roomIndex].name
+            return Self.outputLine(text, matchesRoomTitle: name)
+        })?.destination else { return nil }
         setCurrentLocation(destination)
         return destination
     }
 
-    private func location(ofRoomNamed name: String, preferredMap: Int) -> AtlasLocation? {
-        let identity = Self.roomIdentity(name)
-        if atlas.maps.indices.contains(preferredMap),
-           let room = atlas.maps[preferredMap].rooms.firstIndex(where: { Self.roomIdentity($0.name) == identity }) {
-            return .init(mapIndex: preferredMap, roomIndex: room)
+    private static func outputLine(_ text: String, matchesRoomTitle name: String) -> Bool {
+        func normalizedTitle(_ value: String) -> String {
+            value
+                .replacingOccurrences(
+                    of: #"\s*\(#[0-9]+[A-Za-z]*\)\s*$"#,
+                    with: "",
+                    options: .regularExpression
+                )
+                .split(whereSeparator: \.isWhitespace)
+                .joined(separator: " ")
+                .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
         }
-        for (map, value) in atlas.maps.enumerated() where map != preferredMap {
-            if let room = value.rooms.firstIndex(where: { Self.roomIdentity($0.name) == identity }) {
-                return .init(mapIndex: map, roomIndex: room)
-            }
-        }
-        return nil
-    }
 
-    private func room(at location: AtlasLocation) -> Atlas.Room {
-        atlas.maps[location.mapIndex].rooms[location.roomIndex]
-    }
-
-    private func roomIndex(forElement elementIndex: Int, in mapIndex: Int) -> Int? {
-        guard atlas.maps.indices.contains(mapIndex), atlas.maps[mapIndex].elements.indices.contains(elementIndex) else { return nil }
-        return atlas.maps[mapIndex].elements[..<elementIndex].reduce(0) { count, element in
-            if case .room = element { count + 1 } else { count }
-        }
-    }
-
-    private func automaticRoomRect(from source: AtlasLocation, command: String) -> Atlas.Rect {
-        let room = room(at: source)
-        let width = max(80, room.rect.width)
-        let height = max(50, room.rect.height)
-        let vector = Self.directionVector(command) ?? .init(x: 1, y: 0)
-        let spacing = max(40, max(width, height) * 1.5)
-        let existing = atlas.maps[source.mapIndex].rooms.map(\.rect)
-        for multiplier in 1...50 {
-            let center = Atlas.Point(
-                x: room.rect.center.x + vector.x * spacing * Double(multiplier),
-                y: room.rect.center.y + vector.y * spacing * Double(multiplier)
-            )
-            let candidate = Atlas.Rect(
-                x1: center.x - width / 2, y1: center.y - height / 2,
-                x2: center.x + width / 2, y2: center.y + height / 2
-            )
-            if !existing.contains(where: { $0.intersects(candidate) }) { return candidate }
-        }
-        return room.rect.offsetBy(dx: vector.x * spacing, dy: vector.y * spacing)
-    }
-
-    private static func roomNameCandidate(from text: String) -> String? {
-        let name = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard name.count >= 2, name.count <= 100, name.split(whereSeparator: \.isWhitespace).count <= 12,
-              name.unicodeScalars.contains(where: CharacterSet.letters.contains),
-              !name.contains("://") else { return nil }
-        let lower = name.lowercased()
-        let rejectedPrefixes = [
-            "you ", "your ", "there ", "obvious exit", "visible exit", "exits", "welcome ",
-            "health", "hit points", "hp:", "mana", "score", "time:", "connected", "disconnected"
-        ]
-        guard !rejectedPrefixes.contains(where: lower.hasPrefix) else { return nil }
-        if let last = name.last, ".!?".contains(last) { return nil }
-        return name
-    }
-
-    private static func indicatesMovementFailure(_ text: String) -> Bool {
-        let value = text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
-        return [
-            "cannot go", "can't go", "cant go", "couldn't go", "could not go", "no exit",
-            "not a valid exit", "not an exit", "can't move", "cannot move", "way is blocked"
-        ].contains(where: value.contains)
-    }
-
-    private static func roomIdentity(_ name: String) -> String {
-        name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
-            .split(whereSeparator: \.isWhitespace)
-            .joined(separator: " ")
-    }
-
-    private static func oppositeDirection(_ value: String) -> String? {
-        switch value.lowercased().replacingOccurrences(of: "-", with: "") {
-        case "n": "s"
-        case "north": "south"
-        case "ne": "sw"
-        case "northeast": "southwest"
-        case "e": "w"
-        case "east": "west"
-        case "se": "nw"
-        case "southeast": "northwest"
-        case "s": "n"
-        case "south": "north"
-        case "sw": "ne"
-        case "southwest": "northeast"
-        case "w": "e"
-        case "west": "east"
-        case "nw": "se"
-        case "northwest": "southeast"
-        case "u": "d"
-        case "up": "down"
-        case "d": "u"
-        case "down": "up"
-        default: nil
-        }
-    }
-
-    private struct PendingTraversal: Sendable {
-        var source: AtlasLocation
-        var command: String
+        let expected = normalizedTitle(name)
+        return !expected.isEmpty && normalizedTitle(text) == expected
     }
 
     public mutating func guessLocation(in recentLines: [String]) -> AtlasLocation? {

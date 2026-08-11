@@ -197,7 +197,7 @@ final class AtlasEditorTests: XCTestCase {
         XCTAssertEqual(editor.selection, Set(inserted))
     }
 
-    func testPathsTypedSeenTrackingAndMapCommands() {
+    func testPathsGuessLocationAndExplicitMapCommands() {
         var editor = AtlasEditor(atlas: Atlas(maps: [.init(name: "Main")]))
         let start = editor.addRoom(name: "Start", rect: .init(x1: 0, y1: 0, x2: 80, y2: 60))!
         XCTAssertEqual(start.elementIndex, 0)
@@ -208,50 +208,83 @@ final class AtlasEditorTests: XCTestCase {
 
         let path = editor.shortestPath(to: east)
         XCTAssertEqual(path?.map(\.command), ["east"])
-        XCTAssertEqual(editor.recordTypedExit("EAST"), east)
-        XCTAssertTrue(editor.typedExitNames.contains("east"))
-        editor.liveTracking = true
-        XCTAssertEqual(editor.observeOutput("You arrive at Start."), .init(mapIndex: 0, roomIndex: 0))
-        XCTAssertTrue(editor.seenExitNames.contains("west"))
         XCTAssertEqual(editor.guessLocation(in: ["noise", "North Road"]), north)
 
         editor.setCurrentLocation(.init(mapIndex: 0, roomIndex: 0))
         XCTAssertTrue(editor.addExitToDirectionalRoom(outward: "north", returnCommand: "south"))
         XCTAssertFalse(editor.addExitToDirectionalRoom(outward: "downstairs", returnCommand: "upstairs"))
+
+        let custom = editor.addRoomAndExit(
+            name: "Walled Garden", outward: "enter gate", returnCommand: "leave gate"
+        )
+        XCTAssertNotNil(custom)
+        XCTAssertEqual(editor.atlas.maps[0].exits.last?.nameFrom, "enter gate")
+        XCTAssertEqual(editor.atlas.maps[0].exits.last?.nameTo, "leave gate")
     }
 
-    func testAutomaticMappingCreatesLinksAndReusesExistingRooms() throws {
-        var editor = AtlasEditor(atlas: Atlas(maps: [.init(name: "Main")]))
+    func testLiveTrackingFollowsCustomCompassReverseAndCrossMapExits() throws {
+        var editor = AtlasEditor(atlas: Atlas(maps: [.init(name: "Main"), .init(name: "Other")]))
+        let start = try XCTUnwrap(editor.addRoom(
+            name: "Start", rect: .init(x1: 0, y1: 0, x2: 80, y2: 60), map: 0
+        ))
+        XCTAssertEqual(start.elementIndex, 0)
+        _ = editor.addRoom(name: "Walled Garden", rect: .init(x1: 100, y1: 0, x2: 180, y2: 60), map: 0)
+        _ = editor.addRoom(name: "East Road", rect: .init(x1: 200, y1: 0, x2: 280, y2: 60), map: 0)
+        _ = editor.addRoom(name: "Distant Portal", rect: .init(x1: 0, y1: 0, x2: 80, y2: 60), map: 1)
+        _ = editor.addExit(from: 0, to: 1, nameFrom: "enter gate", nameTo: "leave gate", map: 0)
+        _ = editor.addExit(from: 0, to: 2, nameFrom: "east", nameTo: "west", map: 0)
+        _ = editor.addExit(
+            from: 0, to: 0, nameFrom: "portal", nameTo: "return portal", map: 0, destinationMap: 1
+        )
         editor.liveTracking = true
 
-        let start = try XCTUnwrap(editor.observeOutput("Town Square"))
-        XCTAssertEqual(start, .init(mapIndex: 0, roomIndex: 0))
-        XCTAssertEqual(editor.atlas.maps[0].rooms.map(\.name), ["Town Square"])
+        editor.setCurrentLocation(.init(mapIndex: 0, roomIndex: 0))
+        XCTAssertNil(
+            editor.observeOutput("Obvious exits: Walled Garden, East Road, Distant Portal"),
+            "an exit listing is not a room-title line"
+        )
+        XCTAssertEqual(editor.observeOutput("Walled Garden"), .init(mapIndex: 0, roomIndex: 1))
+        editor.setCurrentLocation(.init(mapIndex: 0, roomIndex: 0))
+        XCTAssertEqual(editor.observeOutput("East Road"), .init(mapIndex: 0, roomIndex: 2))
+        XCTAssertEqual(editor.observeOutput("Start"), .init(mapIndex: 0, roomIndex: 0), "reverse exits must track")
+        XCTAssertEqual(editor.observeOutput("  Distant Portal (#42R)  "), .init(mapIndex: 1, roomIndex: 0))
+        XCTAssertEqual(editor.mapIndex, 1)
+    }
 
-        XCTAssertNil(editor.recordTypedExit("north"))
-        XCTAssertNil(editor.observeOutput("You walk north."))
-        let north = try XCTUnwrap(editor.observeOutput("Moonlit Road"))
-        XCTAssertEqual(north, .init(mapIndex: 0, roomIndex: 1))
-        XCTAssertEqual(editor.atlas.maps[0].rooms.count, 2)
-        XCTAssertEqual(editor.atlas.maps[0].exits.first?.nameFrom, "north")
-        XCTAssertEqual(editor.atlas.maps[0].exits.first?.nameTo, "south")
-        XCTAssertLessThan(editor.atlas.maps[0].rooms[1].rect.center.y, editor.atlas.maps[0].rooms[0].rect.center.y)
+    func testLiveTrackingOnlyUsesDirectDestinationTitleLinesAndNeverMutatesMap() {
+        let rooms = [
+            Atlas.Room(name: "Square", rect: .init(x1: 0, y1: 0, x2: 80, y2: 60)),
+            Atlas.Room(name: "Road", rect: .init(x1: 100, y1: 0, x2: 180, y2: 60)),
+            Atlas.Room(name: "North Road", rect: .init(x1: 200, y1: 0, x2: 280, y2: 60)),
+            Atlas.Room(name: "Hidden Court", rect: .init(x1: 300, y1: 0, x2: 380, y2: 60)),
+            Atlas.Room(name: "Unconnected Hall", rect: .init(x1: 400, y1: 0, x2: 480, y2: 60)),
+        ]
+        let exits = [
+            Atlas.Exit(nameFrom: "east", nameTo: "west", from: "0", to: "1"),
+            Atlas.Exit(nameFrom: "northeast", nameTo: "southwest", from: "0", to: "2"),
+            Atlas.Exit(nameFrom: "north", nameTo: "south", from: "2", to: "3"),
+        ]
+        var editor = AtlasEditor(atlas: .init(maps: [.init(name: "Main", rooms: rooms, exits: exits)]))
+        let originalAtlas = editor.atlas
+        editor.liveTracking = true
+        editor.setCurrentLocation(.init(mapIndex: 0, roomIndex: 0))
 
-        XCTAssertEqual(editor.recordTypedExit("south"), start)
-        XCTAssertEqual(editor.observeOutput("Town Square"), start)
-        XCTAssertEqual(editor.atlas.maps[0].rooms.count, 2, "Revisiting a named room must not create a duplicate")
-        XCTAssertEqual(editor.atlas.maps[0].exits.count, 1)
+        XCTAssertNil(editor.observeOutput("Obvious exits: Road, North Road"))
+        XCTAssertEqual(editor.observeOutput("North Road"), .init(mapIndex: 0, roomIndex: 2))
+        editor.setCurrentLocation(.init(mapIndex: 0, roomIndex: 0))
+        XCTAssertNil(editor.observeOutput("Hidden Court"), "rooms more than one exit away are not eligible")
+        XCTAssertNil(editor.observeOutput("Unconnected Hall"), "unconnected known rooms are not eligible")
+        XCTAssertNil(editor.observeOutput("Entirely New Room"), "unknown room-like output must not create a room")
+        XCTAssertNil(editor.observeOutput("You cannot go that way."), "movement failures have no mapper state to roll back")
+        XCTAssertEqual(editor.currentLocation, .init(mapIndex: 0, roomIndex: 0))
+        XCTAssertEqual(editor.atlas, originalAtlas, "live tracking must never create rooms or exits")
 
-        XCTAssertEqual(editor.recordTypedExit("north"), north)
-        XCTAssertEqual(editor.observeOutput("You cannot go that way."), start)
-        XCTAssertEqual(editor.currentLocation, start, "A rejected move must restore the source room")
-        XCTAssertEqual(editor.atlas.maps[0].rooms.count, 2)
-
-        editor.setCurrentLocation(north)
+        editor.setCurrentLocation(nil)
+        XCTAssertNil(editor.observeOutput("Road"), "live tracking needs a current room")
+        editor.setCurrentLocation(.init(mapIndex: 0, roomIndex: 0))
         editor.liveTracking = false
-        XCTAssertNil(editor.recordTypedExit("east"))
-        XCTAssertNil(editor.observeOutput("Eastern Gate"))
-        XCTAssertEqual(editor.atlas.maps[0].rooms.count, 2)
+        XCTAssertNil(editor.observeOutput("Road"))
+        XCTAssertEqual(editor.currentLocation, .init(mapIndex: 0, roomIndex: 0))
     }
 
     func testRoomInfoCreatesAndUpdatesAtlasLocation() {

@@ -4178,7 +4178,6 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private func processInput(_ text: String) {
         switch commandRegistry.parse(text, variables: variables) {
         case .notACommand:
-            _ = atlasWindow?.recordTypedExit(text)
             processAliasedInput(text)
         case let .send(value):
             sendToSession(value)

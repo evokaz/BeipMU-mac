@@ -143,7 +143,7 @@ final class WorkspaceDockingTests: XCTestCase {
         let filterMenu = atlas.filterOverflowMenuForTesting
         XCTAssertEqual(
             filterMenu.items.map(\.title),
-            ["Rooms", "Exits", "Rectangles", "Images", "Labels", "Auto-map"]
+            ["Rooms", "Exits", "Rectangles", "Images", "Labels", "Live track"]
         )
         XCTAssertTrue(filterMenu.items.prefix(5).allSatisfy { $0.state == .on })
 
@@ -165,7 +165,7 @@ final class WorkspaceDockingTests: XCTestCase {
         )
         XCTAssertTrue(
             WorkspaceUITestSupport.recursiveSubviews(of: atlasContent).compactMap { $0 as? NSButton }.filter {
-                ["Rooms", "Exits", "Rectangles", "Images", "Labels", "Auto-map"].contains($0.title)
+                ["Rooms", "Exits", "Rectangles", "Images", "Labels", "Live track"].contains($0.title)
             }.allSatisfy { !$0.isHidden }
         )
         atlas.closeSurface()
@@ -379,4 +379,3 @@ final class WorkspaceDockingTests: XCTestCase {
         XCTAssertEqual(subframeBridge, "undefined")
     }
 }
-

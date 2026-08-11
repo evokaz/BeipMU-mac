@@ -651,9 +651,10 @@ public struct CommandRegistry: Sendable {
     /logall $ - Same as log, but includes all previously received text
     /logtop $ - Same as log, but from the top of the current window
     /stoplogs - Stop all logs
-    /map_addroom - Add a room to the map (see online help)
-    /map_addexit - Add an exit to the map (see online help)
+    /map_addroom "<room name>" "<exit there>" "<exit back>" - Add and connect a room from the current mapped location
+    /map_addexit <direction> "<exit back>" - Connect the current room to the nearest room in that direction
     /map_guesslocation - Try to figure out where the player is on the map based on recent scrollback
+    /map_look - Show the current mapped room and its known exits
     /naws - Send telnet NAWS
     /new - Open a new window
     /newtab - Open a new tab in the current window

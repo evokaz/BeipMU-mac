@@ -68,8 +68,8 @@ final class PersistenceScaleTests: XCTestCase {
         XCTAssertEqual(path.last?.destination, .init(mapIndex: 0, roomIndex: 399))
 
         editor.liveTracking = true
-        XCTAssertEqual(editor.recordTypedExit("east"), .init(mapIndex: 0, roomIndex: 1))
-        XCTAssertEqual(editor.observeOutput("You enter Room 021."), .init(mapIndex: 0, roomIndex: 21))
+        XCTAssertEqual(editor.observeOutput("Room 001"), .init(mapIndex: 0, roomIndex: 1))
+        XCTAssertEqual(editor.observeOutput("Room 021"), .init(mapIndex: 0, roomIndex: 21))
         XCTAssertEqual(editor.findRooms("Room 399").first?.location, .init(mapIndex: 0, roomIndex: 399))
 
         let originalLabelCount = editor.atlas.maps[0].labels.count

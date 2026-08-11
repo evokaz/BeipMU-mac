@@ -127,9 +127,9 @@ before running them.
   it is disabled by default. When enabled, Pueblo/GMCP images and visible HTTP/HTTPS
   image links are shown beneath their output line. Command-click a thumbnail to open
   its source in the browser.
-- **Maps:** Atlas files preserve rooms, exits, shapes, images, labels, palettes,
-  and unknown compatible XML content. Map commands can add rooms and exits or
-  infer a location from recent output.
+- **Maps:** See the [Atlas mapping guide](MAPPING.md) for live tracking,
+  routes, editing, GMCP updates, and mapping commands. Atlas preserves unknown
+  compatible XML content when loading and saving existing files.
 - **WebViews:** Server WebViews are controlled by the configured per-world
   policy. Review a world's policy before allowing server-initiated content.
 

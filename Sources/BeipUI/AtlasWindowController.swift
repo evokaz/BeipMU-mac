@@ -11,7 +11,7 @@ final class AtlasWindowController: NSWindowController, NSWindowDelegate, NSSearc
     private let mapPopup = NSPopUpButton()
     private let exitsPopup = NSPopUpButton()
     private let search = NSSearchField()
-    private let liveTracking = NSButton(checkboxWithTitle: "Auto-map", target: nil, action: nil)
+    private let liveTracking = NSButton(checkboxWithTitle: "Live track", target: nil, action: nil)
     private let status = NSTextField(labelWithString: "No current room")
     private let zoomStatus = NSTextField(labelWithString: "100%")
     private var toolButtons: [NSButton] = []
@@ -154,17 +154,9 @@ final class AtlasWindowController: NSWindowController, NSWindowDelegate, NSSearc
     }
 
     func integrate(_ room: GMCPRoomInfo) {
-        guard canvas.editor.liveTracking else { return }
         let location = canvas.editor.integrate(room)
         canvas.center(on: location)
         refresh()
-    }
-
-    @discardableResult
-    func recordTypedExit(_ text: String) -> AtlasLocation? {
-        let location = canvas.editor.recordTypedExit(text)
-        if let location { canvas.center(on: location); refresh() }
-        return location
     }
 
     @discardableResult
@@ -341,8 +333,10 @@ final class AtlasWindowController: NSWindowController, NSWindowDelegate, NSSearc
         liveTracking.target = self
         liveTracking.action = #selector(changeLiveTracking(_:))
         liveTracking.state = canvas.editor.liveTracking ? .on : .off
-        liveTracking.toolTip = "Create and connect rooms from game output while you move"
-        liveTracking.setAccessibilityLabel("Automatic mapping")
+        let liveTrackingDescription = "Track your location when game output matches a reachable room title"
+        liveTracking.toolTip = liveTrackingDescription
+        liveTracking.setAccessibilityLabel("Live track")
+        liveTracking.setAccessibilityHelp(liveTrackingDescription)
         filters.addArrangedSubview(liveTracking)
         filterControlWidths = (filterButtons + [liveTracking]).map { $0.fittingSize.width }
         let filterOverflowButton = imageButton(

@@ -111,7 +111,7 @@ final class ToolSurfaceTests: XCTestCase {
     @MainActor
     func testAtlasEditorIntegratesRoomInfoAndExposesNativeAccessibleControls() throws {
         let controller = AtlasWindowController(atlas: Atlas(maps: []))
-        controller.editor.liveTracking = true
+        XCTAssertFalse(controller.editor.liveTracking)
         controller.integrate(.init(
             id: "dock",
             area: "Harbor",
@@ -122,6 +122,7 @@ final class ToolSurfaceTests: XCTestCase {
 
         XCTAssertEqual(controller.editor.currentLocation, .init(mapIndex: 0, roomIndex: 0))
         XCTAssertEqual(controller.editor.currentMap?.name, "Harbor")
+        XCTAssertFalse(controller.editor.liveTracking, "GMCP integration must not enable or depend on Live track")
         XCTAssertEqual(controller.lookDescription(), "Location: Moonlit Dock\nExits: (none)")
         try controller.restore(.init(
             mapIndex: 0, currentMapIndex: 0, currentRoomIndex: 0,
@@ -140,7 +141,14 @@ final class ToolSurfaceTests: XCTestCase {
         XCTAssertTrue(views.contains { $0.accessibilityLabel() == "Atlas map" })
         XCTAssertTrue(views.contains { $0.accessibilityLabel() == "Known exits" })
         XCTAssertTrue(views.contains { $0.accessibilityLabel() == "Map zoom" })
-        XCTAssertTrue(views.contains { $0.accessibilityLabel() == "Automatic mapping" })
+        let liveTracking = try XCTUnwrap(views.compactMap { $0 as? NSButton }.first { $0.title == "Live track" })
+        XCTAssertEqual(liveTracking.accessibilityLabel(), "Live track")
+        XCTAssertEqual(
+            liveTracking.accessibilityHelp(),
+            "Track your location when game output matches a reachable room title"
+        )
+        XCTAssertEqual(liveTracking.toolTip, liveTracking.accessibilityHelp())
+        XCTAssertEqual(liveTracking.state, .on)
         XCTAssertTrue(views.compactMap { $0 as? NSButton }.contains { $0.title == "Palette" })
         XCTAssertTrue(views.compactMap { $0 as? NSButton }.contains { $0.title == "Export" })
         XCTAssertTrue(views.compactMap { $0 as? NSButton }.contains { $0.title == "Zoom in" })
