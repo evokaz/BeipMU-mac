@@ -32,6 +32,8 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: BeipMU
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.games
+        INFOPLIST_KEY_GCSupportsGameMode: NO
+        INFOPLIST_KEY_LSSupportsGameMode: NO
         INFOPLIST_KEY_NSHighResolutionCapable: YES
         CODE_SIGN_STYLE: Automatic
         ENABLE_HARDENED_RUNTIME: NO
