@@ -3067,6 +3067,10 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         await presentIncoming(.init(text: text), isPrompt: false)
     }
 
+    func testingProcessInput(_ text: String) {
+        processInput(text)
+    }
+
     func restoreRecoverySession(_ snapshot: SessionRecoverySession) {
         if let recoverySessionID, recoverySessionID != snapshot.id {
             try? recoveryStore?.remove(sessionID: recoverySessionID)
@@ -3742,16 +3746,16 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         }
     }
 
-    private func processAliasedInput(_ text: String) {
+    private func processAliasedInput(_ text: String, unmatchedDiagnostic: String? = nil) {
         guard !aliasGroups.isEmpty else {
-            sendToSession(text)
+            handleUnaliasedInput(text, diagnostic: unmatchedDiagnostic)
             return
         }
         do {
             let result = try AliasEngine.process(text, groups: aliasGroups, variables: variables)
             automationDebugWindows[.aliases]?.append(result.trace)
             guard !result.matchedAliases.isEmpty else {
-                sendToSession(text)
+                handleUnaliasedInput(text, diagnostic: unmatchedDiagnostic)
                 return
             }
             if result.echo {
@@ -3766,6 +3770,14 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             }
         } catch {
             appendError("Alias error: \(error.localizedDescription)")
+            handleUnaliasedInput(text, diagnostic: unmatchedDiagnostic)
+        }
+    }
+
+    private func handleUnaliasedInput(_ text: String, diagnostic: String?) {
+        if let diagnostic {
+            appendClient(diagnostic)
+        } else {
             sendToSession(text)
         }
     }
@@ -4179,6 +4191,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         switch commandRegistry.parse(text, variables: variables) {
         case .notACommand:
             processAliasedInput(text)
+        case let .unrecognizedCommand(diagnostic):
+            processAliasedInput(text, unmatchedDiagnostic: diagnostic)
         case let .send(value):
             sendToSession(value)
         case let .display(value): appendClient(value)

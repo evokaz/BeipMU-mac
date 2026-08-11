@@ -12,6 +12,11 @@ puppet, world post, and global post order. A folder always evaluates its
 children; children of an ordinary alias run only after that alias matched.
 Stop Processing takes effect after a matched alias's children have completed.
 
+Alias matches may begin with `/`. Slash-prefixed aliases run only when their
+command name is not reserved by a built-in BeipMU command; built-in commands
+always take precedence, including when their arguments are invalid. Use `//`
+to send a literal leading slash to the world.
+
 Use Test String to preview the complete replacement result. Invalid regular
 expressions are shown inline and are skipped by the runtime so later aliases
 can still run.

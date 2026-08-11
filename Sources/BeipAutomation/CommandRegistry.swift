@@ -95,6 +95,7 @@ public enum CommandOutcome: Sendable, Equatable {
     case debugNetwork
     case invoke(name: String, arguments: [String], rawArguments: String)
     case unimplemented(String)
+    case unrecognizedCommand(String)
     case notACommand
 
     public enum LogHistory: Sendable, Equatable {
@@ -145,7 +146,7 @@ public struct CommandRegistry: Sendable {
         let command = body[..<commandEnd].lowercased()
         let rawArguments = body[commandEnd...].drop(while: { $0.isWhitespace })
         let arguments = split(String(rawArguments))
-        guard !command.isEmpty else { return .display(Self.unrecognizedCommandMessage) }
+        guard !command.isEmpty else { return .unrecognizedCommand(Self.unrecognizedCommandMessage) }
         switch command {
         case "clear": return .clear
         case "disconnect":
@@ -358,7 +359,7 @@ public struct CommandRegistry: Sendable {
         default:
             return Self.knownCommands.contains(command)
                 ? .invoke(name: command, arguments: arguments, rawArguments: String(rawArguments))
-                : .display(Self.unrecognizedCommandMessage)
+                : .unrecognizedCommand(Self.unrecognizedCommandMessage)
         }
     }
 

@@ -188,7 +188,7 @@ final class CommandRegistryTests: XCTestCase {
             if case .unimplemented = outcome {
                 XCTFail("Registered command still returns placeholder outcome: /\(command)")
             }
-            if case let .display(message) = outcome, message.hasPrefix("Unrecognized Command,") {
+            if case .unrecognizedCommand = outcome {
                 XCTFail("Registered command is not routed: /\(command)")
             }
         }
@@ -197,8 +197,9 @@ final class CommandRegistryTests: XCTestCase {
     func testUnrecognizedCommandDiagnostic() {
         let registry = CommandRegistry()
         let message = "Unrecognized Command, use // to send text directly to the mu*, /help for a list of commands, or set 'Send unrecognized commands' in settings/input window"
-        XCTAssertEqual(registry.parse("/unknown", variables: [:]), .display(message))
-        XCTAssertEqual(registry.parse("/", variables: [:]), .display(message))
+        XCTAssertEqual(registry.parse("/heal", variables: [:]), .unrecognizedCommand(message))
+        XCTAssertEqual(registry.parse("/unknown", variables: [:]), .unrecognizedCommand(message))
+        XCTAssertEqual(registry.parse("/", variables: [:]), .unrecognizedCommand(message))
     }
 
 }

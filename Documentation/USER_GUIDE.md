@@ -106,6 +106,10 @@ play media, and call scripts. Macros bind configured key combinations to text
 or commands. Automation can be scoped globally or to a world, character, or
 puppet.
 
+Aliases may match slash-prefixed input when the command name is not reserved by
+a built-in BeipMU command. Built-in commands always take precedence, including
+usage errors for recognized commands.
+
 JavaScript runs in the embedded `BeipScriptService` XPC service. Each main
 window communicates with the service through a host snapshot and a controlled
 set of output operations. A three-second watchdog can abandon a stuck request;
