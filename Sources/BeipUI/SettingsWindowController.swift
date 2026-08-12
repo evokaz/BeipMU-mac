@@ -45,6 +45,13 @@ private final class SettingsDocumentView: NSView {
 }
 
 @MainActor
+private final class SettingsWindow: NSWindow {
+    override func cancelOperation(_ sender: Any?) {
+        performClose(sender)
+    }
+}
+
+@MainActor
 private final class SettingsScrollCueView: NSView {
     override var isFlipped: Bool { true }
 
@@ -162,6 +169,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     private let nativeShortcutConflict: ([ShortcutAction: KeyboardShortcut]) -> String?
     private let presentShortcutConflict: @MainActor (String) -> Void
     var onFactoryResetRequest: (() -> Void)?
+    var onImportConfigurationRequest: (() -> Void)?
+    var onExportConfigurationRequest: (() -> Void)?
 
     private var context: SettingsPresentationContext
     private(set) var selectedSection: SettingsSection = .appearance
@@ -283,7 +292,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         onShortcutsMutation: @escaping ([ShortcutAction: KeyboardShortcut]) -> Void,
         nativeShortcutConflict: @escaping ([ShortcutAction: KeyboardShortcut]) -> String? = { _ in nil },
         presentShortcutConflict: @escaping @MainActor (String) -> Void = SettingsWindowController.showShortcutConflict,
-        onFactoryResetRequest: (() -> Void)? = nil
+        onFactoryResetRequest: (() -> Void)? = nil,
+        onImportConfigurationRequest: (() -> Void)? = nil,
+        onExportConfigurationRequest: (() -> Void)? = nil
     ) {
         self.profileLibrary = profileLibrary
         self.preferencesProvider = preferencesProvider
@@ -295,8 +306,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         self.nativeShortcutConflict = nativeShortcutConflict
         self.presentShortcutConflict = presentShortcutConflict
         self.onFactoryResetRequest = onFactoryResetRequest
+        self.onImportConfigurationRequest = onImportConfigurationRequest
+        self.onExportConfigurationRequest = onExportConfigurationRequest
 
-        let window = NSWindow(
+        let window = SettingsWindow(
             contentRect: NSRect(x: 0, y: 0, width: 840, height: 680),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
@@ -1295,6 +1308,49 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     }
 
     private func buildAdvanced() {
+        let importButton = NSButton(
+            title: "Import Config.txt…",
+            target: self,
+            action: #selector(importConfigurationRequested(_:))
+        )
+        importButton.bezelStyle = .rounded
+        importButton.setAccessibilityLabel("Import Config.txt")
+        importButton.setAccessibilityIdentifier("importConfigurationButton")
+        importButton.setAccessibilityHelp("Replace the active portable configuration with a Config.txt file.")
+
+        let exportButton = NSButton(
+            title: "Export Config.txt…",
+            target: self,
+            action: #selector(exportConfigurationRequested(_:))
+        )
+        exportButton.bezelStyle = .rounded
+        exportButton.setAccessibilityLabel("Export Config.txt")
+        exportButton.setAccessibilityIdentifier("exportConfigurationButton")
+        exportButton.setAccessibilityHelp("Save the active portable configuration as a Config.txt file.")
+
+        let configurationExplanation = NSTextField(wrappingLabelWithString:
+            "Import replaces the active portable configuration after it is validated. Exported configurations can contain plaintext credentials and other private settings; store exported files securely."
+        )
+        configurationExplanation.setAccessibilityIdentifier("configurationFileExplanation")
+        configurationExplanation.widthAnchor.constraint(equalToConstant: 476).isActive = true
+
+        let configurationButtons = NSStackView(views: [importButton, exportButton])
+        configurationButtons.orientation = .horizontal
+        configurationButtons.alignment = .centerY
+        configurationButtons.spacing = 8
+
+        let configurationArea = NSStackView(views: [
+            NSTextField(labelWithString: "Configuration file"),
+            configurationExplanation,
+            configurationButtons,
+        ])
+        configurationArea.orientation = .vertical
+        configurationArea.alignment = .leading
+        configurationArea.spacing = 10
+        configurationArea.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
+        configurationArea.widthAnchor.constraint(equalToConstant: 500).isActive = true
+        configurationArea.setAccessibilityIdentifier("settings.advanced.configuration")
+
         let separator = NSBox()
         separator.boxType = .separator
         separator.translatesAutoresizingMaskIntoConstraints = false
@@ -1333,9 +1389,17 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
 
         contentStack.addArrangedSubview(group(
             "Advanced",
-            [separator, destructiveArea],
+            [configurationArea, separator, destructiveArea],
             identifier: "settings.advanced.group"
         ))
+    }
+
+    @objc private func importConfigurationRequested(_ sender: Any?) {
+        onImportConfigurationRequest?()
+    }
+
+    @objc private func exportConfigurationRequested(_ sender: Any?) {
+        onExportConfigurationRequest?()
     }
 
     @objc private func factoryResetRequested(_ sender: Any?) {

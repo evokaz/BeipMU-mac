@@ -459,7 +459,8 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
     @MainActor
     func testWorldTabConnectionIndicatorTracksTerminalStatesWithoutChangingWindowTitle() async throws {
         let controller = ClientWindowController(
-            profileLibrary: ProfileLibrary(workspace: try .empty(isDirty: false))
+            profileLibrary: ProfileLibrary(workspace: try .empty(isDirty: false)),
+            initialPreferences: .init()
         )
         defer { controller.close() }
         controller.restoreOpenTab(
@@ -520,8 +521,8 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
     @MainActor
     func testInactiveConnectionStateRefreshesEveryCopyOfGroupedTabs() async throws {
         let library = ProfileLibrary(workspace: try .empty(isDirty: false))
-        let first = ClientWindowController(profileLibrary: library)
-        let second = ClientWindowController(profileLibrary: library)
+        let first = ClientWindowController(profileLibrary: library, initialPreferences: .init())
+        let second = ClientWindowController(profileLibrary: library, initialPreferences: .init())
         defer {
             first.close()
             second.close()

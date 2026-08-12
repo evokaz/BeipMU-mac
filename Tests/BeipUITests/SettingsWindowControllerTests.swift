@@ -53,6 +53,42 @@ final class SettingsWindowControllerTests: XCTestCase {
     }
 
     @MainActor
+    func testEscapeClosesSettingsWindow() throws {
+        let library = ProfileLibrary(workspace: try .empty(isDirty: false))
+        let controller = SettingsWindowController(
+            profileLibrary: library,
+            shortcutsProvider: { KeyboardShortcutStore.load() },
+            context: .init(
+                section: .appearance,
+                initialScope: nil,
+                identity: .init(world: "World", character: "Character", tab: "Main")
+            ),
+            onPreferencesMutation: {},
+            onShortcutsMutation: { _ in }
+        )
+        defer { controller.close() }
+
+        let window = try XCTUnwrap(controller.window)
+        window.makeKeyAndOrderFront(nil)
+        let event = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: window.windowNumber,
+            context: nil,
+            characters: "\u{1b}",
+            charactersIgnoringModifiers: "\u{1b}",
+            isARepeat: false,
+            keyCode: 53
+        ))
+
+        window.sendEvent(event)
+
+        XCTAssertFalse(window.isVisible)
+    }
+
+    @MainActor
     func testPresentationReusesWindowAndDeepLinksScopes() throws {
         let library = ProfileLibrary(workspace: try .empty(isDirty: false))
         let controller = SettingsWindowController(
@@ -122,6 +158,8 @@ final class SettingsWindowControllerTests: XCTestCase {
     func testAdvancedSectionExposesFactoryResetCopyAndRoutesThroughCallback() throws {
         let library = ProfileLibrary(workspace: try .empty(isDirty: false))
         var requests = 0
+        var importRequests = 0
+        var exportRequests = 0
         let controller = SettingsWindowController(
             profileLibrary: library,
             shortcutsProvider: { KeyboardShortcutStore.load() },
@@ -132,14 +170,29 @@ final class SettingsWindowControllerTests: XCTestCase {
             ),
             onPreferencesMutation: {},
             onShortcutsMutation: { _ in },
-            onFactoryResetRequest: { requests += 1 }
+            onFactoryResetRequest: { requests += 1 },
+            onImportConfigurationRequest: { importRequests += 1 },
+            onExportConfigurationRequest: { exportRequests += 1 }
         )
         defer { controller.close() }
 
         let content = try XCTUnwrap(controller.window?.contentView)
+        let importButton = try XCTUnwrap(
+            findView(withIdentifier: "importConfigurationButton", in: content) as? NSButton
+        )
+        let exportButton = try XCTUnwrap(
+            findView(withIdentifier: "exportConfigurationButton", in: content) as? NSButton
+        )
         let reset = try XCTUnwrap(findView(withIdentifier: "resetConfigurationButton", in: content) as? NSButton)
+        XCTAssertEqual(importButton.title, "Import Config.txt…")
+        XCTAssertEqual(exportButton.title, "Export Config.txt…")
+        XCTAssertNotNil(findView(withIdentifier: "configurationFileExplanation", in: content))
         XCTAssertNotNil(findView(withIdentifier: "resetConfigurationExplanation", in: content))
+        importButton.performClick(nil)
+        exportButton.performClick(nil)
         reset.performClick(nil)
+        XCTAssertEqual(importRequests, 1)
+        XCTAssertEqual(exportRequests, 1)
         XCTAssertEqual(requests, 1)
     }
 

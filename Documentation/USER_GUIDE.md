@@ -62,6 +62,13 @@ the automatic `Config.backup.txt`. Logs, maps, scripts, and exported files are
 preserved. A confirmed reset closes the current workspace and opens one clean
 980×700 main window.
 
+The **Configuration file** area in **Advanced** provides **Import Config.txt…**
+and **Export Config.txt…**. Import validates the selected file before replacing
+the active portable configuration, then confirms that BeipMU is now using the
+selected file's settings. Exported configurations can contain credentials and
+other private settings in plaintext; the export warning reminds you to store the
+file securely.
+
 Right-click the output or input area to open the relevant settings directly
 for the active tab. The output context menu also provides pause, split, copy,
 clear, delete-line, and default-inheritance controls. Workspace-wide options,

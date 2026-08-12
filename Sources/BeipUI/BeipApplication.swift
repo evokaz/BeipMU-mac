@@ -672,10 +672,19 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             try profileLibrary.importConfiguration(from: url)
-            manageProfiles(sender)
+            Self.configurationImportedAlert(for: url).runModal()
         } catch {
             NSApplication.shared.presentError(error)
         }
+    }
+
+    static func configurationImportedAlert(for url: URL) -> NSAlert {
+        let alert = NSAlert()
+        alert.messageText = "Configuration Imported"
+        alert.informativeText = "BeipMU is now using settings from the selected file \u{201c}\(url.lastPathComponent)\u{201d}."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+        return alert
     }
 
     @objc func exportConfiguration(_ sender: Any?) {
@@ -801,6 +810,12 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
                 onFactoryResetRequest: { [weak self] in
                     guard let self else { return }
                     self.requestFactoryReset(from: self.settingsWindowController?.window ?? self.activeController?.window)
+                },
+                onImportConfigurationRequest: { [weak self] in
+                    self?.importConfiguration(nil)
+                },
+                onExportConfigurationRequest: { [weak self] in
+                    self?.exportConfiguration(nil)
                 }
             )
             settingsWindowController = settings
