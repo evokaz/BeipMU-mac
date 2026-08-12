@@ -1281,7 +1281,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             character: character,
             puppet: nil
         )
-        baseWindowTitle = character.map { "\($0.name) @ \(server.name)" } ?? server.name
+        refreshBaseWindowTitle()
         applyTextWindowSettings()
         applyInputWindowSettings()
         dockController.setNotes(preferences.characterNotes[notesKey] ?? "")
@@ -1634,6 +1634,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     var sessionTabTooltipsForTesting: [String?] { sessionTabs.tabTooltips }
     var sessionTabIndicatorsForTesting: [String] { sessionTabs.tabIndicators }
     var sessionTabAccessibilityLabelsForTesting: [String?] { sessionTabs.tabAccessibilityLabels }
+    var currentCharacterForTesting: CharacterProfile? { currentCharacter }
     var sessionTabContentWidthForTesting: CGFloat { sessionTabs.frame.width }
     var sessionBarFrameForTesting: NSRect { taskbarView?.frame ?? .zero }
     var workspaceHostFrameForTesting: NSRect { dockController?.hostView.frame ?? .zero }
@@ -1659,15 +1660,13 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             appendError("No previous connection to reconnect.")
             return
         }
-        guard let session else {
-            startSession(
-                server,
-                character: currentCharacter,
-                policy: profileLibrary.workspace.projection.connectionPolicy
-            )
-            return
-        }
-        Task { await session.reconnect() }
+        let preserveOutput = session != nil
+        startSession(
+            server,
+            character: currentCharacter,
+            policy: profileLibrary.workspace.projection.connectionPolicy,
+            preserveOutput: preserveOutput
+        )
     }
 
     func sessionTabContextMenu() -> NSMenu {
@@ -2745,7 +2744,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         character: CharacterProfile? = nil,
         puppet: PuppetProfile? = nil,
         master: ClientWindowController? = nil,
-        policy: ConnectionPolicy = .init()
+        policy: ConnectionPolicy = .init(),
+        preserveOutput: Bool = false
     ) {
         let recoveryEnabled = master == nil
             && profileLibrary.workspace.projection.logging.restoreLogs
@@ -2800,10 +2800,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         gmcpState.reset()
         mediaState.reset()
         mediaController.flush()
-        baseWindowTitle = character.map { character in
-            let suffix = puppet.map { " / \($0.name)" } ?? ""
-            return "\(character.name) @ \(server.name)\(suffix)"
-        } ?? server.name
+        refreshBaseWindowTitle()
         tabStateDidChange()
         updateWindowTitle()
         dockController.setNotes(preferences.characterNotes[notesKey] ?? "")
@@ -2843,7 +2840,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
                 color: Self.rgbColor(hex: inputSettings.localEchoHex)
             )
         }
-        if !canResumeRecoveredSession {
+        if !canResumeRecoveredSession && !preserveOutput {
             output.clear()
         }
         sessionTask = Task { [weak self] in
@@ -3871,10 +3868,12 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         reloadCurrentAutomation(resetRuntimeState: true)
         refreshDiagnostics()
         updateWindowTitle()
+        tabStateDidChange()
     }
 
-    private func refreshCurrentProfileReferences() {
-        guard let currentServer else { return }
+    @discardableResult
+    private func refreshCurrentProfileReferences() -> Bool {
+        guard let currentServer else { return false }
         guard let selected = profileLibrary.workspace.projection.servers.first(where: {
             $0.profile.id == currentServer.id
         }) ?? profileLibrary.workspace.projection.servers.first(where: {
@@ -3883,11 +3882,12 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             self.currentServer = nil
             currentCharacter = nil
             currentPuppet = nil
-            return
+            return false
         }
         self.currentServer = selected.profile
-        if let characterID = currentCharacter?.id {
-            let characterName = currentCharacter?.name
+        let previousCharacter = currentCharacter
+        if let characterID = previousCharacter?.id {
+            let characterName = previousCharacter?.name
             currentCharacter = selected.characters.first { $0.id == characterID }
                 ?? selected.characters.first {
                     guard let characterName else { return false }
@@ -3896,20 +3896,24 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         }
         if currentCharacter == nil {
             currentPuppet = nil
-            return
+            return previousCharacter == nil
         }
-        if let puppetID = currentPuppet?.id {
-            let puppetName = currentPuppet?.name
-            currentPuppet = currentCharacter?.puppets.first { $0.id == puppetID }
-                ?? currentCharacter?.puppets.first {
-                    guard let puppetName else { return false }
-                    return $0.name.caseInsensitiveCompare(puppetName) == .orderedSame
-                }
+        guard let previousPuppet = currentPuppet else {
+            return true
         }
+        let puppetID = previousPuppet.id
+        let puppetName = previousPuppet.name
+        currentPuppet = currentCharacter?.puppets.first { $0.id == puppetID }
+            ?? currentCharacter?.puppets.first {
+                $0.name.caseInsensitiveCompare(puppetName) == .orderedSame
+            }
+        return currentPuppet != nil
     }
 
     private func reloadCurrentAutomation(resetRuntimeState: Bool = false) {
-        refreshCurrentProfileReferences()
+        if refreshCurrentProfileReferences() {
+            refreshBaseWindowTitle()
+        }
         guard let server = currentServer else {
             variables = [:]
             aliasGroups = []
@@ -3936,6 +3940,14 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             puppet: currentPuppet
         )
         if resetRuntimeState { resetTriggerRuntimeState() }
+    }
+
+    private func refreshBaseWindowTitle() {
+        guard let server = currentServer else { return }
+        baseWindowTitle = currentCharacter.map { character in
+            let suffix = currentPuppet.map { " / \($0.name)" } ?? ""
+            return "\(character.name) @ \(server.name)\(suffix)"
+        } ?? server.name
     }
 
     private func resetTriggerRuntimeState() {

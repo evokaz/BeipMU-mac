@@ -555,6 +555,99 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
     }
 
     @MainActor
+    func testSavedProfileRenamesRefreshGroupedTitlesAndPersistedTabs() throws {
+        var workspace = try LegacyConfigurationWorkspace.empty(isDirty: false)
+        let worldID = workspace.addServer(named: "Old World")
+        let characterID = try workspace.addCharacter(toServerID: worldID, named: "Old Character")
+        let otherWorldID = workspace.addServer(named: "Other World")
+        let savedWorld = try XCTUnwrap(workspace.servers.first { $0.profile.id == worldID })
+        let savedCharacter = try XCTUnwrap(savedWorld.characters.first { $0.id == characterID })
+        let otherWorld = try XCTUnwrap(workspace.servers.first { $0.profile.id == otherWorldID })
+
+        let library = ProfileLibrary(workspace: workspace)
+        let first = ClientWindowController(profileLibrary: library)
+        let second = ClientWindowController(profileLibrary: library)
+        defer {
+            first.close()
+            second.close()
+        }
+        first.restoreOpenTab(server: savedWorld.profile, character: savedCharacter)
+        second.restoreOpenTab(server: otherWorld.profile, character: nil)
+        let group = ClientTabGroup(first)
+        group.add(second)
+        group.select(second, sender: nil)
+
+        var persistedSnapshots: [[MacConfigurationSidecar.OpenTab]] = []
+        let recordPersistedTabs = {
+            persistedSnapshots.append([first.persistedOpenTab, second.persistedOpenTab])
+        }
+        first.onTabStateChange = recordPersistedTabs
+        second.onTabStateChange = recordPersistedTabs
+
+        try library.mutate { workspace in
+            try workspace.updateCharacter(id: characterID, inServerID: worldID) {
+                $0.name = "New Character"
+            }
+        }
+
+        XCTAssertEqual(first.window?.title, "New Character @ Old World")
+        XCTAssertEqual(
+            first.sessionTabAccessibilityLabelsForTesting,
+            ["New Character @ Old World tab, disconnected", "Other World tab, disconnected"]
+        )
+        XCTAssertEqual(
+            second.sessionTabAccessibilityLabelsForTesting,
+            ["New Character @ Old World tab, disconnected", "Other World tab, disconnected"]
+        )
+
+        try library.mutate { workspace in
+            try workspace.updateServer(id: worldID) { $0.profile.name = "New World" }
+        }
+
+        XCTAssertEqual(first.window?.title, "New Character @ New World")
+        XCTAssertEqual(
+            first.sessionTabAccessibilityLabelsForTesting,
+            ["New Character @ New World tab, disconnected", "Other World tab, disconnected"]
+        )
+        XCTAssertEqual(
+            second.sessionTabAccessibilityLabelsForTesting,
+            ["New Character @ New World tab, disconnected", "Other World tab, disconnected"]
+        )
+        XCTAssertEqual(
+            first.sessionTabTooltipsForTesting,
+            ["New Character @ New World", "Other World"]
+        )
+        let finalTabs = try XCTUnwrap(persistedSnapshots.last)
+        XCTAssertEqual(finalTabs[0].serverName, "New World")
+        XCTAssertEqual(finalTabs[0].characterName, "New Character")
+        XCTAssertEqual(finalTabs[1].serverName, "Other World")
+        XCTAssertNil(finalTabs[1].characterName)
+    }
+
+    @MainActor
+    func testDeletedSavedProfilesKeepTheExistingWindowTitle() throws {
+        var workspace = try LegacyConfigurationWorkspace.empty(isDirty: false)
+        let worldID = workspace.addServer(named: "World")
+        let characterID = try workspace.addCharacter(toServerID: worldID, named: "Character")
+        let savedWorld = try XCTUnwrap(workspace.servers.first { $0.profile.id == worldID })
+        let savedCharacter = try XCTUnwrap(savedWorld.characters.first { $0.id == characterID })
+        let library = ProfileLibrary(workspace: workspace)
+        let controller = ClientWindowController(profileLibrary: library)
+        defer { controller.close() }
+        controller.restoreOpenTab(server: savedWorld.profile, character: savedCharacter)
+
+        try library.mutate { workspace in
+            try workspace.removeCharacter(id: characterID, fromServerID: worldID)
+        }
+        XCTAssertEqual(controller.window?.title, "Character @ World")
+        XCTAssertEqual(controller.sessionTabTextForTabStrip, "Character @ World")
+
+        try library.mutate { workspace in try workspace.removeServer(id: worldID) }
+        XCTAssertEqual(controller.window?.title, "Character @ World")
+        XCTAssertEqual(controller.sessionTabTextForTabStrip, "Character @ World")
+    }
+
+    @MainActor
     func testPuppetTabMirrorsMasterTerminalConnectionIndicator() async throws {
         let library = ProfileLibrary(workspace: try .empty(isDirty: false))
         let master = ClientWindowController(profileLibrary: library)
