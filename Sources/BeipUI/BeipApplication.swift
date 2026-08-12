@@ -837,8 +837,6 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         settingsWindowController?.refreshFromExternalChange()
     }
 
-    var currentThemeForTesting: WorkspaceThemeSettings { currentTheme }
-
     /// Theme changes affect more than the client controller that initiated the
     /// edit. AppKit controls get their colors from the window appearance, while
     /// custom views and web content need their cached palette values refreshed

@@ -2105,12 +2105,6 @@ public struct LegacyConfigurationWorkspace: Sendable {
     }
 }
 
-private extension Dictionary where Key == String {
-    func firstValue(caseInsensitiveKey key: String) -> Value? {
-        first { $0.key.caseInsensitiveCompare(key) == .orderedSame }?.value
-    }
-}
-
 private extension Array where Element == TriggerAction {
     var firstColor: (foreground: RGBColor?, background: RGBColor?, wholeLine: Bool)? {
         for action in self {

@@ -120,13 +120,6 @@ struct RuntimeStateContext {
         }
     }
 
-    /// Compatibility spelling for callers that describe the operation as a
-    /// preferences reset rather than a domain clear.
-    @MainActor
-    func resetPreferences() {
-        clearActivePreferencesDomain()
-    }
-
     /// Removes only the temporary state explicitly assigned to this UI-test
     /// launch.  Release and Debug contexts cannot invoke this operation.
     func resetUITestState() throws {

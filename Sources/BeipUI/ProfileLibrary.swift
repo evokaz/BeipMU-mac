@@ -8,22 +8,12 @@ final class ProfileLibrary {
     private(set) var workspaceRevision: UInt64 = 0
     private let persistentConfigURL: URL?
     private let sidecarURL: URL
-    private(set) var storageDirectory: URL?
     private var changeObservers: [UUID: () -> Void] = [:]
-
-    convenience init() {
-        let context = RuntimeStateContext.current
-        try! self.init(
-            storageDirectory: context.configurationDirectory,
-            allowsExternalConfigurationMigration: context.configuration == .release
-        )
-    }
 
     init(
         storageDirectory: URL,
         allowsExternalConfigurationMigration: Bool = false
     ) throws {
-        self.storageDirectory = storageDirectory
         let configURL = storageDirectory.appendingPathComponent("Config.txt")
         persistentConfigURL = configURL
         sidecarURL = storageDirectory.appendingPathComponent("Config.mac.json")
@@ -52,10 +42,7 @@ final class ProfileLibrary {
         persistentConfigURL = nil
         sidecarURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("BeipMU.ProfileLibrary.\(UUID().uuidString).json")
-        storageDirectory = nil
     }
-
-    var displayName: String { "BeipMU Configuration" }
 
     struct WorkspaceEditorSnapshot {
         let workspace: LegacyConfigurationWorkspace
@@ -209,11 +196,6 @@ final class ProfileLibrary {
         }
         workspace = candidate
         workspaceRevision &+= 1
-        notifyChangeObservers()
-    }
-
-    func save() throws {
-        try persistCurrentWorkspace()
         notifyChangeObservers()
     }
 
