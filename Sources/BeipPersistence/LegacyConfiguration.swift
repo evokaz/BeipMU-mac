@@ -1165,15 +1165,11 @@ public actor LegacyConfigurationStore {
 
     public let url: URL
     private var fingerprint: String?
-    private let writer: AtomicFileWriter
-    private let backupWriter: AtomicFileWriter
-    private let conflictWriter: AtomicFileWriter
+    private let engine: LegacyConfigurationPersistenceEngine
 
     public init(url: URL) {
         self.url = url
-        writer = .live
-        backupWriter = .live
-        conflictWriter = .live
+        engine = .init(url: url, backupStrategy: .timestamped)
     }
 
     init(
@@ -1183,100 +1179,34 @@ public actor LegacyConfigurationStore {
         conflictWriter: AtomicFileWriter = .live
     ) {
         self.url = url
-        self.writer = writer
-        self.backupWriter = backupWriter
-        self.conflictWriter = conflictWriter
+        engine = .init(
+            url: url,
+            backupStrategy: .timestamped,
+            writer: writer,
+            backupWriter: backupWriter,
+            conflictWriter: conflictWriter
+        )
     }
 
     public func load() throws -> LegacyConfigurationDocument {
-        let data = try Data(contentsOf: url)
-        guard let source = String(data: data, encoding: .utf8) else {
-            throw LegacyConfigurationError.notUTF8
-        }
-        let document = try Self.readableDocument(source: source)
-        fingerprint = Self.fingerprint(data)
-        return document
+        let loaded = try engine.load()
+        fingerprint = loaded.primaryFingerprint
+        return loaded.document
     }
 
     /// Loads the primary configuration, falling back to the newest readable
     /// timestamped backup without modifying either file.
     public func loadRecoveringFromBackup() throws -> Recovery {
-        do { return Recovery(document: try load(), recoveredFrom: nil) }
-        catch {
-            let primaryData = try? Data(contentsOf: url)
-            for backup in backupCandidates() {
-                guard let data = try? Data(contentsOf: backup),
-                      let source = String(data: data, encoding: .utf8),
-                      let document = try? Self.readableDocument(source: source) else { continue }
-                fingerprint = primaryData.map(Self.fingerprint)
-                return Recovery(document: document, recoveredFrom: backup)
-            }
-            throw error
-        }
+        let loaded = try engine.loadRecoveringFromBackup()
+        fingerprint = loaded.primaryFingerprint
+        return Recovery(document: loaded.document, recoveredFrom: loaded.recoveredFrom)
     }
 
     public func save(_ document: LegacyConfigurationDocument) throws {
-        var expectedCurrentFingerprint: String?
-        if FileManager.default.fileExists(atPath: url.path) {
-            let current = try Data(contentsOf: url)
-            if let fingerprint, Self.fingerprint(current) != fingerprint {
-                throw LegacyConfigurationError.externalChange(try writeConflict(document))
-            }
-            expectedCurrentFingerprint = Self.fingerprint(current)
-            let backup = url.deletingPathExtension().appendingPathExtension("backup-\(Self.timestamp()).txt")
-            try backupWriter.write(current, to: backup)
-        }
-        let data = Data(document.serialized().utf8)
-        try writer.write(data, to: url) {
-            guard let expectedCurrentFingerprint else { return }
-            guard let latest = try? Data(contentsOf: url),
-                  Self.fingerprint(latest) == expectedCurrentFingerprint else {
-                throw LegacyConfigurationError.externalChange(try writeConflict(document))
-            }
-        }
-        fingerprint = Self.fingerprint(data)
-    }
-
-    private func writeConflict(_ document: LegacyConfigurationDocument) throws -> URL {
-        let conflict = url.deletingPathExtension().appendingPathExtension(
-            "conflict-\(Self.timestamp()).txt"
+        fingerprint = try engine.checkedSave(
+            document,
+            expectedPrimaryFingerprint: fingerprint
         )
-        try conflictWriter.write(Data(document.serialized().utf8), to: conflict)
-        return conflict
-    }
-
-    private static func readableDocument(source: String) throws -> LegacyConfigurationDocument {
-        let document = try LegacyConfigurationDocument(source: source)
-        _ = try LegacyConfigurationProjection(document: document)
-        return document
-    }
-
-    private static func fingerprint(_ data: Data) -> String {
-        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-    }
-
-    private func backupCandidates() -> [URL] {
-        let directory = url.deletingLastPathComponent()
-        let stem = url.deletingPathExtension().lastPathComponent + ".backup-"
-        let values = (try? FileManager.default.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: [.contentModificationDateKey],
-            options: [.skipsHiddenFiles]
-        )) ?? []
-        return values.filter {
-            $0.lastPathComponent.hasPrefix(stem) && $0.pathExtension.lowercased() == "txt"
-        }.sorted { lhs, rhs in
-            let leftDate = try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-            let rightDate = try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-            if leftDate != rightDate { return (leftDate ?? .distantPast) > (rightDate ?? .distantPast) }
-            return lhs.lastPathComponent > rhs.lastPathComponent
-        }
-    }
-
-    private static func timestamp() -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter.string(from: Date()).replacingOccurrences(of: ":", with: "-")
     }
 }
 

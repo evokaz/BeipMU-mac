@@ -43,6 +43,25 @@ final class VirtualizedOutputViewTests: XCTestCase {
         XCTAssertLessThan(output.primaryOutputViewForTesting.bounds.width, 310)
     }
 
+    func testOutputScrollViewsUseOverlayAutohidingScrollers() throws {
+        let output = OutputTextView()
+        let primary = output.primaryScrollViewForTesting
+
+        XCTAssertEqual(primary.scrollerStyle, .overlay)
+        XCTAssertTrue(primary.hasVerticalScroller)
+        XCTAssertTrue(primary.autohidesScrollers)
+        primary.scrollerStyle = .legacy
+        XCTAssertEqual(primary.scrollerStyle, .overlay)
+
+        output.toggleSplit()
+        let secondary = try XCTUnwrap(output.secondaryScrollViewForTesting)
+        XCTAssertEqual(secondary.scrollerStyle, .overlay)
+        XCTAssertTrue(secondary.hasVerticalScroller)
+        XCTAssertTrue(secondary.autohidesScrollers)
+        secondary.scrollerStyle = .legacy
+        XCTAssertEqual(secondary.scrollerStyle, .overlay)
+    }
+
     func testTriggerParagraphUsesPercentageIndentsAndBorderAsContentSpacing() throws {
         let view = VirtualizedOutputView(frame: NSRect(x: 0, y: 0, width: 400, height: 200))
         view.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
@@ -345,6 +364,19 @@ final class VirtualizedOutputViewTests: XCTestCase {
         XCTAssertEqual(view.contentInsets.top, 20)
         XCTAssertEqual(view.contentInsets.bottom, 21)
         XCTAssertLessThan(view.effectiveContentWidthForTesting, 500)
+    }
+
+    func testApplyingTimestampAndFanFoldSettingsRebuildsHistoryOnce() {
+        let output = OutputTextView()
+        output.append(.init(text: "Existing output", timestamp: Date(timeIntervalSince1970: 0)))
+        let generationBeforeSettings = output.rebuildGenerationForTesting
+
+        output.applySettings(TextWindowSettings(
+            usesFanFoldBackgrounds: true,
+            showsTime: true
+        ))
+
+        XCTAssertEqual(output.rebuildGenerationForTesting, generationBeforeSettings + 1)
     }
 
     func testOutputParagraphUsesEightConfiguredFontCellsForTabs() throws {

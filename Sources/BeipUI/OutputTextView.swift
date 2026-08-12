@@ -26,6 +26,14 @@ private final class OutputClipView: NSClipView {
     }
 }
 
+@MainActor
+private final class OutputScrollView: NSScrollView {
+    override var scrollerStyle: NSScroller.Style {
+        get { .overlay }
+        set { super.scrollerStyle = .overlay }
+    }
+}
+
 /// Coordinates retained rendered lines with the line-virtualized Core Text
 /// view. The document view measures retained rows but only draws the rows
 /// intersecting its clip view, keeping history size independent of paint cost.
@@ -66,6 +74,7 @@ final class OutputTextView: NSObject {
     private var boundaryDismissalTimer: Timer?
     private var programmaticScrollGeneration = 0
     private var isPerformingProgrammaticScroll = false
+    private var rebuildGeneration = 0
     private weak var observedWindow: NSWindow?
     private lazy var webURLDetector: NSDataDetector = {
         try! NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
@@ -79,8 +88,8 @@ final class OutputTextView: NSObject {
         var backwards: Bool
     }
 
-    var showsTimestamps = false { didSet { rebuild(preservingScrollPosition: true) } }
-    var usesFanFoldBackgrounds = false { didSet { rebuild(preservingScrollPosition: true) } }
+    private var showsTimestamps = false
+    private var usesFanFoldBackgrounds = false
     var showsInlineImagePreviews = false {
         didSet {
             guard showsInlineImagePreviews != oldValue else { return }
@@ -115,6 +124,7 @@ final class OutputTextView: NSObject {
     var primaryScrollViewForTesting: NSScrollView { scrollView }
     var secondaryScrollViewForTesting: NSScrollView? { secondaryScrollView }
     var newContentBoundaryIDForTesting: UUID? { newContentBoundaryID }
+    var rebuildGenerationForTesting: Int { rebuildGeneration }
 
     func applySettings(_ suppliedSettings: TextWindowSettings) {
         settings = suppliedSettings.normalized
@@ -162,11 +172,12 @@ final class OutputTextView: NSObject {
         timestampFormatter = DateFormatter()
         timestampFormatter.dateFormat = "HH:mm:ss"
         outputView = VirtualizedOutputView(frame: NSRect(x: 0, y: 0, width: 900, height: 1))
-        scrollView = NSScrollView()
+        scrollView = OutputScrollView()
         scrollView.contentView = OutputClipView()
         scrollView.documentView = outputView
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
+        scrollView.scrollerStyle = .overlay
         scrollView.autohidesScrollers = true
         scrollView.borderType = .noBorder
         scrollView.drawsBackground = true
@@ -644,6 +655,7 @@ final class OutputTextView: NSObject {
         finalTerminator: String = "\n",
         preservingScrollPosition: Bool = false
     ) {
+        rebuildGeneration += 1
         let oldOrigin = scrollView.contentView.bounds.origin
         let oldSecondaryOrigin = secondaryScrollView?.contentView.bounds.origin
         lineContentRanges.removeAll(keepingCapacity: true)
@@ -1003,11 +1015,12 @@ final class OutputTextView: NSObject {
     }
 
     private static func makeScrollView(documentView: NSView, backgroundColor: NSColor) -> NSScrollView {
-        let scroll = NSScrollView()
+        let scroll = OutputScrollView()
         scroll.contentView = OutputClipView()
         scroll.documentView = documentView
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = false
+        scroll.scrollerStyle = .overlay
         scroll.autohidesScrollers = true
         scroll.borderType = .noBorder
         scroll.drawsBackground = true

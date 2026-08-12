@@ -755,14 +755,6 @@ final class ClientTabGroup {
 
 @MainActor
 final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSplitViewDelegate {
-    private struct ActiveLog {
-        var template: String
-        var rollsOverDaily: Bool
-        var isAutomatic: Bool
-        var appendsDate: Bool
-        var writer: SessionLogWriter
-    }
-
     private struct SpawnCapture {
         var title: String
         var action: TriggerSpawnAction
@@ -799,7 +791,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     private let profileLibrary: ProfileLibrary
-    private let recoveryStore: SessionRecoveryStore?
+    private var loggingCoordinator: SessionLoggingCoordinator!
+    private var recoveryCoordinator: SessionRecoveryCoordinator!
     private let output = OutputTextView()
     private let input = CommandInputView()
     private let inputSplitView = NSSplitView()
@@ -832,9 +825,6 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private var keyboardMacroGroups: [KeyboardMacroGroup] = []
     private var session: SessionActor?
     private var sessionTask: Task<Void, Never>?
-    private var recoverySessionID: UUID?
-    private var resumesRecoveredSessionOnReconnect = false
-    private var replayingRecovery = false
     private var activeCharacterProfile: ActiveCharacterProfile?
     private var persistedSessionStatistics = ConnectionStatistics()
     private var currentServer: ServerProfile?
@@ -879,8 +869,6 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private var titlebarStatisticsTask: Task<Void, Never>?
     private var lastTypedAt = Date()
     private var isSessionConnected = false
-    private var logWriters: [URL: ActiveLog] = [:]
-    private var dailyLogRolloverTimer: Timer?
     private var localEcho = true
     private var terminalType = "Beip"
     private var gmcpDumpEnabled = false
@@ -932,7 +920,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     var muted: Bool { isMuted }
     var dockPlacement: WorkspaceDockPlacement { dockController?.placement ?? preferences.dockPlacement }
     var legacyDockPlacement: WorkspaceDockPlacement? { dockController?.legacyPlacement }
-    var activeLogCount: Int { logWriters.count }
+    var activeLogCount: Int { loggingCoordinator?.activeLogCount ?? 0 }
 
     var settingsIdentityForTesting: TextWindowSettingsIdentity { textWindowIdentity }
 
@@ -1007,7 +995,6 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         initialPreferences: WorkspacePreferences = WorkspacePreferencesStore.load()
     ) {
         self.profileLibrary = profileLibrary
-        self.recoveryStore = recoveryStore
         self.runsScriptServices = runsScriptServices
         self.preferences = initialPreferences
         let window = NSWindow(
@@ -1020,6 +1007,57 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         window.title = "BeipMU"
         window.setAccessibilityIdentifier("mainWindow")
         super.init(window: window)
+        recoveryCoordinator = SessionRecoveryCoordinator(store: recoveryStore)
+        loggingCoordinator = SessionLoggingCoordinator(
+            context: .init(
+                options: { [weak self] in self?.preferences.logging ?? .init() },
+                baseWindowTitle: { [weak self] in self?.baseWindowTitle ?? "Untitled" },
+                serverName: { [weak self] in self?.currentServer?.name ?? "Server" },
+                characterName: { [weak self] in self?.currentCharacter?.name ?? "Character" },
+                loggingPath: { [weak self] in self?.profileLibrary.workspace.projection.loggingPath ?? "" },
+                workspaceSourceURL: { [weak self] in self?.profileLibrary.workspace.sourceURL },
+                themePalette: { [weak self] in
+                    let palette = self?.preferences.theme.palette
+                    return (
+                        foreground: palette?.foreground.hexString ?? "#FFFFFF",
+                        background: palette?.background.hexString ?? "#000000"
+                    )
+                },
+                automaticConfiguration: { [weak self] in
+                    guard let self else { return .init() }
+                    if let puppet = currentPuppet, !puppet.logFilename.isEmpty {
+                        return .init(
+                            filename: puppet.logFilename,
+                            appendsDate: puppet.logAppendsDate,
+                            enabled: true
+                        )
+                    }
+                    if let server = currentServer,
+                       let legacy = profileLibrary.workspace.projection.automaticLog(
+                           for: server,
+                           character: currentCharacter
+                       ) {
+                        return .init(
+                            filename: legacy.filename,
+                            appendsDate: legacy.appendsDate,
+                            enabled: true
+                        )
+                    }
+                    return .init(filename: nil, appendsDate: false, enabled: preferences.logging.autoLogEnabled)
+                }
+            ),
+            callbacks: .init(
+                informationalNotice: { [weak self] text in self?.appendInformationalNotice(text) },
+                clientNotice: { [weak self] text in self?.appendClient(text) },
+                error: { [weak self] text in self?.appendError(text) },
+                stateChanged: { [weak self] in
+                    guard let self else { return }
+                    updateWindowTitle()
+                    refreshDiagnostics()
+                    refreshLoggingWindow()
+                }
+            )
+        )
         profileLibraryObserverID = profileLibrary.addChangeObserver { [weak self] in
             self?.profileLibraryDidChange()
         }
@@ -1119,8 +1157,6 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         editWindows.forEach { $0.close() }
         statisticsTask?.cancel()
         titlebarStatisticsTask?.cancel()
-        dailyLogRolloverTimer?.invalidate()
-        dailyLogRolloverTimer = nil
         statisticsWindow?.close()
         loggingWindow?.close()
         triggerStatisticsWindows.values.forEach { $0.close() }
@@ -1145,17 +1181,16 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         networkDebugWindow?.close()
         scriptDebugWindow?.close()
         closeAIWindow(preservingDockPlacement: false)
-        stopAllLogs(announcing: false)
+        loggingCoordinator.stopAll(announcing: false)
         if runsScriptServices {
             Task { [scriptService] in await scriptService.stopAsyncOutputDelivery() }
         }
         stopCurrentSessionAndPersistStatistics()
-        if !applicationTerminationPrepared, let recoverySessionID {
-            try? recoveryStore?.remove(sessionID: recoverySessionID)
+        if !applicationTerminationPrepared {
+            recoveryCoordinator.discard()
         } else {
-            try? recoveryStore?.flush()
+            recoveryCoordinator.flush()
         }
-        recoverySessionID = nil
         onClose?()
     }
 
@@ -1811,12 +1846,9 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         saveSpawnSurfacePreferences()
         saveAtlasSurfacePreferences()
         mediaController.flush()
-        stopAllLogs(announcing: false)
-        if let recoverySessionID {
-            try? recoveryStore?.remove(sessionID: recoverySessionID)
-            self.recoverySessionID = nil
-        }
-        try? recoveryStore?.flush()
+        loggingCoordinator.stopAll(announcing: false)
+        recoveryCoordinator.discard()
+        recoveryCoordinator.flush()
     }
 
     func startPerformanceSoakIfRequested() {
@@ -2750,12 +2782,11 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         let recoveryEnabled = master == nil
             && profileLibrary.workspace.projection.logging.restoreLogs
             && (character?.restoreLog ?? true)
-        let canResumeRecoveredSession = resumesRecoveredSessionOnReconnect
+        let canResumeRecoveredSession = recoveryCoordinator.consumeResumeFlag()
             && recoveryEnabled
             && currentServer?.id == server.id
             && currentCharacter?.id == character?.id
-            && recoverySessionID != nil
-        resumesRecoveredSessionOnReconnect = false
+            && recoveryCoordinator.sessionID != nil
         preferences.workspaceLayouts[notesKey] = dockController.currentLayout
         savePreferences()
         saveSpawnSurfacePreferences()
@@ -2767,28 +2798,21 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         closeWebViews()
         closeAIWindow(preservingDockPlacement: true)
         stopCurrentSessionAndPersistStatistics()
-        if !canResumeRecoveredSession, let recoverySessionID {
-            try? recoveryStore?.remove(sessionID: recoverySessionID)
-            self.recoverySessionID = nil
-        }
+        if !canResumeRecoveredSession { recoveryCoordinator.discard() }
         isSessionConnected = false
         currentServer = server
         currentCharacter = character
         currentPuppet = puppet
         puppetMaster = master
-        if recoveryEnabled, let recoveryStore {
-            if canResumeRecoveredSession,
-               let recoverySessionID,
-               recoveryStore.session(id: recoverySessionID) != nil {
-                self.recoverySessionID = recoverySessionID
-            } else {
-                self.recoverySessionID = try? recoveryStore.beginSession(
-                    serverID: server.id,
-                    characterID: character?.id,
-                    serverName: server.name,
-                    characterName: character?.name
-                )
-            }
+        if recoveryEnabled {
+            recoveryCoordinator.beginOrResume(
+                shouldResume: canResumeRecoveredSession,
+                serverID: server.id,
+                characterID: character?.id,
+                serverName: server.name,
+                characterName: character?.name,
+                existingSessionID: recoveryCoordinator.sessionID
+            )
         }
         applyTextWindowSettings()
         applyInputWindowSettings()
@@ -3136,39 +3160,35 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     func restoreRecoverySession(_ snapshot: SessionRecoverySession) {
-        if let recoverySessionID, recoverySessionID != snapshot.id {
-            try? recoveryStore?.remove(sessionID: recoverySessionID)
-        }
-        recoverySessionID = recoveryStore?.session(id: snapshot.id) == nil ? nil : snapshot.id
-        resumesRecoveredSessionOnReconnect = recoverySessionID != nil
-        replayingRecovery = true
-        defer { replayingRecovery = false }
+        recoveryCoordinator.prepareForReplay(snapshot.id)
         output.clear()
         closeSpawnSurfaces()
         gmcpState.reset()
-        mediaState.reset()
-        input.restoreHistory(
-            snapshot.records.reversed().compactMap { record in
-                if case let .inputHistory(values) = record.event { return values }
-                return nil
-            }.first ?? []
-        )
-        for record in snapshot.records {
-            switch record.event {
-            case let .renderedLine(line):
-                output.append(Self.replayed(line, timestamp: record.timestamp))
-            case let .prompt(line):
-                output.append(Self.replayed(line, timestamp: record.timestamp), terminator: "")
-            case let .spawnOutput(title, tabGroup, line):
-                restoreSpawnOutput(
-                    title: title,
-                    tabGroup: tabGroup,
-                    line: Self.replayed(line, timestamp: record.timestamp)
-                )
-            case .sentInput, .inputHistory:
-                break
-            case let .gmcp(message):
-                handleAdvancedGMCP(message)
+        recoveryCoordinator.withPassiveReplay {
+            mediaState.reset()
+            input.restoreHistory(
+                snapshot.records.reversed().compactMap { record in
+                    if case let .inputHistory(values) = record.event { return values }
+                    return nil
+                }.first ?? []
+            )
+            for record in snapshot.records {
+                switch record.event {
+                case let .renderedLine(line):
+                    output.append(Self.replayed(line, timestamp: record.timestamp))
+                case let .prompt(line):
+                    output.append(Self.replayed(line, timestamp: record.timestamp), terminator: "")
+                case let .spawnOutput(title, tabGroup, line):
+                    restoreSpawnOutput(
+                        title: title,
+                        tabGroup: tabGroup,
+                        line: Self.replayed(line, timestamp: record.timestamp)
+                    )
+                case .sentInput, .inputHistory:
+                    break
+                case let .gmcp(message):
+                    handleAdvancedGMCP(message)
+                }
             }
         }
         appendInformationalNotice("Session restored from a crash. Please reconnect.")
@@ -3499,55 +3519,20 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     private func appendToLogs(_ line: RenderedLine) {
-        rollOverLogsIfNeeded()
-        var failed: [(URL, Error)] = []
-        for (url, log) in logWriters {
-            do { try log.writer.append(line) }
-            catch { failed.append((url, error)) }
-        }
-        removeFailedLogs(failed)
+        loggingCoordinator.append(line)
     }
 
     private func appendTypedToLogs(_ text: String) {
-        rollOverLogsIfNeeded()
-        var failed: [(URL, Error)] = []
-        for (url, log) in logWriters {
-            do { try log.writer.appendTyped(text) }
-            catch { failed.append((url, error)) }
-        }
-        removeFailedLogs(failed)
+        loggingCoordinator.appendTyped(text)
     }
 
     private func appendSentToLogs(_ text: String) {
-        rollOverLogsIfNeeded()
-        var failed: [(URL, Error)] = []
-        for (url, log) in logWriters {
-            do { try log.writer.appendSent(text) }
-            catch { failed.append((url, error)) }
-        }
-        removeFailedLogs(failed)
-    }
-
-    private func removeFailedLogs(_ failures: [(URL, Error)]) {
-        for (url, error) in failures {
-            if let log = logWriters.removeValue(forKey: url) { try? log.writer.stop() }
-            appendError("Logging stopped for \(url.lastPathComponent): \(error.localizedDescription)")
-        }
-        if !failures.isEmpty {
-            updateWindowTitle()
-            refreshDiagnostics()
-            scheduleDailyLogRollover()
-        }
-        refreshLoggingWindow()
+        loggingCoordinator.appendSent(text)
     }
 
     private var activeLogEntries: [LoggingWindowController.Entry] {
-        logWriters.map { url, log in
-            LoggingWindowController.Entry(url: url, isAutomatic: log.isAutomatic)
-        }
-        .sorted {
-            if $0.isAutomatic != $1.isAutomatic { return $0.isAutomatic && !$1.isAutomatic }
-            return $0.url.path.localizedStandardCompare($1.url.path) == .orderedAscending
+        loggingCoordinator.activeEntries.map {
+            LoggingWindowController.Entry(url: $0.url, isAutomatic: $0.isAutomatic)
         }
     }
 
@@ -3583,221 +3568,43 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         appendingDate: Bool = false,
         automatic: Bool = false
     ) {
-        let resolution = resolvedLogURL(template, appendingDate: appendingDate)
-        var url = resolution.url
-        if url.pathExtension.isEmpty { url.appendPathExtension("txt") }
-        guard logWriters[url] == nil else {
-            if !automatic { appendError("Already logging to \(url.path).") }
-            return
-        }
-        let initialLines: [RenderedLine] = switch history {
-        case .none: []
-        case .all: output.retainedLines
-        case .window: output.visibleWindowLines
-        }
-        let palette = preferences.theme.palette
-        do {
-            let writer = try SessionLogWriter(
-                url: url,
-                options: preferences.logging,
-                title: baseWindowTitle,
-                foregroundHex: palette.foreground.hexString,
-                backgroundHex: palette.background.hexString,
-                history: initialLines
-            )
-            logWriters[url] = .init(
-                template: template,
-                rollsOverDaily: resolution.rollsOverDaily,
-                isAutomatic: automatic,
-                appendsDate: appendingDate,
-                writer: writer
-            )
-            scheduleDailyLogRollover()
-            appendInformationalNotice("\(automatic ? "Automatic logging" : "Logging") to \(url.path) started.")
-            updateWindowTitle()
-            refreshDiagnostics()
-            refreshLoggingWindow()
-        } catch {
-            appendError("Cannot create log \(url.path): \(error.localizedDescription)")
-        }
+        loggingCoordinator.start(
+            template: template,
+            history: history,
+            outputHistory: output.retainedLines,
+            visibleHistory: output.visibleWindowLines,
+            appendingDate: appendingDate,
+            automatic: automatic
+        )
     }
 
     private func stopLog(at url: URL, announcing: Bool = true) {
-        guard let log = logWriters.removeValue(forKey: url) else {
-            refreshLoggingWindow()
-            return
-        }
-        if announcing { appendInformationalNotice("Logging to \(url.path) stopped.") }
-        do { try log.writer.stop() }
-        catch { appendError("Could not finish log \(url.lastPathComponent): \(error.localizedDescription)") }
-        scheduleDailyLogRollover()
-        updateWindowTitle()
-        refreshDiagnostics()
-        refreshLoggingWindow()
+        loggingCoordinator.stop(at: url, announcing: announcing)
     }
 
     private func stopAllLogs(announcing: Bool = true) {
-        guard !logWriters.isEmpty else {
-            dailyLogRolloverTimer?.invalidate()
-            dailyLogRolloverTimer = nil
+        if loggingCoordinator.isEmpty {
             if announcing { appendClient("No active logs.") }
-            refreshLoggingWindow()
+            loggingCoordinator.stopAll(announcing: false)
             return
         }
-        let writers = logWriters
-        if announcing {
-            for url in writers.keys.sorted(by: { $0.path < $1.path }) {
-                appendInformationalNotice("Logging to \(url.path) stopped.")
-            }
-        }
-        logWriters.removeAll()
-        scheduleDailyLogRollover()
-        var errors: [String] = []
-        for (url, log) in writers {
-            do { try log.writer.stop() }
-            catch { errors.append("\(url.lastPathComponent): \(error.localizedDescription)") }
-        }
-        errors.forEach { appendError("Could not finish log \($0)") }
-        updateWindowTitle()
-        refreshDiagnostics()
-        refreshLoggingWindow()
+        loggingCoordinator.stopAll(announcing: announcing)
     }
 
     private func stopAllLogsIfActive(announcing: Bool) {
-        guard !logWriters.isEmpty else { return }
-        stopAllLogs(announcing: announcing)
-    }
-
-    private func resolvedLogURL(
-        _ filename: String,
-        at date: Date = Date(),
-        appendingDate: Bool = false
-    ) -> (url: URL, rollsOverDaily: Bool) {
-        let resolution = SessionLogFilename.resolve(
-            filename,
-            date: date,
-            dateFormat: preferences.logging.fileDateFormat,
-            appendingDate: appendingDate,
-            serverName: currentServer?.name ?? "Server",
-            characterName: currentCharacter?.name ?? "Character"
-        )
-        var value = resolution.filename.replacingOccurrences(
-            of: "%userprofile%",
-            with: FileManager.default.homeDirectoryForCurrentUser.path,
-            options: .caseInsensitive
-        )
-        value = (value as NSString).expandingTildeInPath
-        if value.hasPrefix("/") { return (URL(fileURLWithPath: value), resolution.rollsOverDaily) }
-        let configuredBase = profileLibrary.workspace.projection.loggingPath
-            .replacingOccurrences(of: "%userprofile%", with: FileManager.default.homeDirectoryForCurrentUser.path, options: .caseInsensitive)
-            .replacingOccurrences(of: "\\", with: "/")
-        let base = !configuredBase.isEmpty
-            ? URL(fileURLWithPath: (configuredBase as NSString).expandingTildeInPath, isDirectory: true)
-            : profileLibrary.workspace.sourceURL?.deletingLastPathComponent().appendingPathComponent("Logs", isDirectory: true)
-                ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-                    .appendingPathComponent("BeipMU Logs", isDirectory: true)
-        return (base.appendingPathComponent(value), resolution.rollsOverDaily)
+        loggingCoordinator.stopAllIfActive(announcing: announcing)
     }
 
     private func startAutomaticLog(announcingMissingSetup: Bool = false) {
-        guard !logWriters.values.contains(where: \.isAutomatic) else {
-            if announcingMissingSetup { appendClient("Automatic log already running.") }
-            return
-        }
-        let settings = preferences.logging
-        let legacy: (filename: String, appendsDate: Bool)? = if let puppet = currentPuppet,
-                                                               !puppet.logFilename.isEmpty {
-            (puppet.logFilename, puppet.logAppendsDate)
-        } else {
-            currentServer.flatMap {
-                profileLibrary.workspace.projection.automaticLog(for: $0, character: currentCharacter)
-            }
-        }
-        let template = legacy?.filename ?? settings.defaultLogFilename
-        guard legacy != nil || settings.autoLogEnabled,
-              !template.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            if announcingMissingSetup { appendClient("No automatic log setup.") }
-            return
-        }
-        startLog(
-            template: template,
-            history: .none,
-            appendingDate: legacy?.appendsDate ?? settings.appendsDateToFilename,
-            automatic: true
-        )
+        loggingCoordinator.startAutomatic(announcingMissingSetup: announcingMissingSetup)
     }
 
     private func rollOverLogsIfNeeded(at date: Date = Date()) {
-        let pending = logWriters.map { (url: $0.key, log: $0.value) }
-        for entry in pending where entry.log.rollsOverDaily {
-            var replacement = resolvedLogURL(
-                entry.log.template,
-                at: date,
-                appendingDate: entry.log.appendsDate
-            )
-            if replacement.url.pathExtension.isEmpty { replacement.url.appendPathExtension("txt") }
-            guard replacement.url.standardizedFileURL != entry.url else { continue }
-            guard logWriters[replacement.url] == nil else {
-                if let old = logWriters.removeValue(forKey: entry.url) { try? old.writer.stop() }
-                continue
-            }
-            let palette = preferences.theme.palette
-            do {
-                let writer = try SessionLogWriter(
-                    url: replacement.url,
-                    options: preferences.logging,
-                    title: baseWindowTitle,
-                    foregroundHex: palette.foreground.hexString,
-                    backgroundHex: palette.background.hexString
-                )
-                try entry.log.writer.stop()
-                logWriters.removeValue(forKey: entry.url)
-                logWriters[replacement.url] = .init(
-                    template: entry.log.template,
-                    rollsOverDaily: replacement.rollsOverDaily,
-                    isAutomatic: entry.log.isAutomatic,
-                    appendsDate: entry.log.appendsDate,
-                    writer: writer
-                )
-            } catch {
-                removeFailedLogs([(entry.url, error)])
-            }
-        }
-        refreshLoggingWindow()
+        loggingCoordinator.rollOverIfNeeded(at: date)
     }
 
     private func scheduleDailyLogRollover() {
-        dailyLogRolloverTimer?.invalidate()
-        dailyLogRolloverTimer = nil
-        guard logWriters.values.contains(where: \.rollsOverDaily) else { return }
-
-        let calendar = Calendar.autoupdatingCurrent
-        let now = Date()
-        guard let midnight = calendar.nextDate(
-            after: now,
-            matching: DateComponents(hour: 0, minute: 0, second: 0),
-            matchingPolicy: .nextTime,
-            repeatedTimePolicy: .first,
-            direction: .forward
-        ) else { return }
-
-        let timer = Timer(
-            timeInterval: max(0.001, midnight.timeIntervalSince(now)),
-            repeats: false
-        ) { [weak self] timer in
-            guard self != nil else {
-                timer.invalidate()
-                return
-            }
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.dailyLogRolloverTimer = nil
-                self.rollOverLogsIfNeeded()
-                self.scheduleDailyLogRollover()
-            }
-        }
-        dailyLogRolloverTimer = timer
-        RunLoop.main.add(timer, forMode: .common)
+        loggingCoordinator.scheduleDailyRollover()
     }
 
     private func handleSmartPaste(_ lines: [String]) -> Bool {
@@ -4646,8 +4453,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         scheduleDailyLogRollover()
     }
 
-    var activeLogURLsForTesting: [URL] { Array(logWriters.keys) }
-    var hasDailyLogRolloverTimerForTesting: Bool { dailyLogRolloverTimer?.isValid == true }
+    var activeLogURLsForTesting: [URL] { loggingCoordinator.activeURLs }
+    var hasDailyLogRolloverTimerForTesting: Bool { loggingCoordinator.hasDailyRolloverTimer }
 
     private var sessionTabTitle: String {
         [sessionTabText, sessionWindowTrailingIndicators].filter { !$0.isEmpty }.joined(separator: " ")
@@ -4662,14 +4469,14 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         [
             isTerminallyDisconnected ? "⚡️" : nil,
             isMuted ? "🔇" : nil,
-            logWriters.isEmpty ? nil : "📝",
+            loggingCoordinator.isEmpty ? nil : "📝",
         ].compactMap { $0 }.joined(separator: " ")
     }
 
     private var sessionWindowTrailingIndicators: String {
         [
             isMuted ? "🔇" : nil,
-            logWriters.isEmpty ? nil : "📝",
+            loggingCoordinator.isEmpty ? nil : "📝",
         ].compactMap { $0 }.joined(separator: " ")
     }
 
@@ -5111,7 +4918,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         Output lines: \(output.visibleLineCount)
         Buffered while paused: \(output.pendingLineCount)
         Muted: \(isMuted ? "Yes" : "No")
-        Active logs: \(logWriters.count)
+        Active logs: \(loggingCoordinator.activeLogCount)
         """
         dockController?.setDiagnostics(base)
         guard let session else { return }
@@ -5349,50 +5156,37 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
                 inputTitle: input.accessibilityLabel(),
                 titlePrefix: scriptTitlePrefix,
                 connected: session != nil,
-                logging: !logWriters.isEmpty,
-                logFileName: logWriters.keys.sorted { $0.path < $1.path }.first?.path,
+                logging: !loggingCoordinator.isEmpty,
+                logFileName: loggingCoordinator.activeURLs.sorted { $0.path < $1.path }.first?.path,
                 variables: variables
             )
         )
     }
 
     private func applyScriptEvaluation(_ result: ScriptEvaluation, showValue: Bool) {
-        for output in result.outputs {
-            switch output.kind {
-            case .debugText:
-                recordScriptDebug(.init(kind: .text, message: output.value))
-                appendClient("Script: \(output.value)")
-            case .debugHTML:
-                recordScriptDebug(.init(kind: .html, message: output.value))
-                appendClient("Script HTML: \(output.value)")
-            case .display: appendClient(output.value)
-            case .displayHTML:
-                var parser = MUDProtocolPipeline(encoding: .utf8, pueblo: true, puebloActive: true)
-                for event in parser.consume(Data((output.value + "\n").utf8)) {
-                    if case let .line(line) = event { self.output.append(line) }
+        for action in ScriptOutputRouter.route(result, showValue: showValue) {
+            switch action {
+            case let .debug(kind, text):
+                let entryKind: ScriptDebugWindowController.EntryKind = switch kind {
+                case .text: .text
+                case .html: .html
+                case .error: .error
                 }
-            case .send: sendToSession(output.value)
-            case .transmit: transmitToSession(output.value)
-            case .receive:
-                receiveFromScript(output.value)
-            case .setInput:
-                input.text = output.value
-            case .setVariable:
-                struct Variable: Decodable { var name: String; var value: String }
-                if let data = output.value.data(using: .utf8),
-                   let variable = try? JSONDecoder().decode(Variable.self, from: data) {
-                    variables[variable.name] = variable.value
-                }
-            case .deleteVariable:
-                variables.removeValue(forKey: output.value)
-            case .closeWindow:
-                window?.performClose(nil)
-            case .activity:
-                markActivity(important: false)
-            case .importantActivity:
-                markActivity(important: true)
-            case .runFile:
-                let path = (output.value as NSString).expandingTildeInPath
+                recordScriptDebug(.init(kind: entryKind, message: text), revealForError: kind == .error)
+                if kind == .text { appendClient("Script: \(text)") }
+                else if kind == .html { appendClient("Script HTML: \(text)") }
+            case let .display(text): appendClient(text)
+            case let .displayHTML(lines): lines.forEach { output.append($0) }
+            case let .send(text): sendToSession(text)
+            case let .transmit(text): transmitToSession(text)
+            case let .receive(text): receiveFromScript(text)
+            case let .setInput(text): input.text = text
+            case let .setVariable(name, value): variables[name] = value
+            case let .deleteVariable(name): variables.removeValue(forKey: name)
+            case .closeWindow: window?.performClose(nil)
+            case let .activity(important): markActivity(important: important)
+            case let .runFile(value):
+                let path = (value as NSString).expandingTildeInPath
                 Task {
                     do {
                         let source = try String(contentsOfFile: path, encoding: .utf8)
@@ -5402,57 +5196,37 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
                         appendError("Cannot run script file: \(error.localizedDescription)")
                     }
                 }
-            case .playSound:
+            case let .playSound(value):
                 guard !isMuted,
-                      let sound = NSSound(contentsOfFile: (output.value as NSString).expandingTildeInPath, byReference: true) else { continue }
+                      let sound = NSSound(contentsOfFile: (value as NSString).expandingTildeInPath, byReference: true) else { continue }
                 scriptSounds.append(sound)
                 sound.play()
             case .stopSounds:
                 scriptSounds.forEach { $0.stop() }
                 scriptSounds.removeAll()
                 speechSynthesizer.stopSpeaking(at: .immediate)
-            case .scriptError:
-                recordScriptDebug(.init(kind: .error, message: output.value), revealForError: true)
-                appendError(output.value)
+            case let .scriptError(text):
+                recordScriptDebug(.init(kind: .error, message: text), revealForError: true)
+                appendError(text)
+            case let .evaluationError(text): appendError(text)
             case .reconnect:
                 guard let session else { appendError("No previous connection to reconnect."); continue }
                 Task { await session.reconnect() }
-            case .logWrite, .logWriteLine:
-                rollOverLogsIfNeeded()
-                var failures: [(URL, Error)] = []
-                for (url, log) in logWriters {
-                    do {
-                        if output.kind == .logWrite { try log.writer.appendScript(output.value) }
-                        else { try log.writer.appendScriptLine(output.value) }
-                    } catch {
-                        failures.append((url, error))
-                    }
-                }
-                removeFailedLogs(failures)
-            case .setInputPrefix:
-                preferences.inputPrefix = output.value
-                input.behavior = .init(prefix: output.value, isSticky: preferences.stickyInput)
+            case let .logWrite(text, line): loggingCoordinator.appendScript(text, asLine: line)
+            case let .setInputPrefix(value):
+                preferences.inputPrefix = value
+                input.behavior = .init(prefix: value, isSticky: preferences.stickyInput)
                 savePreferences()
-            case .setInputTitle:
-                input.setAccessibilityLabel(output.value)
-            case .setTitlePrefix:
-                scriptTitlePrefix = output.value
+            case let .setInputTitle(value): input.setAccessibilityLabel(value)
+            case let .setTitlePrefix(value):
+                scriptTitlePrefix = value
                 updateWindowTitle()
-            case .runCommand:
-                // Window_Main::Run uses SendLines on Windows: normalize the
-                // command text and feed each logical line through the same
-                // slash-command/alias pipeline as typed input.
-                for line in Self.logicalLines(in: output.value) where !line.isEmpty {
-                    processInput(line)
-                }
-            case .openConnectDialog:
-                showConnectDialog()
-            case .scriptWindow:
-                guard let data = output.value.data(using: .utf8),
-                      let operation = try? JSONDecoder().decode(ScriptWindowOperation.self, from: data) else {
-                    appendError("Invalid script-window operation.")
-                    continue
-                }
+            case let .runCommand(value):
+                for line in Self.logicalLines(in: value) where !line.isEmpty { processInput(line) }
+            case .openConnectDialog: showConnectDialog()
+            case .malformedScriptWindow:
+                appendError("Invalid script-window operation.")
+            case let .scriptWindow(operation):
                 let controller: ScriptWindowController
                 if let existing = scriptWindows[operation.identifier] {
                     controller = existing
@@ -5488,19 +5262,12 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
                         showValue: false
                     )
                 }
-            case .secondaryInput:
-                guard let data = output.value.data(using: .utf8),
-                      let operation = try? JSONDecoder().decode(ScriptWindowOperation.self, from: data),
-                      let value = operation.strings.first,
+            case let .secondaryInput(operation):
+                guard let value = operation.strings.first,
                       let controller = secondaryInputWindows.first(where: { $0.logicalTitle == operation.identifier }) else { continue }
                 controller.applyScript(action: operation.action, value: value)
             }
         }
-        if let error = result.error {
-            recordScriptDebug(.init(kind: .error, message: error), revealForError: true)
-            appendError(error)
-        }
-        else if showValue, let value = result.value { appendClient(value) }
     }
 
     private static func scriptWasHandled(_ result: ScriptEvaluation) -> Bool {
@@ -5615,10 +5382,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         _ event: SessionRecoveryEvent,
         at timestamp: Date = Date()
     ) {
-        guard !replayingRecovery,
-              let recoverySessionID,
-              let recoveryStore else { return }
-        try? recoveryStore.append(event, to: recoverySessionID, at: timestamp)
+        recoveryCoordinator.append(event, at: timestamp)
     }
 
     private static func replayed(_ line: RenderedLine, timestamp: Date) -> RenderedLine {
@@ -5930,7 +5694,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     private func handleAdvancedGMCP(_ message: GMCPMessage) {
-        if replayingRecovery {
+        if recoveryCoordinator.isReplaying {
             _ = try? gmcpState.consume(message)
             return
         }

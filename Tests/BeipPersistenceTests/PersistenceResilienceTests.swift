@@ -138,6 +138,43 @@ final class PersistenceResilienceTests: XCTestCase {
         }
     }
 
+    func testFreshConfigurationStoreCanSaveWithoutLoadingFirst() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("Config.txt")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+
+        let document = try LegacyConfigurationDocument(source: validConfig)
+        try await LegacyConfigurationStore(url: url).save(document)
+
+        let reopened = try await LegacyConfigurationStore(url: url).load()
+        XCTAssertEqual(reopened.value(at: ["Version"]), "331")
+    }
+
+    func testFreshStoreStillReportsFileAppearingAtReplaceBoundary() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("Config.txt")
+        let external = Data((validConfig + "\nBoundaryEdit=true\n").utf8)
+        let writer = AtomicFileWriter(beforeReplace: { destination in
+            try external.write(to: destination)
+        })
+        let store = LegacyConfigurationStore(url: url, writer: writer)
+        let document = try LegacyConfigurationDocument(source: validConfig)
+
+        do {
+            try await store.save(document)
+            XCTFail("save should report a file that appeared at the boundary")
+        } catch let LegacyConfigurationError.externalChange(conflictURL) {
+            XCTAssertEqual(try Data(contentsOf: url), external)
+            XCTAssertNoThrow(try LegacyConfigurationDocument(
+                source: String(contentsOf: conflictURL, encoding: .utf8)
+            ))
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+    }
+
     func testExternalEditAtAtomicReplaceBoundaryIsAlsoReportedAsConflict() async throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

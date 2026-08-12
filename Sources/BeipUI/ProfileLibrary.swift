@@ -7,7 +7,9 @@ final class ProfileLibrary {
     private(set) var workspace: LegacyConfigurationWorkspace
     private(set) var workspaceRevision: UInt64 = 0
     private let persistentConfigURL: URL?
+    private let persistence: LegacyConfigurationPersistenceEngine?
     private let sidecarURL: URL
+    private var primaryFingerprint: String?
     private var changeObservers: [UUID: () -> Void] = [:]
 
     init(
@@ -16,30 +18,44 @@ final class ProfileLibrary {
     ) throws {
         let configURL = storageDirectory.appendingPathComponent("Config.txt")
         persistentConfigURL = configURL
+        let persistence = LegacyConfigurationPersistenceEngine(
+            url: configURL,
+            backupStrategy: .fixed
+        )
+        self.persistence = persistence
         sidecarURL = storageDirectory.appendingPathComponent("Config.mac.json")
+        primaryFingerprint = nil
         workspace = try .empty(isDirty: false)
         try FileManager.default.createDirectory(at: storageDirectory, withIntermediateDirectories: true)
-        if !restore(from: configURL) {
-            if restore(from: backupURL(for: configURL), sourceURL: configURL) {
+        if let loaded = try? persistence.loadRecoveringFromBackup() {
+            workspace = try LegacyConfigurationWorkspace(
+                document: loaded.document,
+                sourceURL: configURL,
+                recoveredFrom: loaded.recoveredFrom
+            )
+            primaryFingerprint = loaded.primaryFingerprint
+            if loaded.recoveredFrom != nil {
                 try persistCurrentWorkspace(backingUpCurrent: false)
-            } else if allowsExternalConfigurationMigration,
-                      let sidecar = try? MacSidecarStore.load(from: sidecarURL),
-                      let path = sidecar.selectedConfigPath,
-                      restore(from: URL(fileURLWithPath: path)) {
+            }
+        } else if allowsExternalConfigurationMigration,
+                  let sidecar = try? MacSidecarStore.load(from: sidecarURL),
+                  let path = sidecar.selectedConfigPath,
+                  restore(from: URL(fileURLWithPath: path)) {
                 // One-time migration for Release builds that remembered an
                 // external Config.txt as their live database. Debug and
                 // UI-test contexts never enter this branch.
                 try persistCurrentWorkspace()
                 clearLegacySelectedPath()
-            } else {
-                try persistCurrentWorkspace()
-            }
+        } else {
+            try persistCurrentWorkspace()
         }
     }
 
     init(workspace: LegacyConfigurationWorkspace) {
         self.workspace = workspace
         persistentConfigURL = nil
+        persistence = nil
+        primaryFingerprint = nil
         sidecarURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("BeipMU.ProfileLibrary.\(UUID().uuidString).json")
     }
@@ -77,13 +93,22 @@ final class ProfileLibrary {
         if let persistentConfigURL,
            let currentData = try? Data(contentsOf: persistentConfigURL),
            let currentSource = String(data: currentData, encoding: .utf8),
+           (try? LegacyConfigurationDocument(source: currentSource)) != nil,
            currentSource != workspace.document.serialized() {
             throw WorkspaceCommitError.staleWorkspace
         }
         var saved = candidate
         if let persistentConfigURL {
             let rendered = try saved.renderedDocument()
-            try writePersistent(rendered, to: persistentConfigURL)
+            guard let persistence else { fatalError("persistent configuration engine missing") }
+            do {
+                primaryFingerprint = try persistence.checkedSave(
+                    rendered,
+                    expectedPrimaryFingerprint: primaryFingerprint
+                )
+            } catch let error as LegacyConfigurationError {
+                throw error
+            }
             saved.acceptSavedDocument(rendered, at: persistentConfigURL)
         }
         workspace = saved
@@ -143,9 +168,11 @@ final class ProfileLibrary {
     func resetToPristineConfiguration() throws {
         let pristine = try LegacyConfigurationWorkspace.empty(isDirty: persistentConfigURL == nil)
 
-        if let persistentConfigURL {
-            try Self.write(pristine.document, to: persistentConfigURL)
-            try removeIfPresent(backupURL(for: persistentConfigURL))
+        if let persistence {
+            primaryFingerprint = try persistence.replace(pristine.document, backingUpCurrent: false)
+            if let backupURL = persistence.fixedBackupURL {
+                try removeIfPresent(backupURL)
+            }
         }
         try removeIfPresent(sidecarURL)
 
@@ -173,7 +200,8 @@ final class ProfileLibrary {
         let document = try LegacyConfigurationDocument(source: source)
         let imported = try LegacyConfigurationWorkspace(document: document)
         if let persistentConfigURL {
-            try writePersistent(document, to: persistentConfigURL)
+            guard let persistence else { fatalError("persistent configuration engine missing") }
+            primaryFingerprint = try persistence.replace(document)
             workspace = try LegacyConfigurationWorkspace(
                 document: document,
                 sourceURL: persistentConfigURL,
@@ -191,7 +219,11 @@ final class ProfileLibrary {
         try body(&candidate)
         if let persistentConfigURL {
             let rendered = try candidate.renderedDocument()
-            try writePersistent(rendered, to: persistentConfigURL)
+            guard let persistence else { fatalError("persistent configuration engine missing") }
+            primaryFingerprint = try persistence.checkedSave(
+                rendered,
+                expectedPrimaryFingerprint: primaryFingerprint
+            )
             candidate.acceptSavedDocument(rendered, at: persistentConfigURL)
         }
         workspace = candidate
@@ -205,9 +237,7 @@ final class ProfileLibrary {
     }
 
     private func restore(from url: URL, sourceURL: URL? = nil) -> Bool {
-        guard let data = try? Data(contentsOf: url),
-              let source = String(data: data, encoding: .utf8),
-              let document = try? LegacyConfigurationDocument(source: source),
+        guard let document = try? LegacyConfigurationPersistenceEngine.readDocument(from: url),
               let restored = try? LegacyConfigurationWorkspace(
                 document: document,
                 sourceURL: sourceURL ?? url
@@ -217,13 +247,12 @@ final class ProfileLibrary {
     }
 
     private func persistCurrentWorkspace(backingUpCurrent: Bool = true) throws {
-        guard let persistentConfigURL else { return }
+        guard let persistentConfigURL, let persistence else { return }
         let rendered = try workspace.renderedDocument()
-        if backingUpCurrent {
-            try writePersistent(rendered, to: persistentConfigURL)
-        } else {
-            try Self.write(rendered, to: persistentConfigURL)
-        }
+        primaryFingerprint = try persistence.replace(
+            rendered,
+            backingUpCurrent: backingUpCurrent
+        )
         workspace.acceptSavedDocument(rendered, at: persistentConfigURL)
     }
 
@@ -241,21 +270,9 @@ final class ProfileLibrary {
         try Data(document.serialized().utf8).write(to: url, options: .atomic)
     }
 
-    private func writePersistent(_ document: LegacyConfigurationDocument, to url: URL) throws {
-        if FileManager.default.fileExists(atPath: url.path),
-           let current = try? Data(contentsOf: url) {
-            try current.write(to: backupURL(for: url), options: .atomic)
-        }
-        try Self.write(document, to: url)
-    }
-
     private func removeIfPresent(_ url: URL) throws {
         guard FileManager.default.fileExists(atPath: url.path) else { return }
         try FileManager.default.removeItem(at: url)
-    }
-
-    private func backupURL(for url: URL) -> URL {
-        url.deletingPathExtension().appendingPathExtension("backup.txt")
     }
 
     @discardableResult
