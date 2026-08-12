@@ -20,6 +20,40 @@ private final class TabbableFormTextView: NSTextView {
     }
 }
 
+private final class ConfigurationManagerWindow: NSWindow {
+    private var onPlainReturn: (() -> Void)?
+
+    func setPlainReturnAction(_ action: @escaping () -> Void) {
+        onPlainReturn = action
+    }
+
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .keyDown,
+           (event.keyCode == 36 || event.keyCode == 76),
+           event.modifierFlags.intersection([.command, .control, .option]).isEmpty,
+           performKeyEquivalent(with: event) {
+            return
+        }
+        super.sendEvent(event)
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if (event.keyCode == 36 || event.keyCode == 76),
+           event.modifierFlags.intersection([.command, .control, .option]).isEmpty,
+           let editor = firstResponder as? TabbableFormTextView {
+            editor.insertNewline(event)
+            return true
+        }
+        if (event.keyCode == 36 || event.keyCode == 76),
+           event.modifierFlags.intersection([.command, .control, .option]).isEmpty,
+           let onPlainReturn {
+            onPlainReturn()
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+}
+
 @MainActor
 final class ConfigurationManagerWindowController: NSWindowController, NSOutlineViewDataSource, NSOutlineViewDelegate, NSWindowDelegate {
     private enum Selection: Equatable {
@@ -103,7 +137,7 @@ final class ConfigurationManagerWindowController: NSWindowController, NSOutlineV
         self.onConnectProfile = onConnectProfile
         self.onShowStatistics = onShowStatistics
         self.promptDecisionProvider = promptDecisionProvider
-        let window = NSWindow(
+        let window = ConfigurationManagerWindow(
             contentRect: NSRect(x: 0, y: 0, width: 768, height: 654),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
@@ -115,6 +149,7 @@ final class ConfigurationManagerWindowController: NSWindowController, NSOutlineV
         window.titlebarSeparatorStyle = .line
         super.init(window: window)
         window.delegate = self
+        window.setPlainReturnAction { [weak self] in self?.handlePlainReturn() }
         RuntimeStateContext.setFrameAutosaveName("BeipMUWorlds", for: window)
         window.center()
         configureUI(in: window)
@@ -250,7 +285,6 @@ final class ConfigurationManagerWindowController: NSWindowController, NSOutlineV
         newButton = new
         let imported = button("Import...", identifier: "importWorld", action: #selector(importConfiguration(_:)))
         let connect = button("Connect", identifier: "connectWorld", action: #selector(connectSelection(_:)))
-        connect.keyEquivalent = "\r"
         let copy = button("Copy", identifier: "copyWorld", action: #selector(copySelection(_:)))
         let exported = button("Export...", identifier: "exportWorld", action: #selector(exportConfiguration(_:)))
         let deleted = button("Delete", identifier: "deleteWorld", action: #selector(deleteSelection(_:)))
@@ -267,7 +301,6 @@ final class ConfigurationManagerWindowController: NSWindowController, NSOutlineV
         let help = button("Help", identifier: "worldHelp", action: #selector(showHelp(_:)))
         let apply = button("Apply", identifier: "applyWorldChanges", action: #selector(applyManager(_:)))
         let ok = button("OK", identifier: "applyProfileChanges", action: #selector(closeManager(_:)))
-        ok.keyEquivalent = "\r"
         let cancel = button("Cancel", identifier: "cancelWorlds", action: #selector(cancelManager(_:)))
         cancel.keyEquivalent = "\u{1b}"
         let rightFooter = NSStackView(views: [
@@ -1080,6 +1113,22 @@ final class ConfigurationManagerWindowController: NSWindowController, NSOutlineV
     @objc private func connectSelection(_ sender: Any?) {
         guard let profile = profileForActiveSelection() else { NSSound.beep(); return }
         onConnectProfile?(profile.server, profile.character)
+    }
+
+    private func handlePlainReturn() {
+        do {
+            try applyCurrentSelection()
+        } catch {
+            present(error)
+            return
+        }
+        guard let profile = profileForActiveSelection() else {
+            NSSound.beep()
+            return
+        }
+        onConnectProfile?(profile.server, profile.character)
+        bypassClosePrompt = true
+        close()
     }
 
     @objc private func showStatistics(_ sender: Any?) {

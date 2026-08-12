@@ -324,6 +324,180 @@ final class ConfigurationManagerWindowControllerTests: XCTestCase {
         XCTAssertTrue(isFirstResponder(connect, in: window))
     }
 
+    func testReturnAndKeypadEnterInsertNewlinesInEveryMultilineField() throws {
+        let fields: [(identifier: String, row: Int)] = [
+            ("worldInfo", 0),
+            ("characterConnectText", 1),
+            ("characterInfo", 1),
+        ]
+
+        for fieldCase in fields {
+            var workspace = try LegacyConfigurationWorkspace.empty(isDirty: false)
+            let serverID = workspace.addServer()
+            _ = try workspace.addCharacter(toServerID: serverID)
+            let library = ProfileLibrary(workspace: workspace)
+            var connectCount = 0
+            let controller = ConfigurationManagerWindowController(
+                library: library,
+                onConnectProfile: { _, _ in connectCount += 1 }
+            )
+            controller.showWindow(nil)
+
+            let content = try XCTUnwrap(controller.window?.contentView)
+            let table = try XCTUnwrap(
+                recursiveSubviews(of: content)
+                    .compactMap { $0 as? NSOutlineView }
+                    .first { $0.accessibilityIdentifier() == "configurationProfileList" }
+            )
+            if fieldCase.row == 1 {
+                table.selectRowIndexes(.init(integer: fieldCase.row), byExtendingSelection: false)
+                notifySelectionChange(table, controller: controller)
+            }
+
+            let field = try XCTUnwrap(
+                recursiveSubviews(of: content)
+                    .first { $0.accessibilityIdentifier() == fieldCase.identifier } as? NSTextView
+            )
+            let window = try XCTUnwrap(controller.window)
+            window.makeKeyAndOrderFront(nil)
+
+            for keyCode in [UInt16(36), UInt16(76)] {
+                field.string = "before"
+                field.setSelectedRange(NSRange(location: field.string.utf16.count, length: 0))
+                XCTAssertTrue(window.makeFirstResponder(field))
+                let event = try XCTUnwrap(keyEvent(keyCode: keyCode, in: window))
+
+                window.sendEvent(event)
+                XCTAssertEqual(field.string, "before\n")
+                XCTAssertTrue(window.isVisible)
+                XCTAssertEqual(connectCount, 0)
+            }
+
+            controller.prepareForFactoryReset()
+            controller.close()
+        }
+    }
+
+    func testReturnInWorldSelectionConnectsAndPersistsPendingEdits() throws {
+        for keyCode in [UInt16(36), UInt16(76)] {
+            var workspace = try LegacyConfigurationWorkspace.empty(isDirty: false)
+            let serverID = workspace.addServer()
+            let library = ProfileLibrary(workspace: workspace)
+            var receivedProfile: (ServerProfile, CharacterProfile?)?
+            let controller = ConfigurationManagerWindowController(
+                library: library,
+                onConnectProfile: { server, character in
+                    receivedProfile = (server, character)
+                }
+            )
+            controller.showWindow(nil)
+
+            let content = try XCTUnwrap(controller.window?.contentView)
+            let name = try XCTUnwrap(
+                recursiveSubviews(of: content)
+                    .first { $0.accessibilityIdentifier() == "worldName" } as? NSTextField
+            )
+            let window = try XCTUnwrap(controller.window)
+            window.makeKeyAndOrderFront(nil)
+            name.stringValue = "Edited World"
+            XCTAssertTrue(window.makeFirstResponder(name))
+            let event = try XCTUnwrap(keyEvent(keyCode: keyCode, in: window))
+            window.sendEvent(event)
+            XCTAssertFalse(window.isVisible)
+            XCTAssertEqual(
+                library.workspace.servers.first(where: { $0.profile.id == serverID })?.profile.name,
+                "Edited World"
+            )
+            XCTAssertEqual(receivedProfile?.0.name, "Edited World")
+            XCTAssertNil(receivedProfile?.1)
+            controller.close()
+        }
+    }
+
+    func testReturnInCharacterSelectionConnectsAndPersistsPendingEdits() throws {
+        for keyCode in [UInt16(36), UInt16(76)] {
+            var workspace = try LegacyConfigurationWorkspace.empty(isDirty: false)
+            let serverID = workspace.addServer()
+            let characterID = try workspace.addCharacter(toServerID: serverID)
+            let library = ProfileLibrary(workspace: workspace)
+            var receivedProfile: (ServerProfile, CharacterProfile?)?
+            let controller = ConfigurationManagerWindowController(
+                library: library,
+                onConnectProfile: { server, character in
+                    receivedProfile = (server, character)
+                }
+            )
+            controller.showWindow(nil)
+
+            let content = try XCTUnwrap(controller.window?.contentView)
+            let table = try XCTUnwrap(
+                recursiveSubviews(of: content)
+                    .compactMap { $0 as? NSOutlineView }
+                    .first { $0.accessibilityIdentifier() == "configurationProfileList" }
+            )
+            table.selectRowIndexes(.init(integer: 1), byExtendingSelection: false)
+            notifySelectionChange(table, controller: controller)
+            let name = try XCTUnwrap(
+                recursiveSubviews(of: content)
+                    .first { $0.accessibilityIdentifier() == "characterName" } as? NSTextField
+            )
+            let window = try XCTUnwrap(controller.window)
+            window.makeKeyAndOrderFront(nil)
+            name.stringValue = "Edited Character"
+            XCTAssertTrue(window.makeFirstResponder(name))
+            let event = try XCTUnwrap(keyEvent(keyCode: keyCode, in: window))
+            window.sendEvent(event)
+
+            XCTAssertFalse(window.isVisible)
+            let character = try XCTUnwrap(
+                library.workspace.servers.first(where: { $0.profile.id == serverID })?.characters
+                    .first(where: { $0.id == characterID })
+            )
+            XCTAssertEqual(character.name, "Edited Character")
+            XCTAssertEqual(receivedProfile?.0.id, serverID)
+            XCTAssertEqual(receivedProfile?.1?.id, characterID)
+            XCTAssertEqual(receivedProfile?.1?.name, "Edited Character")
+            controller.close()
+        }
+    }
+
+    func testButtonsKeepConnectExplicitAndOKSaveOnly() throws {
+        var workspace = try LegacyConfigurationWorkspace.empty(isDirty: false)
+        _ = workspace.addServer()
+        let library = ProfileLibrary(workspace: workspace)
+        var connectCount = 0
+        let controller = ConfigurationManagerWindowController(
+            library: library,
+            onConnectProfile: { _, _ in connectCount += 1 }
+        )
+        defer { controller.close() }
+
+        let buttons = recursiveSubviews(of: controller.window?.contentView)
+            .compactMap { $0 as? NSButton }
+        XCTAssertTrue(buttons.filter { $0.keyEquivalent == "\r" }.isEmpty)
+
+        let connect = try XCTUnwrap(
+            buttons.first { $0.accessibilityIdentifier() == "connectWorld" }
+        )
+        controller.showWindow(nil)
+        connect.performClick(nil)
+        XCTAssertEqual(connectCount, 1)
+        XCTAssertTrue(controller.window?.isVisible == true)
+
+        let name = try XCTUnwrap(
+            recursiveSubviews(of: controller.window?.contentView)
+                .first { $0.accessibilityIdentifier() == "worldName" } as? NSTextField
+        )
+        name.stringValue = "Saved By OK"
+        let ok = try XCTUnwrap(
+            buttons.first { $0.accessibilityIdentifier() == "applyProfileChanges" }
+        )
+        ok.performClick(nil)
+        XCTAssertFalse(controller.window?.isVisible == true)
+        XCTAssertEqual(library.workspace.servers.first?.profile.name, "Saved By OK")
+        XCTAssertEqual(connectCount, 1)
+    }
+
     func testSelectionPromptSavePersistsWorldBeforeSwitching() throws {
         var workspace = try LegacyConfigurationWorkspace.empty(isDirty: false)
         _ = workspace.addServer(named: "First")
@@ -413,6 +587,21 @@ final class ConfigurationManagerWindowControllerTests: XCTestCase {
         if window.firstResponder === view { return true }
         guard let editor = window.firstResponder as? NSTextView else { return false }
         return editor.delegate as AnyObject === view
+    }
+
+    private func keyEvent(keyCode: UInt16, in window: NSWindow) -> NSEvent? {
+        NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: window.windowNumber,
+            context: nil,
+            characters: "\r",
+            charactersIgnoringModifiers: "\r",
+            isARepeat: false,
+            keyCode: keyCode
+        )
     }
 
     private func notifySelectionChange(
