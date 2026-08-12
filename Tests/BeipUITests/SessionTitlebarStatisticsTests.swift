@@ -1,4 +1,5 @@
 import AppKit
+import BeipCore
 import BeipPersistence
 import XCTest
 @testable import BeipUI
@@ -448,11 +449,135 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
                 .first { $0.accessibilityIdentifier() == "sessionTabIndicators" }
         )
 
-        XCTAssertEqual(indicators.stringValue, "📝")
+        XCTAssertEqual(indicators.stringValue, "⚡️ 📝")
         XCTAssertFalse(indicators.isHidden)
         XCTAssertGreaterThan(indicators.frame.width, 0)
         XCTAssertLessThanOrEqual(titleLabel.frame.maxX, indicators.frame.minX - 4.5)
         XCTAssertLessThanOrEqual(indicators.frame.maxX, activeTab.bounds.maxX - 9.5)
+    }
+
+    @MainActor
+    func testWorldTabConnectionIndicatorTracksTerminalStatesWithoutChangingWindowTitle() async throws {
+        let controller = ClientWindowController(
+            profileLibrary: ProfileLibrary(workspace: try .empty(isDirty: false))
+        )
+        defer { controller.close() }
+        controller.restoreOpenTab(
+            server: .init(name: "Indicator World", host: "example.invalid", port: 8888),
+            character: nil
+        )
+
+        XCTAssertEqual(controller.sessionTabIndicatorsForTesting, ["⚡️"])
+        XCTAssertEqual(controller.sessionTabAccessibilityLabelsForTesting, ["Indicator World tab, disconnected"])
+        XCTAssertEqual(controller.window?.title, "Indicator World")
+
+        for state in [
+            ConnectionState.resolving,
+            .connecting,
+            .connected,
+            .disconnecting,
+        ] {
+            await controller.applyConnectionStateForTesting(state)
+            XCTAssertEqual(controller.sessionTabIndicatorsForTesting, [""])
+            XCTAssertEqual(controller.sessionTabAccessibilityLabelsForTesting, ["Indicator World tab"])
+            XCTAssertFalse(controller.window?.title.contains("⚡️") ?? true)
+        }
+
+        await controller.applyConnectionStateForTesting(.disconnected)
+        XCTAssertEqual(controller.sessionTabIndicatorsForTesting, ["⚡️"])
+        XCTAssertEqual(controller.sessionTabAccessibilityLabelsForTesting, ["Indicator World tab, disconnected"])
+
+        await controller.applyConnectionStateForTesting(.failed("No route"))
+        XCTAssertEqual(controller.sessionTabIndicatorsForTesting, ["⚡️"])
+        XCTAssertEqual(controller.sessionTabAccessibilityLabelsForTesting, ["Indicator World tab, disconnected"])
+        XCTAssertEqual(controller.window?.title, "Indicator World")
+    }
+
+    @MainActor
+    func testDisconnectedIndicatorPrecedesMuteAndLoggingIndicators() throws {
+        let logURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("txt")
+        let controller = ClientWindowController(
+            profileLibrary: ProfileLibrary(workspace: try .empty(isDirty: false))
+        )
+        defer {
+            controller.close()
+            try? FileManager.default.removeItem(at: logURL)
+        }
+        controller.restoreOpenTab(
+            server: .init(name: "Indicator World", host: "example.invalid", port: 8888),
+            character: nil
+        )
+
+        controller.toggleMute()
+        controller.startLogForTesting(at: logURL)
+
+        XCTAssertEqual(controller.sessionTabIndicatorsForTesting, ["⚡️ 🔇 📝"])
+        XCTAssertEqual(controller.window?.title, "Indicator World 🔇 📝")
+    }
+
+    @MainActor
+    func testInactiveConnectionStateRefreshesEveryCopyOfGroupedTabs() async throws {
+        let library = ProfileLibrary(workspace: try .empty(isDirty: false))
+        let first = ClientWindowController(profileLibrary: library)
+        let second = ClientWindowController(profileLibrary: library)
+        defer {
+            first.close()
+            second.close()
+        }
+        first.restoreOpenTab(
+            server: .init(name: "First", host: "first.invalid", port: 8888),
+            character: nil
+        )
+        second.restoreOpenTab(
+            server: .init(name: "Second", host: "second.invalid", port: 8888),
+            character: nil
+        )
+        await first.applyConnectionStateForTesting(.connected)
+        await second.applyConnectionStateForTesting(.connected)
+        let group = ClientTabGroup(first)
+        group.add(second)
+        group.select(first, sender: nil)
+
+        await second.applyConnectionStateForTesting(.failed("No route"))
+
+        XCTAssertEqual(first.sessionTabIndicatorsForTesting, ["", "⚡️"])
+        XCTAssertEqual(second.sessionTabIndicatorsForTesting, ["", "⚡️"])
+        XCTAssertEqual(
+            first.sessionTabAccessibilityLabelsForTesting,
+            ["First tab", "Second tab, disconnected"]
+        )
+        XCTAssertEqual(
+            second.sessionTabAccessibilityLabelsForTesting,
+            ["First tab", "Second tab, disconnected"]
+        )
+    }
+
+    @MainActor
+    func testPuppetTabMirrorsMasterTerminalConnectionIndicator() async throws {
+        let library = ProfileLibrary(workspace: try .empty(isDirty: false))
+        let master = ClientWindowController(profileLibrary: library)
+        let puppetWindow = ClientWindowController(profileLibrary: library)
+        defer {
+            master.close()
+            puppetWindow.close()
+        }
+        let server = ServerProfile(name: "World", host: "example.invalid", port: 8888)
+        let puppet = PuppetProfile(name: "Helper", receivePrefix: "Helper> ", sendPrefix: "tell Helper ")
+        let character = CharacterProfile(name: "Player", puppets: [puppet])
+        puppetWindow.startPuppetSession(
+            master: master,
+            server: server,
+            character: character,
+            puppet: puppet
+        )
+
+        XCTAssertEqual(puppetWindow.sessionTabIndicatorsForTesting, ["⚡️"])
+        await master.applyConnectionStateForTesting(.connecting)
+        XCTAssertEqual(puppetWindow.sessionTabIndicatorsForTesting, [""])
+        await master.applyConnectionStateForTesting(.failed("No route"))
+        XCTAssertEqual(puppetWindow.sessionTabIndicatorsForTesting, ["⚡️"])
     }
 
     @MainActor

@@ -117,7 +117,7 @@ final class ClientWindowCloseTests: XCTestCase {
         let firstTab = try XCTUnwrap(
             WorkspaceUITestSupport.recursiveSubviews(of: content).first {
                 $0.accessibilityIdentifier() == "sessionTab"
-                    && $0.accessibilityLabel() == "First World tab"
+                    && $0.accessibilityLabel() == "First World tab, disconnected"
             }
         )
         let event = try middleMouseDownEvent()

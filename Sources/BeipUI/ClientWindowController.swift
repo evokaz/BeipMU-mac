@@ -69,6 +69,7 @@ private final class SessionTabStripView: NSStackView {
                 tabID: controller.tabDragIdentifier,
                 title: controller.sessionTabTextForTabStrip,
                 trailingIndicators: controller.sessionTabTrailingIndicatorsForTabStrip,
+                isTerminallyDisconnected: controller.isTerminallyDisconnectedForTabStrip,
                 selected: controller === selectedController,
                 color: controller.sessionTabColorForTabStrip,
                 targetController: controller,
@@ -94,6 +95,14 @@ private final class SessionTabStripView: NSStackView {
 
     var tabTooltips: [String?] {
         tabControllers.map { cells[$0.tabDragIdentifier]?.toolTip }
+    }
+
+    var tabIndicators: [String] {
+        tabControllers.compactMap { cells[$0.tabDragIdentifier]?.trailingIndicators }
+    }
+
+    var tabAccessibilityLabels: [String?] {
+        tabControllers.map { cells[$0.tabDragIdentifier]?.accessibilityLabel() }
     }
 
     var selectedTab: SessionWindowTabItemView? {
@@ -330,6 +339,7 @@ private final class SessionWindowTabItemView: NSView, NSDraggingSource {
     private var accentColor = NSColor.controlAccentColor
 
     var isSelectedForLayout: Bool { selected }
+    var trailingIndicators: String { trailingIndicatorLabel.stringValue }
     var naturalWidth: CGFloat {
         let titleWidth = titleLabel.intrinsicContentSize.width
         let indicatorWidth = trailingIndicatorLabel.intrinsicContentSize.width
@@ -342,6 +352,7 @@ private final class SessionWindowTabItemView: NSView, NSDraggingSource {
         tabID: UUID,
         title: String,
         trailingIndicators: String,
+        isTerminallyDisconnected: Bool,
         selected: Bool,
         color: NSColor?,
         targetController: ClientWindowController,
@@ -396,7 +407,9 @@ private final class SessionWindowTabItemView: NSView, NSDraggingSource {
 
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
-        setAccessibilityLabel("\(title) tab")
+        setAccessibilityLabel(
+            isTerminallyDisconnected ? "\(title) tab, disconnected" : "\(title) tab"
+        )
         setAccessibilityIdentifier(selected ? "activeSessionTab" : "sessionTab")
 
         let minimumWidth = widthAnchor.constraint(greaterThanOrEqualToConstant: SessionTabStripView.minimumTabWidth)
@@ -877,6 +890,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private var bypassLastTabReplacement = false
     private var suppressPersistence = false
     private var connectionStateText = "Disconnected"
+    private var isTerminallyDisconnected = true
     private weak var taskbarView: NSStackView?
     private var tracksInputHeight = false
     private var inputHistoryHeight: CGFloat = 84
@@ -914,6 +928,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     var sessionTabTextForTabStrip: String { sessionTabText }
     var sessionTabTrailingIndicatorsForTabStrip: String { sessionTabTrailingIndicators }
     var sessionTabColorForTabStrip: NSColor? { sessionTabColor }
+    var isTerminallyDisconnectedForTabStrip: Bool { isTerminallyDisconnected }
 
     func startDeviceMediaAuditIfRequested() {
         let environment = ProcessInfo.processInfo.environment
@@ -1580,6 +1595,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         set {
             isSessionConnected = newValue
             connectionStateText = newValue ? "Connected" : "Disconnected"
+            isTerminallyDisconnected = !newValue
+            refreshSessionTabsAcrossGroup()
         }
     }
     var closeConnectedTabConfirmationHandlerForTesting: (@MainActor (String, String) -> Bool)?
@@ -1603,6 +1620,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     var sessionTabViewportForTesting: NSScrollView { sessionTabViewport }
     var sessionTabWidthsForTesting: [CGFloat] { sessionTabs.tabWidths }
     var sessionTabTooltipsForTesting: [String?] { sessionTabs.tabTooltips }
+    var sessionTabIndicatorsForTesting: [String] { sessionTabs.tabIndicators }
+    var sessionTabAccessibilityLabelsForTesting: [String?] { sessionTabs.tabAccessibilityLabels }
     var sessionTabContentWidthForTesting: CGFloat { sessionTabs.frame.width }
     var sessionBarFrameForTesting: NSRect { taskbarView?.frame ?? .zero }
     var workspaceHostFrameForTesting: NSRect { dockController?.hostView.frame ?? .zero }
@@ -2912,16 +2931,20 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         case .disconnected:
             stopLogsForConnectionLoss()
             isSessionConnected = false
+            isTerminallyDisconnected = true
             connectionStateText = "Disconnected"; stateLabel.stringValue = connectionStateText; stateLabel.textColor = .secondaryLabelColor
             appendConnectionNotice(.disconnected)
         case .resolving:
             isSessionConnected = false
+            isTerminallyDisconnected = false
             connectionStateText = "Resolving…"; stateLabel.stringValue = connectionStateText; stateLabel.textColor = .systemOrange
         case .connecting:
             isSessionConnected = false
+            isTerminallyDisconnected = false
             connectionStateText = "Connecting…"; stateLabel.stringValue = connectionStateText; stateLabel.textColor = .systemOrange
         case .connected:
             isSessionConnected = true
+            isTerminallyDisconnected = false
             lastTypedAt = Date()
             connectionStateText = "Connected"
             stateLabel.stringValue = connectionStateText
@@ -2931,14 +2954,17 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         case .disconnecting:
             stopLogsForConnectionLoss()
             isSessionConnected = false
+            isTerminallyDisconnected = false
             connectionStateText = "Disconnecting…"; stateLabel.stringValue = connectionStateText; stateLabel.textColor = .systemOrange
         case let .failed(message):
             stopLogsForConnectionLoss()
             isSessionConnected = false
+            isTerminallyDisconnected = true
             connectionStateText = "Failed"; stateLabel.stringValue = connectionStateText; stateLabel.textColor = .systemRed
             appendConnectionError(message)
             if let source { await persistActiveCharacterStatistics(from: source) }
         }
+        refreshSessionTabsAcrossGroup()
         refreshTitlebarStatistics()
         refreshDiagnostics()
         if case .connected = state { webViewWindows.values.forEach { $0.connectionChanged(connected: true) } }
@@ -2961,15 +2987,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         if case .failed = state {
             applyScriptEvaluation(await scriptService.dispatchConnectionEvent("disconnect", host: scriptHostSnapshot), showValue: false)
         }
-        let connected = state == .connected
-        let shouldNotifyPuppets: Bool
-        switch state {
-        case .connected, .disconnected, .failed: shouldNotifyPuppets = true
-        default: shouldNotifyPuppets = false
-        }
-        if shouldNotifyPuppets {
-            puppetChildren.values.forEach { $0.masterConnectionStateChanged(connected: connected) }
-        }
+        puppetChildren.values.forEach { $0.masterConnectionStateChanged(state) }
         if case .disconnecting = state {
             // Puppet windows mirror the master's terminal state only after
             // the transport finishes disconnecting. Their writers still
@@ -3149,6 +3167,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         if !connected { stopLogsForConnectionLoss() }
         let changed = (connectionStateText == "Connected") != connected
         isSessionConnected = connected
+        isTerminallyDisconnected = !connected
         if connected, changed { lastTypedAt = Date() }
         connectionStateText = connected ? "Connected" : "Disconnected"
         stateLabel.stringValue = connectionStateText
@@ -3156,6 +3175,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         refreshTitlebarStatistics()
         webViewWindows.values.forEach { $0.connectionChanged(connected: connected) }
         refreshDiagnostics()
+        refreshSessionTabsAcrossGroup()
         guard changed else { return }
         if connected { startAutomaticLog() }
         Task { [weak self, scriptService] in
@@ -3167,6 +3187,22 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
                 ),
                 showValue: false
             )
+        }
+    }
+
+    private func masterConnectionStateChanged(_ state: ConnectionState) {
+        switch state {
+        case .connected:
+            masterConnectionStateChanged(connected: true)
+        case .disconnected, .failed:
+            masterConnectionStateChanged(connected: false)
+        case .resolving, .connecting:
+            isTerminallyDisconnected = false
+            refreshSessionTabsAcrossGroup()
+        case .disconnecting:
+            isTerminallyDisconnected = false
+            stopLogsForConnectionLoss()
+            refreshSessionTabsAcrossGroup()
         }
     }
 
@@ -4516,6 +4552,11 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         sessionTabs.setTabs(controllers, selectedController: selectedController)
     }
 
+    private func refreshSessionTabsAcrossGroup() {
+        if let sessionTabGroup { sessionTabGroup.refreshTabs() }
+        else { rebuildSessionTabs() }
+    }
+
     func containsSessionTabStrip(screenPoint: NSPoint) -> Bool {
         guard let window, window.isVisible else { return false }
         let windowPoint = window.convertPoint(fromScreen: screenPoint)
@@ -4548,7 +4589,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     var hasDailyLogRolloverTimerForTesting: Bool { dailyLogRolloverTimer?.isValid == true }
 
     private var sessionTabTitle: String {
-        [sessionTabText, sessionTabTrailingIndicators].filter { !$0.isEmpty }.joined(separator: " ")
+        [sessionTabText, sessionWindowTrailingIndicators].filter { !$0.isEmpty }.joined(separator: " ")
     }
 
     private var sessionTabText: String {
@@ -4557,6 +4598,14 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     private var sessionTabTrailingIndicators: String {
+        [
+            isTerminallyDisconnected ? "⚡️" : nil,
+            isMuted ? "🔇" : nil,
+            logWriters.isEmpty ? nil : "📝",
+        ].compactMap { $0 }.joined(separator: " ")
+    }
+
+    private var sessionWindowTrailingIndicators: String {
         [
             isMuted ? "🔇" : nil,
             logWriters.isEmpty ? nil : "📝",
