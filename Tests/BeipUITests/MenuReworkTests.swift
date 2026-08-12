@@ -5,6 +5,40 @@ import XCTest
 
 final class MenuReworkTests: XCTestCase {
     @MainActor
+    func testMenuStripDefaultsTopAndCanSwitchBottomFromContextMenu() throws {
+        let savedPreferences = WorkspacePreferencesStore.load()
+        let controller = ClientWindowController(
+            profileLibrary: ProfileLibrary(workspace: try .empty(isDirty: false)),
+            initialPreferences: WorkspacePreferences(menuStripPosition: .top)
+        )
+        defer {
+            controller.close()
+            WorkspacePreferencesStore.save(savedPreferences)
+        }
+        controller.showWindow(nil)
+        let window = try XCTUnwrap(controller.window)
+        window.contentView?.layoutSubtreeIfNeeded()
+        let originalWindow = window
+        let menu = controller.menuStripContextMenuForTesting
+        let top = try XCTUnwrap(menu.item(withTitle: "Menu Strip at Top"))
+        let bottom = try XCTUnwrap(menu.item(withTitle: "Menu Strip at Bottom"))
+        XCTAssertEqual(top.state, .on)
+        XCTAssertEqual(bottom.state, .off)
+        _ = bottom.target?.perform(bottom.action, with: bottom)
+        window.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertTrue(controller.window === originalWindow)
+        XCTAssertEqual(controller.menuStripPositionForTesting, .bottom)
+        XCTAssertEqual(controller.sessionBarFrameForTesting.width, controller.workspaceHostFrameForTesting.width, accuracy: 0.5)
+        XCTAssertEqual(controller.sessionBarFrameForTesting.maxY, controller.workspaceHostFrameForTesting.minY, accuracy: 0.5)
+        let switched = controller.menuStripContextMenuForTesting
+        XCTAssertEqual(switched.item(withTitle: "Menu Strip at Top")?.state, .off)
+        XCTAssertEqual(switched.item(withTitle: "Menu Strip at Bottom")?.state, .on)
+        XCTAssertNotNil(controller.sessionTabContextMenuForTesting.item(withTitle: "Disconnect"))
+        XCTAssertNotNil(controller.sessionTabContextMenuForTesting.item(withTitle: "Reconnect"))
+        XCTAssertNotNil(controller.sessionTabContextMenuForTesting.item(withTitle: "Close Tab"))
+    }
+
+    @MainActor
     func testSessionBarSpansAboveTheEntireWorkspaceHost() throws {
         let preferences = WorkspacePreferences(workspaceLayout: .tabbedRight)
         let controller = ClientWindowController(

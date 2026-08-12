@@ -5,6 +5,30 @@ import XCTest
 
 final class SettingsWindowControllerTests: XCTestCase {
     @MainActor
+    func testAppearanceExposesMenuStripPositionAndPersistsBottom() throws {
+        let savedPreferences = WorkspacePreferencesStore.load()
+        let library = ProfileLibrary(workspace: try .empty(isDirty: false))
+        let controller = SettingsWindowController(
+            profileLibrary: library,
+            preferencesProvider: { WorkspacePreferences(menuStripPosition: .top) },
+            shortcutsProvider: { KeyboardShortcutStore.load() },
+            context: .init(section: .appearance, initialScope: nil, identity: .init(world: nil, character: nil, tab: nil)),
+            onPreferencesMutation: {},
+            onShortcutsMutation: { _ in }
+        )
+        defer {
+            controller.close()
+            WorkspacePreferencesStore.save(savedPreferences)
+        }
+        let popup = try XCTUnwrap(findView(withIdentifier: "menuStripPosition", in: controller.window?.contentView) as? NSPopUpButton)
+        XCTAssertEqual(popup.itemTitles, ["Top", "Bottom"])
+        XCTAssertEqual(popup.indexOfSelectedItem, 0)
+        popup.selectItem(withTitle: "Bottom")
+        _ = popup.target?.perform(popup.action, with: popup)
+        XCTAssertEqual(WorkspacePreferencesStore.load().menuStripPosition, .bottom)
+    }
+
+    @MainActor
     func testRetainedWindowHasSixDestinationsAndExpectedSizing() throws {
         let library = ProfileLibrary(workspace: try .empty(isDirty: false))
         let controller = SettingsWindowController(

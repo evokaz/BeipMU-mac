@@ -12,6 +12,12 @@ enum WorkspaceThemeMode: String, Codable, CaseIterable {
     var title: String { rawValue.capitalized }
 }
 
+enum MenuStripPosition: String, Codable, CaseIterable {
+    case top, bottom
+
+    var title: String { rawValue.capitalized }
+}
+
 struct WorkspaceThemeSettings: Codable, Equatable {
     var mode: WorkspaceThemeMode = .system
     var foregroundHex = "#E6E6E6"
@@ -210,6 +216,7 @@ struct WorkspacePreferences: Codable, Equatable {
     var atlasSurfaces: [String: AtlasSurfacePreferences] = [:]
     var webViewPanes: [String: [SavedWebViewPane]] = [:]
     var tileMapEdits: [String: [String: GMCPTileMap]] = [:]
+    var menuStripPosition: MenuStripPosition = .top
 
     init(
         outputHistoryLimit: Int = 10_000,
@@ -241,7 +248,8 @@ struct WorkspacePreferences: Codable, Equatable {
         spawnSurfaces: [String: SpawnSurfacePreferences] = [:],
         atlasSurfaces: [String: AtlasSurfacePreferences] = [:],
         webViewPanes: [String: [SavedWebViewPane]] = [:],
-        tileMapEdits: [String: [String: GMCPTileMap]] = [:]
+        tileMapEdits: [String: [String: GMCPTileMap]] = [:],
+        menuStripPosition: MenuStripPosition = .top
     ) {
         self.outputHistoryLimit = outputHistoryLimit
         self.showsTimestamps = showsTimestamps
@@ -273,6 +281,7 @@ struct WorkspacePreferences: Codable, Equatable {
         self.atlasSurfaces = atlasSurfaces
         self.webViewPanes = webViewPanes
         self.tileMapEdits = tileMapEdits
+        self.menuStripPosition = menuStripPosition
     }
 
     init(from decoder: Decoder) throws {
@@ -343,6 +352,7 @@ struct WorkspacePreferences: Codable, Equatable {
         atlasSurfaces = try values.decodeIfPresent([String: AtlasSurfacePreferences].self, forKey: .atlasSurfaces) ?? [:]
         webViewPanes = try values.decodeIfPresent([String: [SavedWebViewPane]].self, forKey: .webViewPanes) ?? [:]
         tileMapEdits = try values.decodeIfPresent([String: [String: GMCPTileMap]].self, forKey: .tileMapEdits) ?? [:]
+        menuStripPosition = try values.decodeIfPresent(MenuStripPosition.self, forKey: .menuStripPosition) ?? .top
     }
 }
 

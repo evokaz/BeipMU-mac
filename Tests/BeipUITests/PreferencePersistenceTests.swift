@@ -56,10 +56,12 @@ final class PreferencePersistenceTests: XCTestCase {
             ],
             tileMapEdits: [
                 "world/character": ["surface": .init(name: "surface", columns: 2, rows: 1, encoding: .hex8, tiles: [3, 4])],
-            ]
+            ],
+            menuStripPosition: .bottom
         )
         WorkspacePreferencesStore.save(preferences, defaults: defaults)
         XCTAssertEqual(WorkspacePreferencesStore.load(defaults: defaults), preferences)
+        XCTAssertEqual(WorkspacePreferencesStore.load(defaults: defaults).menuStripPosition, .bottom)
     }
 
     func testWorkspacePreferencesUseSafeDefaultsForMissingOrCorruptData() throws {
@@ -142,6 +144,7 @@ final class PreferencePersistenceTests: XCTestCase {
         XCTAssertEqual(decoded.workspaceLayouts, [:])
         XCTAssertEqual(decoded.webViewPanes, [:])
         XCTAssertEqual(decoded.tileMapEdits, [:])
+        XCTAssertEqual(decoded.menuStripPosition, .top)
     }
 
     func testUnsafeLayoutValuesAreNormalizedOnLoad() throws {

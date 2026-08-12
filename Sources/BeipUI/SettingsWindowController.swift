@@ -196,6 +196,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     }()
 
     private var appearanceMode: NSPopUpButton!
+    private var menuStripPosition: NSPopUpButton!
     private var appearanceForeground: NSColorWell!
     private var appearanceBackground: NSColorWell!
     private var appearanceAccent: NSColorWell!
@@ -679,8 +680,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         appearanceForeground = makeColorWell("themeForeground")
         appearanceBackground = makeColorWell("themeBackground")
         appearanceAccent = makeColorWell("themeAccent")
+        menuStripPosition = NSPopUpButton()
+        menuStripPosition.addItems(withTitles: MenuStripPosition.allCases.map(\.title))
+        menuStripPosition.target = self
+        menuStripPosition.action = #selector(controlChanged(_:))
+        menuStripPosition.setAccessibilityIdentifier("menuStripPosition")
+        menuStripPosition.translatesAutoresizingMaskIntoConstraints = false
+        menuStripPosition.widthAnchor.constraint(equalToConstant: 220).isActive = true
         contentStack.addArrangedSubview(group("Window and chrome appearance", [
             row("Mode:", appearanceMode),
+            row("Menu strip position:", menuStripPosition),
             row("Workspace text:", appearanceForeground),
             row("Workspace background:", appearanceBackground),
             row("Accent:", appearanceAccent),
@@ -693,6 +702,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         let preferences = currentPreferences()
         let theme = preferences.theme
         appearanceMode.selectItem(at: WorkspaceThemeMode.allCases.firstIndex(of: theme.mode) ?? 0)
+        menuStripPosition.selectItem(at: MenuStripPosition.allCases.firstIndex(of: preferences.menuStripPosition) ?? 0)
         appearanceForeground.color = NSColor(hexString: theme.foregroundHex) ?? .textColor
         appearanceBackground.color = NSColor(hexString: theme.backgroundHex) ?? .textBackgroundColor
         appearanceAccent.color = NSColor(hexString: theme.accentHex) ?? .controlAccentColor
@@ -712,6 +722,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     }
 
     private func appearanceChanged(_ sender: Any?) {
+        if (sender as? NSPopUpButton) === menuStripPosition {
+            let position = MenuStripPosition.allCases[menuStripPosition.indexOfSelectedItem]
+            mutatePreferences { $0.menuStripPosition = position }
+            return
+        }
         let theme = WorkspaceThemeSettings(
             mode: WorkspaceThemeMode.allCases[appearanceMode.indexOfSelectedItem],
             foregroundHex: appearanceForeground.color.hexString,

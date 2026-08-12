@@ -849,7 +849,7 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
         let menu = first.sessionTabContextMenuForTesting
         XCTAssertEqual(
             menu.items.filter { !$0.isSeparatorItem }.map(\.title),
-            ["Disconnect", "Reconnect", "Close Tab"]
+            ["Disconnect", "Reconnect", "Close Tab", "Menu Strip at Top", "Menu Strip at Bottom"]
         )
 
         for item in menu.items where !item.isSeparatorItem {

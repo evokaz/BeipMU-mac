@@ -250,6 +250,15 @@ private final class SessionTabStripView: NSStackView {
 }
 
 @MainActor
+private final class MenuStripView: NSStackView {
+    weak var owner: ClientWindowController?
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        owner?.menuStripContextMenu()
+    }
+}
+
+@MainActor
 private final class SessionTabScrollView: NSScrollView {
     private weak var strip: SessionTabStripView?
     private var shouldRevealSelection = false
@@ -892,6 +901,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private var connectionStateText = "Disconnected"
     private var isTerminallyDisconnected = true
     private weak var taskbarView: NSStackView?
+    private weak var rootStackView: NSStackView?
+    private weak var workspaceHostView: NSView?
     private var tracksInputHeight = false
     private var inputHistoryHeight: CGFloat = 84
     private var isRestoringInputSplitLayout = false
@@ -1590,6 +1601,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     var tabBarApplicationMenuForTesting: NSMenu { tabBarApplicationMenu() }
     var quickConnectMenuForTesting: NSMenu { quickConnectMenu() }
     var sessionTabContextMenuForTesting: NSMenu { sessionTabContextMenu() }
+    var menuStripContextMenuForTesting: NSMenu { menuStripContextMenu() }
     var isSessionConnectedForTesting: Bool {
         get { isSessionConnected }
         set {
@@ -1625,6 +1637,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     var sessionTabContentWidthForTesting: CGFloat { sessionTabs.frame.width }
     var sessionBarFrameForTesting: NSRect { taskbarView?.frame ?? .zero }
     var workspaceHostFrameForTesting: NSRect { dockController?.hostView.frame ?? .zero }
+    var menuStripPositionForTesting: MenuStripPosition { preferences.menuStripPosition }
 
     func disconnect() {
         if let puppet = currentPuppet, let master = puppetMaster {
@@ -1690,7 +1703,39 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         closeItem.isEnabled = window != nil
         menu.addItem(closeItem)
 
+        menu.addItem(.separator())
+        appendMenuStripPositionItems(to: menu)
+
         return menu
+    }
+
+    func menuStripContextMenu() -> NSMenu {
+        let menu = NSMenu(title: "Menu Strip")
+        menu.autoenablesItems = false
+        appendMenuStripPositionItems(to: menu)
+        return menu
+    }
+
+    private func appendMenuStripPositionItems(to menu: NSMenu) {
+        for position in MenuStripPosition.allCases {
+            let item = NSMenuItem(
+                title: "Menu Strip at \(position.title)",
+                action: #selector(changeMenuStripPosition(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = position
+            item.state = preferences.menuStripPosition == position ? .on : .off
+            menu.addItem(item)
+        }
+    }
+
+    @objc private func changeMenuStripPosition(_ sender: NSMenuItem) {
+        guard let position = sender.representedObject as? MenuStripPosition else { return }
+        preferences.menuStripPosition = position
+        WorkspacePreferencesStore.update { $0.menuStripPosition = position }
+        applyMenuStripPosition()
+        onWorkspacePreferencesChange?()
     }
 
     @objc private func contextDisconnectTab(_ sender: Any?) {
@@ -2464,7 +2509,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         root.spacing = 0
         root.translatesAutoresizingMaskIntoConstraints = false
 
-        let taskbar = NSStackView()
+        let taskbar = MenuStripView()
+        taskbar.owner = self
         taskbarView = taskbar
         taskbar.setAccessibilityIdentifier("sessionBar")
         taskbar.orientation = .horizontal
@@ -2569,10 +2615,12 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         inputSplitView.setContentHuggingPriority(.defaultLow, for: .vertical)
         inputSplitView.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
 
-        root.addArrangedSubview(taskbar)
         let dockController = WorkspaceDockController(mainView: inputSplitView, ownerWindow: window)
         self.dockController = dockController
         dockController.hostView.setAccessibilityIdentifier("workspaceDockHost")
+        rootStackView = root
+        workspaceHostView = dockController.hostView
+        root.addArrangedSubview(taskbar)
         root.addArrangedSubview(dockController.hostView)
         dockController.onPlacementChange = { [weak self] placement, thickness in
             guard let self else { return }
@@ -2612,6 +2660,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             root.topAnchor.constraint(equalTo: windowContent.topAnchor),
             root.bottomAnchor.constraint(equalTo: windowContent.bottomAnchor),
         ])
+        applyMenuStripPosition()
         let verticalResizeHandle = VerticalWindowResizeHandle(
             frame: NSRect(x: 0, y: 0, width: windowContent.bounds.width, height: 8)
         )
@@ -4644,6 +4693,21 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         applyThemeSettings(preferences.theme)
     }
 
+    private func applyMenuStripPosition() {
+        guard let root = rootStackView, let bar = taskbarView, let host = workspaceHostView else { return }
+        root.removeArrangedSubview(bar)
+        root.removeArrangedSubview(host)
+        if preferences.menuStripPosition == .top {
+            root.addArrangedSubview(bar)
+            root.addArrangedSubview(host)
+        } else {
+            root.addArrangedSubview(host)
+            root.addArrangedSubview(bar)
+        }
+        root.needsLayout = true
+        root.layoutSubtreeIfNeeded()
+    }
+
     private func savePreferences() {
         guard !suppressPersistence else { return }
         preferences = WorkspacePreferencesStore.saveMergingSessionState(
@@ -4974,6 +5038,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         preferences.worldInputWindowSettings = saved.worldInputWindowSettings
         preferences.characterInputWindowSettings = saved.characterInputWindowSettings
         preferences.tabInputWindowSettings = saved.tabInputWindowSettings
+        preferences.menuStripPosition = saved.menuStripPosition
         applyTextWindowSettings()
         output.showsInlineImagePreviews = preferences.showsInlineImagePreviews
         triggerSpawnWindows.values.forEach { $0.showsInlineImagePreviews = preferences.showsInlineImagePreviews }
@@ -4983,6 +5048,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         secondaryInputWindows.forEach { $0.input.isContinuousSpellCheckingEnabled = preferences.checksSpelling }
         if output.isSplit != preferences.outputSplit { output.toggleSplit() }
         applyThemeSettings(preferences.theme)
+        applyMenuStripPosition()
     }
 
     private var notesKey: String {
