@@ -5,6 +5,43 @@ import Foundation
 import XCTest
 
 final class LegacyProfileProjectionTests: XCTestCase {
+    func testTaskbarOnTopUsesOnlyRootBooleanAndWritesLosslessly() throws {
+        let cases: [(String?, Bool)] = [
+            ("true", true),
+            ("false", false),
+            (nil, true),
+            ("invalid", true),
+            ("yes", true),
+            ("no", false),
+            ("1", true),
+            ("0", false),
+        ]
+
+        for (value, expected) in cases {
+            let root = value.map { "TaskbarOnTop=\($0)\n" } ?? ""
+            let source = """
+            Version=331
+            \(root)Connections { Shortcuts { World { TaskbarOnTop=false Host="example.test:1" } } }
+            """
+            let document = try LegacyConfigurationDocument(source: source)
+            let projection = try LegacyConfigurationProjection(document: document)
+            XCTAssertEqual(projection.taskbarOnTop, expected, "value=\(String(describing: value))")
+
+            var updated = projection
+            updated.taskbarOnTop = false
+            let rendered = try updated.applying(to: document)
+            XCTAssertEqual(rendered.value(at: ["TaskbarOnTop"]), "false")
+            XCTAssertEqual(
+                rendered.value(at: ["Connections", "Shortcuts", "World", "TaskbarOnTop"]),
+                "false"
+            )
+        }
+
+        let missing = try LegacyConfigurationDocument(source: "Version=331\nConnections { Shortcuts { } }\n")
+        let projection = try LegacyConfigurationProjection(document: missing)
+        XCTAssertEqual(try projection.applying(to: missing).value(at: ["TaskbarOnTop"]), nil)
+    }
+
     func testProjectionLoadsKeyboardMacrosAtEveryConnectionScope() throws {
         let source = """
         Version=331

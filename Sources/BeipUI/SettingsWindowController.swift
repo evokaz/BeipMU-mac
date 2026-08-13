@@ -177,6 +177,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     private var selectedScopes: [SettingsSection: Scope] = [:]
     private var preferencesSnapshot: WorkspacePreferences?
     private var applyingExternalChange = false
+    private var profileLibraryObserverID: UUID?
 
     private let sidebar = NSTableView()
     private let sidebarScroll = NSScrollView()
@@ -322,6 +323,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         window.delegate = self
         window.isReleasedWhenClosed = false
         RuntimeStateContext.setFrameAutosaveName("BeipMUSettingsWindow", for: window)
+        profileLibraryObserverID = profileLibrary.addChangeObserver { [weak self] in
+            self?.refreshFromExternalChange()
+        }
         configureWindow()
         present(context: context)
     }
@@ -715,7 +719,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         let preferences = currentPreferences()
         let theme = preferences.theme
         appearanceMode.selectItem(at: WorkspaceThemeMode.allCases.firstIndex(of: theme.mode) ?? 0)
-        menuStripPosition.selectItem(at: MenuStripPosition.allCases.firstIndex(of: preferences.menuStripPosition) ?? 0)
+        let position: MenuStripPosition = profileLibrary.workspace.projection.taskbarOnTop ? .top : .bottom
+        menuStripPosition.selectItem(at: MenuStripPosition.allCases.firstIndex(of: position) ?? 0)
         appearanceForeground.color = NSColor(hexString: theme.foregroundHex) ?? .textColor
         appearanceBackground.color = NSColor(hexString: theme.backgroundHex) ?? .textBackgroundColor
         appearanceAccent.color = NSColor(hexString: theme.accentHex) ?? .controlAccentColor
@@ -737,7 +742,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     private func appearanceChanged(_ sender: Any?) {
         if (sender as? NSPopUpButton) === menuStripPosition {
             let position = MenuStripPosition.allCases[menuStripPosition.indexOfSelectedItem]
-            mutatePreferences { $0.menuStripPosition = position }
+            do {
+                try profileLibrary.mutate { workspace in
+                    workspace.setTaskbarOnTop(position == .top)
+                }
+                onPreferencesMutation()
+            } catch {
+                showInlineError("Unable to save menu strip position: \(error.localizedDescription)")
+            }
             return
         }
         let theme = WorkspaceThemeSettings(

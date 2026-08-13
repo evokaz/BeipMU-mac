@@ -5,6 +5,25 @@ import Foundation
 import XCTest
 
 final class LegacyEditableWorkspaceTests: XCTestCase {
+    func testWorkspaceTaskbarMutationRoundTripsAndMarksDirty() throws {
+        let source = """
+        Version=331
+        // preserve this unknown root content
+        Future="untouched"
+        Connections { Shortcuts { } }
+        """
+        var workspace = try LegacyConfigurationWorkspace(document: .init(source: source), isDirty: false)
+        XCTAssertTrue(workspace.taskbarOnTop)
+        XCTAssertFalse(workspace.hasRootTaskbarOnTopAssignment)
+
+        workspace.setTaskbarOnTop(false)
+        XCTAssertTrue(workspace.isDirty)
+        let rendered = try workspace.renderedDocument()
+        XCTAssertEqual(rendered.value(at: ["TaskbarOnTop"]), "false")
+        XCTAssertTrue(rendered.serialized().contains("Future=\"untouched\""))
+        XCTAssertFalse(try LegacyConfigurationWorkspace(document: rendered).taskbarOnTop)
+    }
+
     func testWorkspaceEditsNestedTriggersByPathAndPreservesUnknownChildFields() throws {
         let source = """
         Version=331

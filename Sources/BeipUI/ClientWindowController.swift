@@ -1673,7 +1673,9 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     var sessionTabContentWidthForTesting: CGFloat { sessionTabs.frame.width }
     var sessionBarFrameForTesting: NSRect { taskbarView?.frame ?? .zero }
     var workspaceHostFrameForTesting: NSRect { dockController?.hostView.frame ?? .zero }
-    var menuStripPositionForTesting: MenuStripPosition { preferences.menuStripPosition }
+    var menuStripPositionForTesting: MenuStripPosition {
+        profileLibrary.workspace.projection.taskbarOnTop ? .top : .bottom
+    }
 
     func disconnect() {
         if let puppet = currentPuppet, let master = puppetMaster {
@@ -1759,17 +1761,22 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             )
             item.target = self
             item.representedObject = position
-            item.state = preferences.menuStripPosition == position ? .on : .off
+            let current = profileLibrary.workspace.projection.taskbarOnTop ? MenuStripPosition.top : .bottom
+            item.state = current == position ? .on : .off
             menu.addItem(item)
         }
     }
 
     @objc private func changeMenuStripPosition(_ sender: NSMenuItem) {
         guard let position = sender.representedObject as? MenuStripPosition else { return }
-        preferences.menuStripPosition = position
-        WorkspacePreferencesStore.update { $0.menuStripPosition = position }
-        applyMenuStripPosition()
-        onWorkspacePreferencesChange?()
+        do {
+            try profileLibrary.mutate { workspace in
+                workspace.setTaskbarOnTop(position == .top)
+            }
+            onWorkspacePreferencesChange?()
+        } catch {
+            appendError("Unable to save menu strip position: \(error.localizedDescription)")
+        }
     }
 
     @objc private func contextDisconnectTab(_ sender: Any?) {
@@ -3673,6 +3680,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
 
     private func profileLibraryDidChange() {
         reloadCurrentAutomation(resetRuntimeState: true)
+        applyMenuStripPosition()
         refreshDiagnostics()
         updateWindowTitle()
         tabStateDidChange()
@@ -4516,7 +4524,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         guard let root = rootStackView, let bar = taskbarView, let host = workspaceHostView else { return }
         root.removeArrangedSubview(bar)
         root.removeArrangedSubview(host)
-        if preferences.menuStripPosition == .top {
+        if profileLibrary.workspace.projection.taskbarOnTop {
             root.addArrangedSubview(bar)
             root.addArrangedSubview(host)
         } else {
@@ -4857,7 +4865,6 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         preferences.worldInputWindowSettings = saved.worldInputWindowSettings
         preferences.characterInputWindowSettings = saved.characterInputWindowSettings
         preferences.tabInputWindowSettings = saved.tabInputWindowSettings
-        preferences.menuStripPosition = saved.menuStripPosition
         applyTextWindowSettings()
         output.showsInlineImagePreviews = preferences.showsInlineImagePreviews
         triggerSpawnWindows.values.forEach { $0.showsInlineImagePreviews = preferences.showsInlineImagePreviews }

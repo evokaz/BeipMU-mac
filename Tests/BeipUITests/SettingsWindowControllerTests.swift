@@ -6,11 +6,11 @@ import XCTest
 final class SettingsWindowControllerTests: XCTestCase {
     @MainActor
     func testAppearanceExposesMenuStripPositionAndPersistsBottom() throws {
-        let savedPreferences = WorkspacePreferencesStore.load()
-        let library = ProfileLibrary(workspace: try .empty(isDirty: false))
+        var workspace = try LegacyConfigurationWorkspace.empty(isDirty: false)
+        workspace.setTaskbarOnTop(true)
+        let library = ProfileLibrary(workspace: workspace)
         let controller = SettingsWindowController(
             profileLibrary: library,
-            preferencesProvider: { WorkspacePreferences(menuStripPosition: .top) },
             shortcutsProvider: { KeyboardShortcutStore.load() },
             context: .init(section: .appearance, initialScope: nil, identity: .init(world: nil, character: nil, tab: nil)),
             onPreferencesMutation: {},
@@ -18,14 +18,14 @@ final class SettingsWindowControllerTests: XCTestCase {
         )
         defer {
             controller.close()
-            WorkspacePreferencesStore.save(savedPreferences)
         }
         let popup = try XCTUnwrap(findView(withIdentifier: "menuStripPosition", in: controller.window?.contentView) as? NSPopUpButton)
         XCTAssertEqual(popup.itemTitles, ["Top", "Bottom"])
         XCTAssertEqual(popup.indexOfSelectedItem, 0)
         popup.selectItem(withTitle: "Bottom")
         _ = popup.target?.perform(popup.action, with: popup)
-        XCTAssertEqual(WorkspacePreferencesStore.load().menuStripPosition, .bottom)
+        XCTAssertFalse(library.workspace.taskbarOnTop)
+        XCTAssertEqual(try library.workspace.renderedDocument().value(at: ["TaskbarOnTop"]), "false")
     }
 
     @MainActor

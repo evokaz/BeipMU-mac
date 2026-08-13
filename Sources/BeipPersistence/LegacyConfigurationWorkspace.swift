@@ -92,6 +92,25 @@ public struct LegacyConfigurationWorkspace: Sendable {
 
     public var servers: [LegacyConfigurationProjection.Server] { projection.servers }
     public var settings: LegacyConfigurationProjection.ConnectionSettings { projection.settings }
+    public var taskbarOnTop: Bool { projection.taskbarOnTop }
+
+    /// Distinguishes an absent root assignment from an invalid one. This is
+    /// needed only by the one-time Mac preference migration; projection
+    /// consumers should use `taskbarOnTop`, whose invalid/missing default is
+    /// the portable top placement.
+    public var hasRootTaskbarOnTopAssignment: Bool {
+        document.assignmentValues(at: []).contains {
+            $0.name.caseInsensitiveCompare("TaskbarOnTop") == .orderedSame
+        }
+    }
+
+    /// Updates the portable menu strip placement. The syntax tree is rendered
+    /// from the projection on save, so this keeps the edit lossless and marks
+    /// the workspace dirty just like the other projection-backed settings.
+    public mutating func setTaskbarOnTop(_ value: Bool) {
+        projection.taskbarOnTop = value
+        isDirty = true
+    }
 
     /// The intentionally small action surface exposed by the first native
     /// automation editor. Existing advanced action blocks remain untouched.

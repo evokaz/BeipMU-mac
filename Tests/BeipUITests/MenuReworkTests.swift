@@ -6,14 +6,14 @@ import XCTest
 final class MenuReworkTests: XCTestCase {
     @MainActor
     func testMenuStripDefaultsTopAndCanSwitchBottomFromContextMenu() throws {
-        let savedPreferences = WorkspacePreferencesStore.load()
+        var workspace = try LegacyConfigurationWorkspace.empty(isDirty: false)
+        workspace.setTaskbarOnTop(true)
+        let library = ProfileLibrary(workspace: workspace)
         let controller = ClientWindowController(
-            profileLibrary: ProfileLibrary(workspace: try .empty(isDirty: false)),
-            initialPreferences: WorkspacePreferences(menuStripPosition: .top)
+            profileLibrary: library
         )
         defer {
             controller.close()
-            WorkspacePreferencesStore.save(savedPreferences)
         }
         controller.showWindow(nil)
         let window = try XCTUnwrap(controller.window)
@@ -28,6 +28,7 @@ final class MenuReworkTests: XCTestCase {
         window.contentView?.layoutSubtreeIfNeeded()
         XCTAssertTrue(controller.window === originalWindow)
         XCTAssertEqual(controller.menuStripPositionForTesting, .bottom)
+        XCTAssertFalse(library.workspace.taskbarOnTop)
         XCTAssertEqual(controller.sessionBarFrameForTesting.width, controller.workspaceHostFrameForTesting.width, accuracy: 0.5)
         XCTAssertEqual(controller.sessionBarFrameForTesting.maxY, controller.workspaceHostFrameForTesting.minY, accuracy: 0.5)
         let switched = controller.menuStripContextMenuForTesting

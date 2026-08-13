@@ -136,6 +136,10 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
     public var automation: Automation
 
     public var sourceVersion: Int
+    /// Whether the portable menu strip is placed above the workspace.
+    /// Config.txt stores this as the root-level `TaskbarOnTop` assignment;
+    /// absent or invalid values intentionally use the Windows default.
+    public var taskbarOnTop: Bool
     public var settings: ConnectionSettings
     public var scripting: Scripting
     public var logging: SessionLogOptions
@@ -148,6 +152,7 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
             throw ProjectionError.newerConfiguration(found: version, supported: Self.currentWindowsVersion)
         }
         sourceVersion = version
+        taskbarOnTop = document.rootBool("TaskbarOnTop") ?? true
         let connections = document.firstBlock(named: "Connections")?.children ?? []
         let globalAutomation = Self.automation(from: connections)
         automation = globalAutomation
@@ -365,6 +370,10 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
         try migratePortableLegacyValues(in: &result)
         try removeStaleProfileEntries(from: &result)
         try result.upsertValue(String(targetVersion), at: ["Version"], quoted: false)
+        try Self.upsert(
+            Self.flag(taskbarOnTop), default: "true",
+            at: ["TaskbarOnTop"], quoted: false, in: &result
+        )
         try Self.upsert(
             String(settings.connectTimeoutMilliseconds), default: "30000",
             at: ["Connections", "ConnectTimeout"], quoted: false, in: &result

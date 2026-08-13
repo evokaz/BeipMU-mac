@@ -4,6 +4,24 @@ import XCTest
 
 @MainActor
 final class ProfileLibraryPersistenceTests: XCTestCase {
+    func testTaskbarPlacementPersistsThroughWorkspaceAndExport() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BeipMU.ProfileLibraryTests.\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let library = try ProfileLibrary(storageDirectory: directory)
+        try library.mutate { workspace in
+            workspace.setTaskbarOnTop(false)
+        }
+        XCTAssertFalse(library.workspace.taskbarOnTop)
+
+        let relaunched = try ProfileLibrary(storageDirectory: directory)
+        XCTAssertFalse(relaunched.workspace.taskbarOnTop)
+        let export = directory.appendingPathComponent("Export.txt")
+        try relaunched.export(to: export)
+        XCTAssertTrue(try String(contentsOf: export, encoding: .utf8).contains("TaskbarOnTop=false"))
+    }
+
     func testClearOpenTabGroupsRemovesSavedSessionPersistence() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("BeipMU.ProfileLibraryTests.\(UUID().uuidString)", isDirectory: true)

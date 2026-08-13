@@ -216,7 +216,6 @@ struct WorkspacePreferences: Codable, Equatable {
     var atlasSurfaces: [String: AtlasSurfacePreferences] = [:]
     var webViewPanes: [String: [SavedWebViewPane]] = [:]
     var tileMapEdits: [String: [String: GMCPTileMap]] = [:]
-    var menuStripPosition: MenuStripPosition = .top
 
     init(
         outputHistoryLimit: Int = 10_000,
@@ -248,8 +247,7 @@ struct WorkspacePreferences: Codable, Equatable {
         spawnSurfaces: [String: SpawnSurfacePreferences] = [:],
         atlasSurfaces: [String: AtlasSurfacePreferences] = [:],
         webViewPanes: [String: [SavedWebViewPane]] = [:],
-        tileMapEdits: [String: [String: GMCPTileMap]] = [:],
-        menuStripPosition: MenuStripPosition = .top
+        tileMapEdits: [String: [String: GMCPTileMap]] = [:]
     ) {
         self.outputHistoryLimit = outputHistoryLimit
         self.showsTimestamps = showsTimestamps
@@ -281,7 +279,6 @@ struct WorkspacePreferences: Codable, Equatable {
         self.atlasSurfaces = atlasSurfaces
         self.webViewPanes = webViewPanes
         self.tileMapEdits = tileMapEdits
-        self.menuStripPosition = menuStripPosition
     }
 
     init(from decoder: Decoder) throws {
@@ -352,12 +349,51 @@ struct WorkspacePreferences: Codable, Equatable {
         atlasSurfaces = try values.decodeIfPresent([String: AtlasSurfacePreferences].self, forKey: .atlasSurfaces) ?? [:]
         webViewPanes = try values.decodeIfPresent([String: [SavedWebViewPane]].self, forKey: .webViewPanes) ?? [:]
         tileMapEdits = try values.decodeIfPresent([String: [String: GMCPTileMap]].self, forKey: .tileMapEdits) ?? [:]
-        menuStripPosition = try values.decodeIfPresent(MenuStripPosition.self, forKey: .menuStripPosition) ?? .top
     }
 }
 
 enum WorkspacePreferencesStore {
     private static let key = "BeipMU.WorkspacePreferences.v1"
+
+    /// Reads the retired menu-strip field without decoding it into the active
+    /// preferences model. Application startup uses this to perform the one
+    /// time Config.txt migration before any client windows are created.
+    static func legacyMenuStripPosition(defaults suppliedDefaults: UserDefaults? = nil) -> MenuStripPosition? {
+        let defaults = suppliedDefaults ?? activeDefaults
+        guard let data = defaults.data(forKey: key),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let raw = object["menuStripPosition"] as? String else {
+            return nil
+        }
+        return MenuStripPosition(rawValue: raw)
+    }
+
+    static func hasLegacyMenuStripPosition(defaults suppliedDefaults: UserDefaults? = nil) -> Bool {
+        let defaults = suppliedDefaults ?? activeDefaults
+        guard let data = defaults.data(forKey: key),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return false
+        }
+        return object["menuStripPosition"] != nil
+    }
+
+    /// Removes the retired field while retaining all other preference JSON.
+    /// Returning false means there was no field to consume (or the stored
+    /// value could not be rewritten), allowing migration callers to preserve
+    /// the legacy signal when a write fails.
+    @discardableResult
+    static func consumeLegacyMenuStripPosition(defaults suppliedDefaults: UserDefaults? = nil) -> Bool {
+        let defaults = suppliedDefaults ?? activeDefaults
+        guard let data = defaults.data(forKey: key),
+              var object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              object.removeValue(forKey: "menuStripPosition") != nil,
+              JSONSerialization.isValidJSONObject(object),
+              let rewritten = try? JSONSerialization.data(withJSONObject: object) else {
+            return false
+        }
+        defaults.set(rewritten, forKey: key)
+        return true
+    }
 
     static func load(defaults suppliedDefaults: UserDefaults? = nil) -> WorkspacePreferences {
         let defaults = suppliedDefaults ?? activeDefaults

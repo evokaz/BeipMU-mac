@@ -69,12 +69,48 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
             storageDirectory: context.configurationDirectory,
             allowsExternalConfigurationMigration: context.configuration == .release
         )
+        Self.migrateLegacyMenuStripPosition(profileLibrary: profileLibrary)
         recoveryStore = try! SessionRecoveryStore(
             url: context.configurationDirectory.appendingPathComponent("Recovery.dat"),
             capacity: profileLibrary.workspace.projection.logging.restoreBufferSize
         )
         currentTheme = WorkspacePreferencesStore.load().theme
         super.init()
+    }
+
+    /// Converts the retired Mac-only JSON placement into the portable root
+    /// Config.txt field once, before any client window is constructed. The
+    /// legacy JSON key is consumed only after a successful portable write (or
+    /// when an explicit root assignment already makes migration unnecessary).
+    private static func migrateLegacyMenuStripPosition(profileLibrary: ProfileLibrary) {
+        guard WorkspacePreferencesStore.hasLegacyMenuStripPosition(),
+              let legacy = WorkspacePreferencesStore.legacyMenuStripPosition() else {
+            // An unrecognized value cannot affect placement, but retaining it
+            // would make every future launch reconsider the retired setting.
+            if WorkspacePreferencesStore.hasLegacyMenuStripPosition() {
+                _ = WorkspacePreferencesStore.consumeLegacyMenuStripPosition()
+            }
+            return
+        }
+
+        if profileLibrary.workspace.hasRootTaskbarOnTopAssignment {
+            _ = WorkspacePreferencesStore.consumeLegacyMenuStripPosition()
+            return
+        }
+
+        guard legacy == .bottom else {
+            _ = WorkspacePreferencesStore.consumeLegacyMenuStripPosition()
+            return
+        }
+
+        do {
+            try profileLibrary.mutate { workspace in
+                workspace.setTaskbarOnTop(false)
+            }
+            _ = WorkspacePreferencesStore.consumeLegacyMenuStripPosition()
+        } catch {
+            // Keep the JSON key so a later launch can retry the migration.
+        }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {

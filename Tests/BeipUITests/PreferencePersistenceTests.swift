@@ -57,11 +57,12 @@ final class PreferencePersistenceTests: XCTestCase {
             tileMapEdits: [
                 "world/character": ["surface": .init(name: "surface", columns: 2, rows: 1, encoding: .hex8, tiles: [3, 4])],
             ],
-            menuStripPosition: .bottom
         )
         WorkspacePreferencesStore.save(preferences, defaults: defaults)
         XCTAssertEqual(WorkspacePreferencesStore.load(defaults: defaults), preferences)
-        XCTAssertEqual(WorkspacePreferencesStore.load(defaults: defaults).menuStripPosition, .bottom)
+        let savedJSON = try XCTUnwrap(defaults.data(forKey: "BeipMU.WorkspacePreferences.v1"))
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: savedJSON) as? [String: Any])
+        XCTAssertNil(object["menuStripPosition"])
     }
 
     func testWorkspacePreferencesUseSafeDefaultsForMissingOrCorruptData() throws {
@@ -144,7 +145,24 @@ final class PreferencePersistenceTests: XCTestCase {
         XCTAssertEqual(decoded.workspaceLayouts, [:])
         XCTAssertEqual(decoded.webViewPanes, [:])
         XCTAssertEqual(decoded.tileMapEdits, [:])
-        XCTAssertEqual(decoded.menuStripPosition, .top)
+    }
+
+    func testRetiredMenuStripFieldCanBeReadAndConsumedWithoutASecondSourceOfTruth() throws {
+        let isolatedDefaults = try WorkspaceUITestSupport.makeIsolatedDefaults()
+        let suiteName = isolatedDefaults.suiteName
+        let defaults = isolatedDefaults.defaults
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let data = try JSONSerialization.data(withJSONObject: [
+            "menuStripPosition": "bottom",
+            "outputHistoryLimit": 2_000,
+        ])
+        defaults.set(data, forKey: "BeipMU.WorkspacePreferences.v1")
+        XCTAssertTrue(WorkspacePreferencesStore.hasLegacyMenuStripPosition(defaults: defaults))
+        XCTAssertEqual(WorkspacePreferencesStore.legacyMenuStripPosition(defaults: defaults), .bottom)
+        XCTAssertTrue(WorkspacePreferencesStore.consumeLegacyMenuStripPosition(defaults: defaults))
+        XCTAssertFalse(WorkspacePreferencesStore.hasLegacyMenuStripPosition(defaults: defaults))
+        XCTAssertEqual(WorkspacePreferencesStore.load(defaults: defaults).outputHistoryLimit, 2_000)
     }
 
     func testUnsafeLayoutValuesAreNormalizedOnLoad() throws {
