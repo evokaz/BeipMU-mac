@@ -57,6 +57,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     var onContextMenu: ((NSEvent) -> NSMenu?)?
     var onPageUp: (() -> Bool)?
     var onPageDown: (() -> Bool)?
+    var onUserScrollToEnd: (() -> Void)?
     var onSelectionCompleted: (() -> Void)?
     var onInteractionCompleted: (() -> Void)?
     private(set) var renderedItemCount = 0
@@ -74,7 +75,10 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     private var mouseDownPreview: PreviewHit?
     private var trackingArea: NSTrackingArea?
     private var markedItems: Set<UUID> = []
-    private var newContentBoundaryItemID: UUID?
+    /// The logical insertion point before which unread content starts. Unlike
+    /// a line UUID this remains meaningful when the line at the boundary is
+    /// evicted or removed.
+    private var newContentBoundaryPosition: Int?
     private var blinkTimer: Timer?
     private var blinkVisible = true
     private var blinkingItemCount = 0
@@ -134,7 +138,11 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     var isAnimationTimerActive: Bool { animationTimer != nil }
     var previewDownloadCountForTesting: Int { previewDownloadCount }
     var selectedRangeIsEmpty: Bool { anchor == nil || anchor == focus }
-    var newContentBoundaryItemIDForTesting: UUID? { newContentBoundaryItemID }
+    var newContentBoundaryItemIDForTesting: UUID? {
+        guard let newContentBoundaryPosition else { return nil }
+        return item(at: newContentBoundaryPosition)?.id
+    }
+    var newContentBoundaryPositionForTesting: Int? { newContentBoundaryPosition }
     var effectiveContentWidthForTesting: CGFloat { contentWidth }
     func renderedAttributedTextForTesting(at index: Int) -> NSAttributedString? {
         item(at: index).map(attributedTextForLayout(_:))
@@ -198,7 +206,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     }
 
     func setItems(_ items: [Item]) {
-        let boundaryID = newContentBoundaryItemID
+        let boundaryPosition = newContentBoundaryPosition
         storage = items
         head = 0
         anchor = nil
@@ -214,7 +222,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
             self.hoveredLink = nil
         }
         markedItems.formIntersection(items.map(\.id))
-        newContentBoundaryItemID = boundaryID.flatMap { id in items.contains(where: { $0.id == id }) ? id : nil }
+        newContentBoundaryPosition = boundaryPosition.map { min(max(0, $0), items.count) }
         blinkingItemCount = items.reduce(0) { $0 + (hasBlink($1) ? 1 : 0) }
         let activePreviewURLs = showsInlineImagePreviews
             ? Set(items.flatMap(\.previews).map(\.source))
@@ -251,10 +259,12 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
                 if hasBlink(removedItem) { blinkingItemCount -= 1 }
                 itemIndices.removeValue(forKey: removedItem.id)
                 markedItems.remove(removedItem.id)
-                if newContentBoundaryItemID == removedItem.id { newContentBoundaryItemID = nil }
             }
         }
         head += removed
+        if let newContentBoundaryPosition {
+            self.newContentBoundaryPosition = max(0, newContentBoundaryPosition - removed)
+        }
         layoutIndex.removeFirst(removed)
         adjustSelectionAfterRemovingFirst(removed)
         if head >= 1_024, head * 2 >= storage.count {
@@ -279,7 +289,9 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         if hoveredLink?.itemID == item.id { hoveredLink = nil }
         if hasBlink(item) { blinkingItemCount -= 1 }
         markedItems.remove(item.id)
-        if newContentBoundaryItemID == item.id { newContentBoundaryItemID = nil }
+        if let newContentBoundaryPosition {
+            self.newContentBoundaryPosition = min(newContentBoundaryPosition, itemCount)
+        }
         let heights = (0..<(itemCount - 1)).compactMap(layoutIndex.height(at:))
         layoutIndex.replaceHeights(with: heights)
         clampSelection()
@@ -299,7 +311,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         focus = nil
         hoveredLink = nil
         markedItems.removeAll()
-        newContentBoundaryItemID = nil
+        newContentBoundaryPosition = nil
         blinkingItemCount = 0
         renderedItemCount = 0
         cancelPreviewLoads()
@@ -377,6 +389,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
             scrollView.contentView.scroll(to: point)
         }
         scrollView.reflectScrolledClipView(scrollView.contentView)
+        onUserScrollToEnd?()
     }
 
     func setMarker(itemID: UUID, marked: Bool) {
@@ -395,16 +408,19 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
 
     func isMarked(itemID: UUID) -> Bool { markedItems.contains(itemID) }
 
-    func setNewContentBoundary(itemID: UUID?) {
-        let oldID = newContentBoundaryItemID
-        newContentBoundaryItemID = itemID.flatMap { itemIndices[$0] == nil ? nil : $0 }
-        if let oldID, let physicalIndex = itemIndices[oldID] {
-            setNeedsDisplay(itemRect(at: physicalIndex - head))
-        }
-        if let itemID = newContentBoundaryItemID, let physicalIndex = itemIndices[itemID] {
-            setNeedsDisplay(itemRect(at: physicalIndex - head))
-        }
+    func setNewContentBoundary(position: Int?) {
+        newContentBoundaryPosition = position.map { min(max(0, $0), itemCount) }
+        needsDisplay = true
     }
+
+    /// Compatibility shim for callers that still identify a boundary by the
+    /// first unread line. New code should use the logical insertion position.
+    func setNewContentBoundary(itemID: UUID?) {
+        let position = itemID.flatMap { itemIndices[$0].map { $0 - head } }
+        setNewContentBoundary(position: position)
+    }
+
+    func itemID(at logicalIndex: Int) -> UUID? { item(at: logicalIndex)?.id }
 
     func visibleItemCount(in rect: NSRect) -> Int {
         layoutIndex.visibleRange(
@@ -453,7 +469,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         let contentRange = Double(dirtyRect.minY - contentInsets.top)..<Double(dirtyRect.maxY - contentInsets.top)
         let visible = layoutIndex.visibleRange(intersecting: contentRange)
         lastDrawnItemCount = visible.count
-        guard !visible.isEmpty, let context = NSGraphicsContext.current?.cgContext else { return }
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
 
         for index in visible {
             guard let value = item(at: index), let y = layoutIndex.yOffset(for: index),
@@ -466,12 +482,16 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
             )
             drawMarker(for: value, in: rect)
             drawParagraphDecoration(value.paragraph, in: rect)
-            drawNewContentBoundary(for: value, in: rect)
             let attributed = attributedTextForDrawing(value, itemIndex: index)
             let textRect = textRect(for: value, in: rect)
             drawCoreText(attributed, in: textRect, context: context)
             drawAssets(value.assets, attributedText: attributed, in: textRect)
             drawInlinePreviews(value.previews, item: value, in: rect)
+        }
+
+        if let boundaryY = newContentBoundaryY,
+           dirtyRect.intersects(NSRect(x: 0, y: boundaryY - 2, width: bounds.width, height: 4)) {
+            drawNewContentBoundary(at: boundaryY)
         }
     }
 
@@ -873,13 +893,24 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         }
     }
 
-    private func drawNewContentBoundary(for item: Item, in rect: NSRect) {
-        guard item.id == newContentBoundaryItemID else { return }
+    private var newContentBoundaryY: CGFloat? {
+        guard let position = newContentBoundaryPosition else { return nil }
+        let clamped = min(max(0, position), itemCount)
+        let offset: Double
+        if clamped < itemCount {
+            guard let itemOffset = layoutIndex.yOffset(for: clamped) else { return nil }
+            offset = itemOffset
+        } else {
+            offset = layoutIndex.totalHeight
+        }
+        return contentInsets.top + CGFloat(offset) - 3
+    }
+
+    private func drawNewContentBoundary(at y: CGFloat) {
         NSColor.systemRed.setStroke()
         let path = NSBezierPath()
         // Keep the separator in the inter-line breathing room instead of
         // putting it directly against the first unread glyphs.
-        let y = rect.minY - 3
         path.move(to: NSPoint(x: contentInsets.left, y: y))
         path.line(to: NSPoint(x: bounds.width - contentInsets.right, y: y))
         path.lineWidth = 2

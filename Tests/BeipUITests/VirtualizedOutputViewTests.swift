@@ -50,6 +50,9 @@ final class VirtualizedOutputViewTests: XCTestCase {
         XCTAssertEqual(primary.scrollerStyle, .overlay)
         XCTAssertTrue(primary.hasVerticalScroller)
         XCTAssertTrue(primary.autohidesScrollers)
+        let primaryScroller = try XCTUnwrap(primary.verticalScroller)
+        XCTAssertTrue(type(of: primaryScroller).isCompatibleWithOverlayScrollers)
+        XCTAssertEqual(primaryScroller.scrollerStyle, .overlay)
         primary.scrollerStyle = .legacy
         XCTAssertEqual(primary.scrollerStyle, .overlay)
 
@@ -58,6 +61,9 @@ final class VirtualizedOutputViewTests: XCTestCase {
         XCTAssertEqual(secondary.scrollerStyle, .overlay)
         XCTAssertTrue(secondary.hasVerticalScroller)
         XCTAssertTrue(secondary.autohidesScrollers)
+        let secondaryScroller = try XCTUnwrap(secondary.verticalScroller)
+        XCTAssertTrue(type(of: secondaryScroller).isCompatibleWithOverlayScrollers)
+        XCTAssertEqual(secondaryScroller.scrollerStyle, .overlay)
         secondary.scrollerStyle = .legacy
         XCTAssertEqual(secondary.scrollerStyle, .overlay)
     }
@@ -202,6 +208,109 @@ final class VirtualizedOutputViewTests: XCTestCase {
         XCTAssertEqual(output.newContentBoundaryIDForTesting, firstNewLine.id)
     }
 
+    func testUpwardUserScrollFromBottomPreservesUnreadBoundaryUntilDownwardReturn() {
+        let coordinator = SharedUnreadBoundaryCoordinator()
+        let main = OutputTextView()
+        let coordinated = OutputTextView()
+        main.setUnreadBoundaryCoordinator(coordinator)
+        coordinated.setUnreadBoundaryCoordinator(coordinator)
+
+        let host = NSView(frame: NSRect(x: 0, y: 0, width: 500, height: 80))
+        main.containerView.frame = host.bounds
+        host.addSubview(main.containerView)
+        main.containerView.layoutSubtreeIfNeeded()
+
+        main.setWindowFocused(false)
+        coordinated.setWindowFocused(false)
+        (1...40).forEach { main.append(.init(text: "inactive line \($0)")) }
+
+        let scrollView = main.primaryScrollViewForTesting
+        let bottomY = scrollView.contentView.bounds.origin.y
+        XCTAssertGreaterThan(bottomY, 0)
+        XCTAssertNotNil(main.newContentBoundaryPositionForTesting)
+        XCTAssertNotNil(coordinated.newContentBoundaryPositionForTesting)
+
+        let upwardY = max(0, bottomY - 40)
+        scrollView.contentView.scroll(to: NSPoint(x: 0, y: upwardY))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        main.reportUserScrollForTesting(from: bottomY, to: upwardY)
+
+        XCTAssertNotNil(main.newContentBoundaryPositionForTesting)
+        XCTAssertNotNil(coordinated.newContentBoundaryPositionForTesting)
+
+        scrollView.contentView.scroll(to: NSPoint(x: 0, y: bottomY))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        main.reportUserScrollForTesting(from: upwardY, to: bottomY)
+
+        XCTAssertNil(main.newContentBoundaryPositionForTesting)
+        XCTAssertNil(coordinated.newContentBoundaryPositionForTesting)
+    }
+
+    func testBoundaryTracksLogicalInsertionPositionAtOutputEndAndAfterEviction() {
+        let view = VirtualizedOutputView(frame: NSRect(x: 0, y: 0, width: 500, height: 300))
+        let items = (0..<3).map { index in
+            VirtualizedOutputView.Item(
+                id: UUID(),
+                attributedText: NSAttributedString(string: "Line \(index)\n"),
+                contentRange: NSRange(location: 0, length: 7),
+                assets: []
+            )
+        }
+        view.setItems(items)
+        view.setNewContentBoundary(position: items.count)
+
+        XCTAssertEqual(view.newContentBoundaryPositionForTesting, 3)
+        XCTAssertNil(view.newContentBoundaryItemIDForTesting)
+
+        let appendedID = UUID()
+        view.append(.init(
+            id: appendedID,
+            attributedText: NSAttributedString(string: "Below\n"),
+            contentRange: NSRange(location: 0, length: 6),
+            assets: []
+        ))
+        XCTAssertEqual(view.newContentBoundaryPositionForTesting, 3)
+
+        view.removeFirst(1)
+        XCTAssertEqual(view.newContentBoundaryPositionForTesting, 2)
+        XCTAssertEqual(view.newContentBoundaryItemIDForTesting, appendedID)
+    }
+
+    func testSharedUnreadCycleCoversEmptyMembersAndClearsTogether() async {
+        let coordinator = SharedUnreadBoundaryCoordinator()
+        let main = OutputTextView()
+        let spawn = OutputTextView()
+        main.setUnreadBoundaryCoordinator(coordinator)
+        spawn.setUnreadBoundaryCoordinator(coordinator)
+        main.setWindowFocused(true)
+        spawn.setWindowFocused(false)
+
+        main.append(.init(text: "existing"))
+        spawn.append(.init(text: "first inactive"))
+
+        XCTAssertEqual(main.newContentBoundaryPositionForTesting, 1)
+        XCTAssertEqual(spawn.newContentBoundaryPositionForTesting, 0)
+
+        main.append(.init(text: "below boundary"))
+        XCTAssertEqual(main.newContentBoundaryPositionForTesting, 1)
+
+        let registeredDuringCycle = OutputTextView()
+        registeredDuringCycle.setUnreadBoundaryCoordinator(coordinator)
+        registeredDuringCycle.setWindowFocused(false)
+        XCTAssertEqual(registeredDuringCycle.newContentBoundaryPositionForTesting, 0)
+        registeredDuringCycle.append(.init(text: "registered content"))
+        XCTAssertEqual(registeredDuringCycle.newContentBoundaryPositionForTesting, 0)
+
+        spawn.clear()
+        XCTAssertEqual(spawn.newContentBoundaryPositionForTesting, 0)
+        XCTAssertEqual(main.newContentBoundaryPositionForTesting, 1)
+
+        spawn.primaryOutputViewForTesting.scrollToEnd()
+        await awaitMainActorQuiescence()
+        XCTAssertNil(main.newContentBoundaryPositionForTesting)
+        XCTAssertNil(registeredDuringCycle.newContentBoundaryPositionForTesting)
+    }
+
     func testReduceMotionDisablesBlinkTimersAndKeepsContentVisible() {
         let view = VirtualizedOutputView(frame: NSRect(x: 0, y: 0, width: 500, height: 300))
         view.applyAccessibilityDisplayOptions(.init())
@@ -279,6 +388,28 @@ final class VirtualizedOutputViewTests: XCTestCase {
 
         XCTAssertEqual(upperScrollback.contentView.bounds.origin.y, frozenOrigin, accuracy: 0.5)
         XCTAssertGreaterThan(output.primaryScrollViewForTesting.contentView.bounds.origin.y, liveOrigin)
+    }
+
+    func testSplitOutputMirrorsSharedBoundaryAndUserScrollClearsIt() async throws {
+        let output = OutputTextView()
+        let host = NSView(frame: NSRect(x: 0, y: 0, width: 500, height: 320))
+        output.containerView.frame = host.bounds
+        host.addSubview(output.containerView)
+        output.containerView.layoutSubtreeIfNeeded()
+        output.setWindowFocused(false)
+        (1...40).forEach { output.append(.init(text: "line \($0)")) }
+
+        output.toggleSplit()
+        await awaitMainActorQuiescence()
+        let upper = try XCTUnwrap(output.secondaryScrollViewForTesting)
+        XCTAssertEqual(output.newContentBoundaryPositionForTesting, 0)
+        XCTAssertEqual(output.primaryOutputViewForTesting.newContentBoundaryPositionForTesting, 0)
+        XCTAssertEqual(try XCTUnwrap(output.secondaryScrollViewForTesting?.documentView as? VirtualizedOutputView)
+            .newContentBoundaryPositionForTesting, 0)
+
+        try XCTUnwrap(upper.documentView as? VirtualizedOutputView).scrollToEnd()
+        await awaitMainActorQuiescence()
+        XCTAssertNil(output.newContentBoundaryPositionForTesting)
     }
 
     func testPageUpAndPageDownNavigateSplitScrollbackAndCloseAtBottom() async throws {

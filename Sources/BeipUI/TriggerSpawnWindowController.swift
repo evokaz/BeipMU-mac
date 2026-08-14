@@ -13,7 +13,8 @@ private final class TriggerSpawnFloatingWindow: NSWindow {
 
 @MainActor
 final class TriggerSpawnWindowController: NSWindowController, NSWindowDelegate {
-    private let output = OutputTextView()
+    private let output: OutputTextView
+    private let unreadBoundaryCoordinator: SharedUnreadBoundaryCoordinator
     private let dockingAccessory = DockSurfaceAccessoryViewController()
     private var themePalette = WorkspaceThemeSettings().palette
     private(set) var isDocked = false
@@ -33,7 +34,12 @@ final class TriggerSpawnWindowController: NSWindowController, NSWindowDelegate {
     private var floatingDragTask: Task<Void, Never>?
     private var latestDragReleasePoint: NSPoint?
 
-    init(title: String) {
+    init(
+        title: String,
+        unreadBoundaryCoordinator: SharedUnreadBoundaryCoordinator = SharedUnreadBoundaryCoordinator()
+    ) {
+        output = OutputTextView()
+        self.unreadBoundaryCoordinator = unreadBoundaryCoordinator
         let panel = TriggerSpawnFloatingWindow(
             contentRect: NSRect(x: 0, y: 0, width: 500, height: 320),
             styleMask: [.titled, .closable, .resizable],
@@ -47,6 +53,8 @@ final class TriggerSpawnWindowController: NSWindowController, NSWindowDelegate {
         panel.hidesOnDeactivate = false
         panel.contentView = output.containerView
         super.init(window: panel)
+        output.setUnreadBoundaryCoordinator(unreadBoundaryCoordinator)
+        output.setWindowFocused(panel.isKeyWindow)
         panel.delegate = self
         panel.addTitlebarAccessoryViewController(dockingAccessory)
         panel.onLeftMouseUp = { [weak self] in self?.finishFloatingDrag() }
@@ -57,6 +65,7 @@ final class TriggerSpawnWindowController: NSWindowController, NSWindowDelegate {
 
     func clear() { output.clear() }
     func append(_ line: RenderedLine) { output.append(line) }
+    var outputForTesting: OutputTextView { output }
     var retainedLines: [RenderedLine] { output.retainedLines }
     func applyTheme(_ palette: WorkspaceThemePalette) {
         themePalette = palette
@@ -107,6 +116,7 @@ final class TriggerSpawnWindowController: NSWindowController, NSWindowDelegate {
     }
     func windowWillClose(_ notification: Notification) {
         cancelFloatingDrag()
+        output.unregisterFromUnreadBoundaryCoordinator()
         onClose?()
     }
 
@@ -223,6 +233,7 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
     private let contentHost = NSView()
     private let root = NSView()
     private let dockingAccessory = DockSurfaceAccessoryViewController()
+    private let unreadBoundaryCoordinator: SharedUnreadBoundaryCoordinator
     private var tabs: [Tab] = []
     private var themePalette = WorkspaceThemeSettings().palette
     private var selectedID: UUID?
@@ -244,7 +255,11 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
     private var floatingDragTask: Task<Void, Never>?
     private var latestDragReleasePoint: NSPoint?
 
-    init(title: String) {
+    init(
+        title: String,
+        unreadBoundaryCoordinator: SharedUnreadBoundaryCoordinator = SharedUnreadBoundaryCoordinator()
+    ) {
+        self.unreadBoundaryCoordinator = unreadBoundaryCoordinator
         let panel = TriggerSpawnFloatingWindow(
             contentRect: NSRect(x: 0, y: 0, width: 560, height: 360),
             styleMask: [.titled, .closable, .resizable],
@@ -286,6 +301,9 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
     var tabTitles: [String] { tabs.map(\.title) }
     var selectedTitle: String? { tabs.first(where: { $0.id == selectedID })?.title }
     var highlightedTitles: [String] { tabs.filter(\.highlighted).map(\.title) }
+    func outputForTesting(named title: String) -> OutputTextView? {
+        tabs.first(where: { $0.title == title })?.output
+    }
 
     func contentViewForDocking() -> NSView {
         cancelFloatingDrag()
@@ -430,6 +448,7 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
 
     func windowWillClose(_ notification: Notification) {
         cancelFloatingDrag()
+        tabs.forEach { $0.output.unregisterFromUnreadBoundaryCoordinator() }
         onClose?()
     }
 
@@ -481,6 +500,7 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
         let id = tabs[index].id
         let wasSelected = selectedID == id
         let removed = tabs.remove(at: index)
+        removed.output.unregisterFromUnreadBoundaryCoordinator()
         removed.output.containerView.removeFromSuperview()
         if tabs.isEmpty {
             selectedID = nil
@@ -563,6 +583,7 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
 
     private func makeOutput() -> OutputTextView {
         let output = OutputTextView()
+        output.setUnreadBoundaryCoordinator(unreadBoundaryCoordinator)
         output.applyTheme(themePalette)
         output.showsInlineImagePreviews = showsInlineImagePreviews
         output.setWindowFocused(false)

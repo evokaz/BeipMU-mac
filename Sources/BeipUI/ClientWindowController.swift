@@ -794,6 +794,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private var loggingCoordinator: SessionLoggingCoordinator!
     private var recoveryCoordinator: SessionRecoveryCoordinator!
     private let output = OutputTextView()
+    private let unreadBoundaryCoordinator = SharedUnreadBoundaryCoordinator()
     private let input = CommandInputView()
     private let inputSplitView = NSSplitView()
     private let inputHistoryPane = InputHistoryPaneView()
@@ -917,6 +918,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     var stickyInputEnabled: Bool { activeInputWindowSettings.keepsTextOnSubmit }
     var spellCheckingEnabled: Bool { preferences.checksSpelling }
     var outputSplitEnabled: Bool { output.isSplit }
+    var outputForTesting: OutputTextView { output }
     var muted: Bool { isMuted }
     var dockPlacement: WorkspaceDockPlacement { dockController?.placement ?? preferences.dockPlacement }
     var legacyDockPlacement: WorkspaceDockPlacement? { dockController?.legacyPlacement }
@@ -1008,6 +1010,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         window.setAccessibilityIdentifier("mainWindow")
         super.init(window: window)
         recoveryCoordinator = SessionRecoveryCoordinator(store: recoveryStore)
+        output.setUnreadBoundaryCoordinator(unreadBoundaryCoordinator)
         loggingCoordinator = SessionLoggingCoordinator(
             context: .init(
                 options: { [weak self] in self?.preferences.logging ?? .init() },
@@ -1125,6 +1128,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     func windowWillClose(_ notification: Notification) {
         NotificationCenter.default.removeObserver(self, name: .NSCalendarDayChanged, object: nil)
         NotificationCenter.default.removeObserver(self, name: .NSSystemTimeZoneDidChange, object: nil)
+        output.unregisterFromUnreadBoundaryCoordinator()
         profileLibrary.removeChangeObserver(profileLibraryObserverID)
         profileLibraryObserverID = nil
         if applicationTerminationPrepared {
@@ -5404,7 +5408,10 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
 
     private func spawnWindow(named title: String) -> TriggerSpawnWindowController {
         if let existing = triggerSpawnWindows[title] { return existing }
-        let controller = TriggerSpawnWindowController(title: title)
+        let controller = TriggerSpawnWindowController(
+            title: title,
+            unreadBoundaryCoordinator: unreadBoundaryCoordinator
+        )
         controller.applyTheme(preferences.theme.palette)
         controller.showsInlineImagePreviews = preferences.showsInlineImagePreviews
         controller.onAction = { [weak self] action in self?.perform(action) }
@@ -5436,7 +5443,10 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
 
     private func spawnTabGroup(named title: String) -> TriggerSpawnTabGroupWindowController {
         if let existing = triggerSpawnTabGroups[title] { return existing }
-        let controller = TriggerSpawnTabGroupWindowController(title: title)
+        let controller = TriggerSpawnTabGroupWindowController(
+            title: title,
+            unreadBoundaryCoordinator: unreadBoundaryCoordinator
+        )
         controller.applyTheme(preferences.theme.palette)
         controller.showsInlineImagePreviews = preferences.showsInlineImagePreviews
         controller.onAction = { [weak self] action in self?.perform(action) }
