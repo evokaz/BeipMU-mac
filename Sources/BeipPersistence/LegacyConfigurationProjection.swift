@@ -247,7 +247,7 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
                     idleText: properties.value("IdleString") ?? "",
                     logFilename: properties.value("LogFileName") ?? "",
                     logAppendsDate: (properties.value("LogFileNameTimeFormat").flatMap(Int.init) ?? 0) & 0b110 != 0,
-                    restoreLog: properties.bool("RestoreLog") ?? true,
+                    restoreLog: properties.bool("RestoreLog") ?? false,
                     bytesSent: properties.value("BytesSent").flatMap(UInt64.init) ?? 0,
                     bytesReceived: properties.value("BytesReceived").flatMap(UInt64.init) ?? 0,
                     secondsConnected: properties.value("SecondsConnected").flatMap(UInt64.init) ?? 0,
@@ -400,11 +400,11 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
             at: ["ScriptDebug"], quoted: false, in: &result
         )
         try Self.upsert(
-            Self.flag(logging.restoreLogs), default: "true",
+            Self.flag(logging.restoreLogs), default: "false",
             at: ["Connections", "Logging", "RestoreLogs"], quoted: false, in: &result
         )
         try Self.upsert(
-            String(max(4 * 1_024, logging.restoreBufferSize) / 1_024), default: "10240",
+            String(SessionLogOptions.normalizedRestoreBufferSize(logging.restoreBufferSize) / 1_024), default: "256",
             at: ["Connections", "Logging", "RestoreBufferSize"], quoted: false, in: &result
         )
 
@@ -492,7 +492,7 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
                     at: characterBase + ["LogFileNameTimeFormat"], quoted: false, in: &result
                 )
                 try Self.upsert(
-                    Self.flag(character.restoreLog), default: "true",
+                    Self.flag(character.restoreLog), default: "false",
                     at: characterBase + ["RestoreLog"], quoted: false, in: &result
                 )
                 try Self.upsert(
@@ -662,8 +662,11 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
         let wraps = nodes.bool("Wrap") ?? false
         let hanging = nodes.bool("HangingIndent") ?? false
         return .init(
-            restoreLogs: nodes.bool("RestoreLogs") ?? true,
-            restoreBufferSize: (nodes.value("RestoreBufferSize").flatMap(Int.init) ?? 10 * 1_024) * 1_024,
+            restoreLogs: nodes.bool("RestoreLogs") ?? false,
+            restoreBufferSize: nodes.value("RestoreBufferSize")
+                .flatMap(Int.init)
+                .flatMap { $0 > 0 && $0 <= Int.max / 1_024 ? $0 * 1_024 : nil }
+                ?? 256 * 1_024,
             defaultLogFilename: nodes.value("DefaultLogFileName") ?? "",
             fileDateFormat: nodes.value("FileDateFormat") ?? "yyyy-MM-dd",
             logsSentText: nodes.bool("LogSent") ?? false,

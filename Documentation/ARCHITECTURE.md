@@ -84,10 +84,12 @@ temporary directory and preferences suite.
 
 `SessionRecoveryStore` appends checksummed, length-prefixed JSON frames to the
 bounded `Recovery.dat` journal. Startup repair keeps the valid prefix after an
-incomplete final frame, while compaction enforces total and per-session size
-limits. Recovery records final presentation state so replay can restore text,
-prompts, spawn output, input history, and GMCP state without invoking network,
-automation, scripts, or media. Normal session closure removes its snapshot.
+incomplete final frame. Each opted-in saved character owns one independently
+capped buffer, and compaction bounds the file by the sum of those buffers plus
+format metadata. Restore Logs record final presentation state so opening a
+character can refill text, prompts, spawn output, input history, and GMCP state
+without invoking network, automation, scripts, or media. Buffers persist until
+the global or character-level opt-in is turned off, or the character is deleted.
 
 Atlas maps are ZIP/XML archives whose reader and writer preserve unknown
 compatible content for round trips.

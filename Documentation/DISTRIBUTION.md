@@ -60,7 +60,7 @@ BeipMU stores its live data under:
 The portable `Config.txt` format can include world addresses, character login
 commands, passwords, AI endpoint settings, and automation in plaintext. Its
 automatic `Config.backup.txt` and manually exported configurations contain the
-same class of sensitive data. `Recovery.dat` can contain server output, sent
+same class of sensitive data. The Restore Logs file `Recovery.dat` can contain server output, sent
 input, input history, and protocol state from interrupted sessions. Passwords
 are not moved to macOS Keychain.
 

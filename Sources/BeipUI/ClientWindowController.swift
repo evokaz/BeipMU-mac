@@ -1328,6 +1328,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             dockController.apply(layout: layout)
         }
         restoreSpawnSurfacePreferences()
+        restoreLogIfAvailable()
         updateWindowTitle()
         refreshDiagnostics()
     }
@@ -1858,8 +1859,31 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         saveAtlasSurfacePreferences()
         mediaController.flush()
         loggingCoordinator.stopAll(announcing: false)
-        recoveryCoordinator.discard()
         recoveryCoordinator.flush()
+    }
+
+    func restoreLogConfigurationDidChange() {
+        guard let currentServer,
+              let currentCharacter,
+              profileLibrary.workspace.projection.logging.restoreLogs,
+              let savedServer = profileLibrary.workspace.servers.first(where: {
+                  $0.profile.id == currentServer.id
+              }),
+              let character = savedServer.characters.first(where: {
+                  $0.id == currentCharacter.id
+              }),
+              character.restoreLog else {
+            recoveryCoordinator.discard()
+            return
+        }
+        recoveryCoordinator.beginOrResume(
+            shouldResume: true,
+            serverID: savedServer.profile.id,
+            characterID: character.id,
+            serverName: savedServer.profile.name,
+            characterName: character.name,
+            existingSessionID: recoveryCoordinator.sessionID
+        )
     }
 
     func startPerformanceSoakIfRequested() {
@@ -2750,6 +2774,11 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         character: CharacterProfile?,
         policy: ConnectionPolicy
     ) {
+        if !representsSavedProfile(server, character: character) {
+            restoreOpenTab(server: server, character: character)
+        } else {
+            restoreLogIfAvailable()
+        }
         startSession(server, character: character, policy: policy)
     }
 
@@ -2792,7 +2821,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     ) {
         let recoveryEnabled = master == nil
             && profileLibrary.workspace.projection.logging.restoreLogs
-            && (character?.restoreLog ?? true)
+            && (character?.restoreLog ?? false)
         let canResumeRecoveredSession = recoveryCoordinator.consumeResumeFlag()
             && recoveryEnabled
             && currentServer?.id == server.id
@@ -3202,9 +3231,22 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
                 }
             }
         }
-        appendInformationalNotice("Session restored from a crash. Please reconnect.")
         refreshDiagnostics()
         updateWindowTitle()
+    }
+
+    private func restoreLogIfAvailable() {
+        guard profileLibrary.workspace.projection.logging.restoreLogs,
+              let server = currentServer,
+              let character = currentCharacter,
+              character.restoreLog,
+              let snapshot = recoveryCoordinator.snapshot(
+                  serverID: server.id,
+                  characterID: character.id,
+                  serverName: server.name,
+                  characterName: character.name
+              ) else { return }
+        restoreRecoverySession(snapshot)
     }
 
     func testingSpawnLines(named title: String) -> [String] {

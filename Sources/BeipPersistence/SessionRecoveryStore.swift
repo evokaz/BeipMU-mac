@@ -57,6 +57,16 @@ public struct SessionRecoverySession: Sendable, Codable, Equatable, Identifiable
     public var events: [SessionRecoveryRecord] { records }
 }
 
+public struct SessionRecoveryStatistics: Sendable, Equatable {
+    public var bufferCount: Int
+    public var fileSize: Int
+
+    public init(bufferCount: Int, fileSize: Int) {
+        self.bufferCount = bufferCount
+        self.fileSize = fileSize
+    }
+}
+
 public enum SessionRecoveryStoreError: LocalizedError, Equatable {
     case invalidCapacity
     case invalidFileHeader
@@ -65,15 +75,15 @@ public enum SessionRecoveryStoreError: LocalizedError, Equatable {
 
     public var errorDescription: String? {
         switch self {
-        case .invalidCapacity: "Recovery.dat has an invalid capacity."
+        case .invalidCapacity: "Recovery.dat has an invalid Restore Log capacity."
         case .invalidFileHeader: "Recovery.dat has an invalid file header."
-        case .sessionNotFound(let id): "Recovery session " + id.uuidString + " was not found."
-        case .recordTooLarge: "The recovery record is too large for the configured capacity."
+        case .sessionNotFound(let id): "Restore Log buffer " + id.uuidString + " was not found."
+        case .recordTooLarge: "The Restore Log record is too large for the configured capacity."
         }
     }
 }
 
-/// Durable local recovery journal.
+/// Durable local Restore Logs journal.
 ///
 /// The on-disk stream is intentionally simple:
 ///
@@ -85,15 +95,19 @@ public enum SessionRecoveryStoreError: LocalizedError, Equatable {
 /// the live records for each session, so old append history cannot defeat the
 /// configured size bound.
 public final class SessionRecoveryStore: @unchecked Sendable {
-    public static let defaultCapacity = 10 * 1_024 * 1_024
+    public static let defaultCapacity = 256 * 1_024
 
     private static let magic = Data("BeipMU Recovery 1\n".utf8)
     private static let frameHeaderSize = 8
     private static let minimumCapacity = 512
 
     public let url: URL
-    public let capacity: Int
-    public let perSessionCapacity: Int
+    /// Compatibility name. Capacity is now enforced independently for every
+    /// saved-character buffer, rather than as one allowance shared by a file.
+    public private(set) var capacity: Int
+    public private(set) var perSessionCapacity: Int
+    public var perCharacterCapacity: Int { perSessionCapacity }
+    public private(set) var isEnabled: Bool
 
     private enum Frame: Codable {
         case begin(SessionRecoverySession)
@@ -141,6 +155,7 @@ public final class SessionRecoveryStore: @unchecked Sendable {
 
     private var sessionsByID: [UUID: SessionRecoverySession] = [:]
     private var fileHandle: FileHandle?
+    private var statisticsObservers: [UUID: @Sendable (SessionRecoveryStatistics) -> Void] = [:]
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
@@ -159,15 +174,15 @@ public final class SessionRecoveryStore: @unchecked Sendable {
     public init(
         url: URL,
         capacity: Int = SessionRecoveryStore.defaultCapacity,
-        perSessionCapacity: Int? = nil
+        perSessionCapacity: Int? = nil,
+        enabled: Bool = true
     ) throws {
-        guard capacity >= Self.minimumCapacity else { throw SessionRecoveryStoreError.invalidCapacity }
+        let requestedCapacity = perSessionCapacity ?? capacity
+        guard requestedCapacity >= Self.minimumCapacity else { throw SessionRecoveryStoreError.invalidCapacity }
         self.url = url
         self.capacity = capacity
-        self.perSessionCapacity = max(
-            256,
-            min(perSessionCapacity ?? capacity / 2, max(256, capacity - Self.magic.count - 32))
-        )
+        self.perSessionCapacity = requestedCapacity
+        self.isEnabled = enabled
         encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .millisecondsSince1970
         encoder.outputFormatting = [.sortedKeys]
@@ -179,12 +194,19 @@ public final class SessionRecoveryStore: @unchecked Sendable {
             withIntermediateDirectories: true
         )
         try loadExistingFile()
+        normalizeCharacterBuffers()
+        if !enabled { try resetFileWithoutNotification() }
         try openForAppend()
+        if enabled { try compactIfNeeded() }
     }
 
     deinit { try? fileHandle?.close() }
 
     public var sessionCount: Int { sessionsByID.count }
+
+    public var statistics: SessionRecoveryStatistics {
+        SessionRecoveryStatistics(bufferCount: sessionsByID.count, fileSize: physicalFileSize)
+    }
 
     public var sessions: [SessionRecoverySession] {
         sessionsByID.values.sorted {
@@ -195,6 +217,118 @@ public final class SessionRecoveryStore: @unchecked Sendable {
 
     public func session(id: UUID) -> SessionRecoverySession? { sessionsByID[id] }
 
+    /// Finds the persistent buffer belonging to a saved character. Stable IDs
+    /// win; names are a migration fallback for journals written before IDs
+    /// were available.
+    public func buffer(
+        serverID: UUID?,
+        characterID: UUID?,
+        serverName: String,
+        characterName: String
+    ) -> SessionRecoverySession? {
+        if let characterID,
+           let match = sessions.first(where: { $0.characterID == characterID }) {
+            return match
+        }
+        return sessions.first {
+            ($0.serverID == serverID || $0.serverName.caseInsensitiveCompare(serverName) == .orderedSame)
+                && $0.characterName?.caseInsensitiveCompare(characterName) == .orderedSame
+        }
+    }
+
+    public func addStatisticsObserver(
+        _ observer: @escaping @Sendable (SessionRecoveryStatistics) -> Void
+    ) -> UUID {
+        let id = UUID()
+        statisticsObservers[id] = observer
+        observer(statistics)
+        return id
+    }
+
+    public func removeStatisticsObserver(_ id: UUID?) {
+        guard let id else { return }
+        statisticsObservers.removeValue(forKey: id)
+    }
+
+    public func setEnabled(_ enabled: Bool) throws {
+        guard isEnabled != enabled else {
+            notifyStatisticsChanged()
+            return
+        }
+        isEnabled = enabled
+        if !enabled { try reset() }
+        else { notifyStatisticsChanged() }
+    }
+
+    public func setPerCharacterCapacity(_ bytes: Int) throws {
+        guard bytes >= Self.minimumCapacity else { throw SessionRecoveryStoreError.invalidCapacity }
+        guard bytes != perSessionCapacity else {
+            notifyStatisticsChanged()
+            return
+        }
+        perSessionCapacity = bytes
+        capacity = bytes
+        var trimmed: [UUID: SessionRecoverySession] = [:]
+        for var session in sessionsByID.values {
+            trim(&session)
+            trimmed[session.id] = session
+        }
+        sessionsByID = trimmed
+        try compact()
+    }
+
+    public func updateIdentity(
+        characterID: UUID,
+        serverID: UUID,
+        serverName: String,
+        characterName: String
+    ) throws {
+        guard var session = sessions.first(where: { $0.characterID == characterID }) else { return }
+        session.serverID = serverID
+        session.characterID = characterID
+        session.serverName = serverName
+        session.characterName = characterName
+        sessionsByID[session.id] = session
+        try compact()
+    }
+
+    public func updateIdentity(
+        sessionID: UUID,
+        characterID: UUID,
+        serverID: UUID,
+        serverName: String,
+        characterName: String
+    ) throws {
+        try updateSessionIdentity(
+            sessionID,
+            serverID: serverID,
+            characterID: characterID,
+            serverName: serverName,
+            characterName: characterName,
+            at: Date()
+        )
+    }
+
+    public func removeBuffer(characterID: UUID) throws {
+        let ids = sessions.filter { $0.characterID == characterID }.map(\.id)
+        for id in ids { try remove(sessionID: id) }
+    }
+
+    public func removeBuffer(
+        serverID: UUID?,
+        characterID: UUID?,
+        serverName: String,
+        characterName: String
+    ) throws {
+        guard let match = buffer(
+            serverID: serverID,
+            characterID: characterID,
+            serverName: serverName,
+            characterName: characterName
+        ) else { return }
+        try remove(sessionID: match.id)
+    }
+
     @discardableResult
     public func beginSession(
         id: UUID = UUID(),
@@ -204,6 +338,24 @@ public final class SessionRecoveryStore: @unchecked Sendable {
         characterName: String? = nil,
         at date: Date = Date()
     ) throws -> UUID {
+        guard isEnabled else { return id }
+        if let characterName,
+           let existing = buffer(
+               serverID: serverID,
+               characterID: characterID,
+               serverName: serverName,
+               characterName: characterName
+           ) {
+            try updateSessionIdentity(
+                existing.id,
+                serverID: serverID,
+                characterID: characterID,
+                serverName: serverName,
+                characterName: characterName,
+                at: date
+            )
+            return existing.id
+        }
         let session = SessionRecoverySession(
             id: id,
             serverID: serverID,
@@ -223,6 +375,7 @@ public final class SessionRecoveryStore: @unchecked Sendable {
             else { sessionsByID.removeValue(forKey: id) }
             throw error
         }
+        notifyStatisticsChanged()
         return id
     }
 
@@ -248,6 +401,7 @@ public final class SessionRecoveryStore: @unchecked Sendable {
         }
         sessionsByID[sessionID] = session
         try compactIfNeeded()
+        notifyStatisticsChanged()
     }
 
     public func remove(sessionID: UUID) throws {
@@ -255,6 +409,7 @@ public final class SessionRecoveryStore: @unchecked Sendable {
         try append(.remove(sessionID))
         sessionsByID.removeValue(forKey: sessionID)
         try compactIfNeeded()
+        notifyStatisticsChanged()
     }
 
     public func discard(_ sessionID: UUID) throws { try remove(sessionID: sessionID) }
@@ -269,11 +424,17 @@ public final class SessionRecoveryStore: @unchecked Sendable {
         try replaceDurably(with: frames)
         sessionsByID = Dictionary(uniqueKeysWithValues: live.map { ($0.id, $0) })
         try openForAppend()
+        notifyStatisticsChanged()
     }
 
     /// Removes every recovery session and durably replaces the currently open
     /// journal with an empty, valid journal header.
     public func reset() throws {
+        try resetFileWithoutNotification()
+        notifyStatisticsChanged()
+    }
+
+    private func resetFileWithoutNotification() throws {
         try fileHandle?.synchronize()
         try fileHandle?.close()
         fileHandle = nil
@@ -367,36 +528,19 @@ public final class SessionRecoveryStore: @unchecked Sendable {
 
     private func compactIfNeeded() throws {
         let estimated = try Self.encodeCompacted(sessionsForCompaction(), encoder: encoder).count
-        let currentSize = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
-        if currentSize >= capacity || estimated > capacity || currentSize > capacity / 2 {
+        let currentSize = physicalFileSize
+        let aggregateBound = compactedAggregateBound
+        if currentSize > aggregateBound || currentSize > max(estimated * 2, Self.magic.count) {
             try compact()
         }
     }
 
     private func sessionsForCompaction() -> [SessionRecoverySession] {
         var live = sessions
-        while !live.isEmpty {
-            let data = (try? Self.encodeCompacted(live, encoder: encoder))
-                ?? Data(repeating: 0, count: capacity + 1)
-            if data.count <= capacity { return live }
-
-            // Keep the newest sessions first. If one session is itself too
-            // large, discard its oldest record and try again before evicting a
-            // whole unrelated session.
-            if let index = live.indices.min(by: {
-                if live[$0].updatedAt != live[$1].updatedAt {
-                    return live[$0].updatedAt < live[$1].updatedAt
-                }
-                return live[$0].id.uuidString < live[$1].id.uuidString
-            }) {
-                if live[index].records.count > 1 {
-                    live[index].records.removeFirst()
-                    continue
-                }
-                live.remove(at: index)
-            }
+        for index in live.indices {
+            trim(&live[index])
         }
-        return []
+        return live
     }
 
     private static func encodeCompacted(
@@ -425,7 +569,81 @@ public final class SessionRecoveryStore: @unchecked Sendable {
     }
 
     private func encodedSize(of session: SessionRecoverySession) -> Int {
-        (try? Self.encodeCompacted([session], encoder: encoder).count) ?? Int.max
+        guard let data = try? Self.encodeCompacted([session], encoder: encoder) else { return Int.max }
+        var metadata = session
+        metadata.records = []
+        let metadataSize = (try? Self.frameData(.begin(metadata), encoder: encoder).count) ?? 0
+        return max(0, data.count - Self.magic.count - metadataSize)
+    }
+
+    private var physicalFileSize: Int {
+        (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
+    }
+
+    private var compactedAggregateBound: Int {
+        var bound = Self.magic.count
+        for session in sessionsByID.values {
+            var metadata = session
+            metadata.records = []
+            bound += (try? Self.frameData(.begin(metadata), encoder: encoder).count) ?? 0
+            bound += perSessionCapacity
+        }
+        return bound
+    }
+
+    private func updateSessionIdentity(
+        _ id: UUID,
+        serverID: UUID?,
+        characterID: UUID?,
+        serverName: String,
+        characterName: String?,
+        at date: Date
+    ) throws {
+        guard var session = sessionsByID[id] else { return }
+        session.serverID = serverID
+        session.characterID = characterID
+        session.serverName = serverName
+        session.characterName = characterName
+        session.updatedAt = max(session.updatedAt, date)
+        sessionsByID[id] = session
+        normalizeCharacterBuffers()
+        try compact()
+    }
+
+    private func normalizeCharacterBuffers() {
+        var normalized: [String: SessionRecoverySession] = [:]
+        for session in sessionsByID.values {
+            let key: String
+            if let characterID = session.characterID {
+                key = "id:" + characterID.uuidString
+            } else if let characterName = session.characterName {
+                key = "name:" + session.serverName.lowercased() + "/" + characterName.lowercased()
+            } else {
+                // Characterless legacy entries remain distinct long enough
+                // for the application configuration reconciler to remove
+                // them. New UI sessions never create these entries.
+                key = "legacy:" + session.id.uuidString
+            }
+            guard var existing = normalized[key] else {
+                normalized[key] = session
+                continue
+            }
+            let newest = existing.updatedAt >= session.updatedAt ? existing : session
+            existing.serverID = newest.serverID
+            existing.characterID = newest.characterID
+            existing.serverName = newest.serverName
+            existing.characterName = newest.characterName
+            existing.updatedAt = max(existing.updatedAt, session.updatedAt)
+            existing.records = (existing.records + session.records).sorted { $0.timestamp < $1.timestamp }
+            trim(&existing)
+            normalized[key] = existing
+        }
+        sessionsByID = Dictionary(uniqueKeysWithValues: normalized.values.map { ($0.id, $0) })
+    }
+
+    private func notifyStatisticsChanged() {
+        let value = statistics
+        statisticsObservers.values.forEach { $0(value) }
     }
 
     private func replaceDurably(with data: Data) throws {

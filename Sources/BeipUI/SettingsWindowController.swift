@@ -1,5 +1,7 @@
 import AVFoundation
 import AppKit
+import BeipCore
+import BeipPersistence
 import UniformTypeIdentifiers
 
 /// The destinations in the retained Settings window. This is intentionally a
@@ -9,6 +11,7 @@ enum SettingsSection: String, CaseIterable, Hashable {
     case appearance
     case output
     case input
+    case restoreLogs
     case scripting
     case shortcuts
     case advanced
@@ -18,6 +21,7 @@ enum SettingsSection: String, CaseIterable, Hashable {
         case .appearance: "Appearance"
         case .output: "Output"
         case .input: "Input"
+        case .restoreLogs: "Restore Logs"
         case .scripting: "Scripting"
         case .shortcuts: "Shortcuts"
         case .advanced: "Advanced"
@@ -264,6 +268,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
 
     private var scriptStartupPath: NSTextField!
     private var scriptDebug: NSButton!
+    private var restoreLogsEnabled: NSButton!
+    private var restoreBufferSize: NSTextField!
+    private var restoreLogsStatus: NSTextField!
+    private let recoveryStore: SessionRecoveryStore?
+    private var recoveryStatisticsObserverID: UUID?
 
     private enum FieldTag: Int {
         case outputFontSize = 1
@@ -282,10 +291,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         case inputMarginTop
         case inputMarginRight
         case inputMarginBottom
+        case restoreBufferSize
     }
 
     init(
         profileLibrary: ProfileLibrary,
+        recoveryStore: SessionRecoveryStore? = nil,
         preferencesProvider: @escaping () -> WorkspacePreferences = { WorkspacePreferencesStore.load() },
         shortcutsProvider: @escaping () -> [ShortcutAction: KeyboardShortcut],
         context: SettingsPresentationContext,
@@ -298,6 +309,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         onExportConfigurationRequest: (() -> Void)? = nil
     ) {
         self.profileLibrary = profileLibrary
+        self.recoveryStore = recoveryStore
         self.preferencesProvider = preferencesProvider
         self.shortcutsProvider = shortcutsProvider
         self.context = context
@@ -325,6 +337,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         RuntimeStateContext.setFrameAutosaveName("BeipMUSettingsWindow", for: window)
         profileLibraryObserverID = profileLibrary.addChangeObserver { [weak self] in
             self?.refreshFromExternalChange()
+        }
+        recoveryStatisticsObserverID = recoveryStore?.addStatisticsObserver { [weak self] statistics in
+            DispatchQueue.main.async {
+                self?.updateRestoreLogsStatus(statistics)
+            }
         }
         configureWindow()
         present(context: context)
@@ -473,6 +490,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
             case .appearance: buildAppearance()
             case .output: buildOutput()
             case .input: buildInput()
+            case .restoreLogs: buildRestoreLogs()
             case .scripting: buildScripting()
             case .shortcuts: buildShortcuts()
             case .advanced: buildAdvanced()
@@ -518,6 +536,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         case .appearance: loadAppearanceControls()
         case .output: loadOutputControls()
         case .input: loadInputControls()
+        case .restoreLogs: loadRestoreLogsControls()
         case .scripting: loadScriptingControls()
         case .shortcuts: loadShortcutControls()
         case .advanced: break
@@ -733,6 +752,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         case .appearance: appearanceChanged(sender)
         case .output: outputChanged(sender)
         case .input: inputChanged(sender)
+        case .restoreLogs: restoreLogsChanged(sender)
         case .scripting: scriptingChanged(sender)
         case .shortcuts: break
         case .advanced: break
@@ -1300,6 +1320,70 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         updateInputEnabledState()
     }
 
+    // MARK: - Restore Logs
+
+    private func buildRestoreLogs() {
+        restoreLogsEnabled = makeCheckbox("Enabled", identifier: "restoreLogsEnabled")
+        restoreBufferSize = makeNumberField(.restoreBufferSize)
+        restoreBufferSize.setAccessibilityIdentifier("restoreBufferSizeKB")
+        restoreLogsStatus = NSTextField(labelWithString: "")
+        restoreLogsStatus.setAccessibilityIdentifier("restoreLogsStatus")
+
+        let explanation = NSTextField(wrappingLabelWithString:
+            "Restore Logs keep recent output for individually selected characters and refill their tabs whenever they are opened. Select Restore Log for each character in Worlds & Characters.")
+        explanation.maximumNumberOfLines = 0
+        let rounding = NSTextField(wrappingLabelWithString:
+            "Sizes are rounded up to the nearest 64 KB. Each character has its own buffer.")
+        rounding.maximumNumberOfLines = 0
+
+        contentStack.addArrangedSubview(group("Persistent character buffers", [
+            explanation,
+            checkboxRow(restoreLogsEnabled),
+            fieldRow("Per-character size (KB):", restoreBufferSize),
+            rounding,
+            restoreLogsStatus,
+        ], identifier: "settings.restoreLogs.group"))
+        loadRestoreLogsControls()
+    }
+
+    private func loadRestoreLogsControls() {
+        guard restoreLogsEnabled != nil else { return }
+        let logging = profileLibrary.workspace.projection.logging
+        restoreLogsEnabled.state = logging.restoreLogs ? .on : .off
+        restoreBufferSize.integerValue = logging.restoreBufferSize / 1_024
+        restoreBufferSize.isEnabled = logging.restoreLogs
+        updateRestoreLogsStatus(recoveryStore?.statistics ?? .init(bufferCount: 0, fileSize: 0))
+    }
+
+    private func restoreLogsChanged(_ sender: Any?) {
+        guard (sender as? NSButton) === restoreLogsEnabled else { return }
+        saveRestoreLogSettings(
+            enabled: restoreLogsEnabled.state == .on,
+            bytes: profileLibrary.workspace.projection.logging.restoreBufferSize
+        )
+    }
+
+    private func saveRestoreLogSettings(enabled: Bool, bytes: Int) {
+        do {
+            try profileLibrary.mutate { workspace in
+                workspace.setRestoreLogSettings(enabled: enabled, perCharacterBytes: bytes)
+            }
+            try recoveryStore?.setPerCharacterCapacity(
+                SessionLogOptions.normalizedRestoreBufferSize(bytes)
+            )
+            try recoveryStore?.setEnabled(enabled)
+            onPreferencesMutation()
+            loadRestoreLogsControls()
+        } catch {
+            showInlineError("Unable to save Restore Logs settings: \(error.localizedDescription)")
+        }
+    }
+
+    private func updateRestoreLogsStatus(_ statistics: SessionRecoveryStatistics) {
+        guard restoreLogsStatus != nil else { return }
+        restoreLogsStatus.stringValue = "Currently using \(statistics.bufferCount) buffers for a file size of \(statistics.fileSize) B"
+    }
+
     // MARK: - Scripting
 
     private func buildScripting() {
@@ -1380,7 +1464,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         reset.setAccessibilityHelp("Erase BeipMU-managed state while preserving logs, maps, scripts, and exported files.")
 
         let explanation = NSTextField(wrappingLabelWithString:
-            "This erases profiles, automation, preferences, shortcuts, tabs, layouts, recovery data, and the automatic Config.backup.txt. Logs, maps, scripts, and exported files are preserved."
+            "This erases profiles, automation, preferences, shortcuts, tabs, layouts, Restore Logs data, and the automatic Config.backup.txt. Logs, maps, scripts, and exported files are preserved."
         )
         explanation.setAccessibilityIdentifier("resetConfigurationExplanation")
 
@@ -1651,10 +1735,30 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         case .inputMarginTop: return integer(0, 500) { value in self.mutateInput { $0.marginTop = value } }
         case .inputMarginRight: return integer(0, 500) { value in self.mutateInput { $0.marginRight = value } }
         case .inputMarginBottom: return integer(0, 500) { value in self.mutateInput { $0.marginBottom = value } }
+        case .restoreBufferSize:
+            let raw = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let kilobytes = Int(raw), kilobytes > 0, kilobytes <= Int.max / 1_024 else {
+                setError(field, "Enter a positive whole number of KB.")
+                return false
+            }
+            let normalized = SessionLogOptions.normalizedRestoreBufferSize(kilobytes * 1_024)
+            field.integerValue = normalized / 1_024
+            clearError(field)
+            saveRestoreLogSettings(
+                enabled: restoreLogsEnabled.state == .on,
+                bytes: normalized
+            )
+            return true
         }
     }
 
     private func commitCurrentFieldsIfNeeded() -> Bool {
+        if selectedSection == .restoreLogs {
+            guard let restoreBufferSize else { return true }
+            let valid = commitNumericField(restoreBufferSize, tag: .restoreBufferSize)
+            if !valid { window?.makeFirstResponder(restoreBufferSize) }
+            return valid
+        }
         guard selectedSection == .output || selectedSection == .input else { return true }
         let fields: [NSTextField]
         if selectedSection == .output {

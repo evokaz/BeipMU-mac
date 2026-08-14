@@ -26,15 +26,18 @@ final class SessionRecoveryCoordinator {
         characterName: String?,
         existingSessionID: UUID?
     ) {
-        guard let store else {
+        guard let store, let characterID, let characterName else {
             sessionID = nil
             resumesSessionOnReconnect = false
             return
         }
-        if shouldResume,
-           let existingSessionID,
-           store.session(id: existingSessionID) != nil {
-            sessionID = existingSessionID
+        if let existing = store.buffer(
+            serverID: serverID,
+            characterID: characterID,
+            serverName: serverName,
+            characterName: characterName
+        ) {
+            sessionID = existing.id
             resumesSessionOnReconnect = false
             return
         }
@@ -57,9 +60,6 @@ final class SessionRecoveryCoordinator {
     }
 
     func prepareForReplay(_ snapshotID: UUID) {
-        if let store, let sessionID, sessionID != snapshotID {
-            try? store.remove(sessionID: sessionID)
-        }
         sessionID = store?.session(id: snapshotID) == nil ? nil : snapshotID
         resumesSessionOnReconnect = sessionID != nil
     }
@@ -71,10 +71,25 @@ final class SessionRecoveryCoordinator {
         try? store.append(event, to: sessionID, at: timestamp)
     }
 
+    /// Detaches the tab from its buffer. Persistent Restore Logs deliberately
+    /// survive disconnection, tab closure, and process termination.
     func discard() {
-        if let store, let sessionID { try? store.remove(sessionID: sessionID) }
         sessionID = nil
         resumesSessionOnReconnect = false
+    }
+
+    func snapshot(
+        serverID: UUID,
+        characterID: UUID,
+        serverName: String,
+        characterName: String
+    ) -> SessionRecoverySession? {
+        store?.buffer(
+            serverID: serverID,
+            characterID: characterID,
+            serverName: serverName,
+            characterName: characterName
+        )
     }
 
     func flush() {

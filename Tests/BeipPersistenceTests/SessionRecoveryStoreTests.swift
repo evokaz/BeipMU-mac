@@ -107,6 +107,52 @@ final class SessionRecoveryStoreTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: url), Data("BeipMU Recovery 1\n".utf8))
     }
 
+    func testSavedCharacterUsesOnePersistentBufferAndSupportsRenameAndRemoval() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try SessionRecoveryStore(url: directory.appendingPathComponent("Recovery.dat"))
+        let serverID = UUID()
+        let characterID = UUID()
+        let first = try store.beginSession(
+            serverID: serverID,
+            characterID: characterID,
+            serverName: "World",
+            characterName: "Hero"
+        )
+        try store.append(.sentInput("look"), to: first)
+        let resumed = try store.beginSession(
+            serverID: serverID,
+            characterID: characterID,
+            serverName: "Renamed World",
+            characterName: "Renamed Hero"
+        )
+
+        XCTAssertEqual(first, resumed)
+        XCTAssertEqual(store.sessionCount, 1)
+        XCTAssertEqual(store.session(id: first)?.characterName, "Renamed Hero")
+        XCTAssertEqual(store.session(id: first)?.records.count, 1)
+
+        try store.removeBuffer(characterID: characterID)
+        XCTAssertEqual(store.sessionCount, 0)
+    }
+
+    func testDisableClearsAllBuffersAndStatisticsReportPhysicalSize() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("Recovery.dat")
+        let store = try SessionRecoveryStore(url: url)
+        _ = try store.beginSession(
+            serverID: UUID(), characterID: UUID(), serverName: "World", characterName: "Hero"
+        )
+
+        XCTAssertEqual(store.statistics.bufferCount, 1)
+        XCTAssertEqual(store.statistics.fileSize, try Data(contentsOf: url).count)
+
+        try store.setEnabled(false)
+        XCTAssertEqual(store.statistics.bufferCount, 0)
+        XCTAssertEqual(store.statistics.fileSize, Data("BeipMU Recovery 1\n".utf8).count)
+    }
+
     private func temporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("BeipMU.SessionRecoveryStoreTests.\(UUID().uuidString)", isDirectory: true)

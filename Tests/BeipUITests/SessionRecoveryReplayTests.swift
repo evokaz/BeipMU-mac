@@ -14,6 +14,7 @@ final class SessionRecoveryReplayTests: XCTestCase {
         Version=331
         Connections
         {
+          Logging { RestoreLogs=true RestoreBufferSize=256 }
           Shortcuts
           {
             World
@@ -60,13 +61,12 @@ final class SessionRecoveryReplayTests: XCTestCase {
             runsScriptServices: false
         )
         controller.restoreOpenTab(server: server.profile, character: character)
-        controller.restoreRecoverySession(try XCTUnwrap(store.session(id: id)))
 
         XCTAssertFalse(controller.ownsNetworkSession)
         XCTAssertTrue(controller.isDisconnectedSavedProfileForQuickConnect)
         XCTAssertTrue(controller.testingOutputLines().contains("room output"))
         XCTAssertTrue(controller.testingOutputLines().contains("prompt>"))
-        XCTAssertTrue(controller.testingOutputLines().contains("Session restored from a crash. Please reconnect."))
+        XCTAssertFalse(controller.testingOutputLines().contains { $0.localizedCaseInsensitiveContains("crash") })
         XCTAssertEqual(controller.testingSpawnLines(named: "Channel"), ["spawned"])
         XCTAssertEqual(controller.testingInputHistory(), ["look", "inventory"])
         XCTAssertEqual(controller.testingGMCPRoom()?.name, "Square")
@@ -82,7 +82,7 @@ final class SessionRecoveryReplayTests: XCTestCase {
             return false
         } == true)
         controller.prepareForApplicationTermination()
-        XCTAssertNil(store.session(id: id))
+        XCTAssertNotNil(store.session(id: id))
         controller.close()
     }
 }

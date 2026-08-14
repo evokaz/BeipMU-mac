@@ -9,7 +9,7 @@ public enum SessionLogFormat: String, Sendable, Codable {
 }
 
 public struct SessionLogOptions: Sendable, Codable, Equatable {
-    /// Config.txt names retained as the Mac recovery configuration surface.
+    /// Config.txt names retained for portable Restore Logs settings.
     public var restoreLogs: Bool
     public var restoreBufferSize: Int
     public var autoLogEnabled: Bool
@@ -29,8 +29,8 @@ public struct SessionLogOptions: Sendable, Codable, Equatable {
     public var doubleSpaces: Bool
 
     public init(
-        restoreLogs: Bool = true,
-        restoreBufferSize: Int = 10 * 1_024 * 1_024,
+        restoreLogs: Bool = false,
+        restoreBufferSize: Int = 256 * 1_024,
         autoLogEnabled: Bool = false,
         defaultLogFilename: String = "",
         appendsDateToFilename: Bool = false,
@@ -48,7 +48,7 @@ public struct SessionLogOptions: Sendable, Codable, Equatable {
         doubleSpaces: Bool = false
     ) {
         self.restoreLogs = restoreLogs
-        self.restoreBufferSize = max(4 * 1_024, restoreBufferSize)
+        self.restoreBufferSize = Self.normalizedRestoreBufferSize(restoreBufferSize)
         self.autoLogEnabled = autoLogEnabled
         self.defaultLogFilename = defaultLogFilename
         self.appendsDateToFilename = appendsDateToFilename
@@ -76,8 +76,8 @@ public struct SessionLogOptions: Sendable, Codable, Equatable {
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         self.init(
-            restoreLogs: try values.decodeIfPresent(Bool.self, forKey: .restoreLogs) ?? true,
-            restoreBufferSize: try values.decodeIfPresent(Int.self, forKey: .restoreBufferSize) ?? 10 * 1_024 * 1_024,
+            restoreLogs: try values.decodeIfPresent(Bool.self, forKey: .restoreLogs) ?? false,
+            restoreBufferSize: try values.decodeIfPresent(Int.self, forKey: .restoreBufferSize) ?? 256 * 1_024,
             autoLogEnabled: try values.decodeIfPresent(Bool.self, forKey: .autoLogEnabled) ?? false,
             defaultLogFilename: try values.decodeIfPresent(String.self, forKey: .defaultLogFilename) ?? "",
             appendsDateToFilename: try values.decodeIfPresent(Bool.self, forKey: .appendsDateToFilename) ?? false,
@@ -94,6 +94,20 @@ public struct SessionLogOptions: Sendable, Codable, Equatable {
             wrapsAtWords: try values.decodeIfPresent(Bool.self, forKey: .wrapsAtWords) ?? true,
             doubleSpaces: try values.decodeIfPresent(Bool.self, forKey: .doubleSpaces) ?? false
         )
+    }
+
+    /// Restore Log sizes are binary kilobytes and are allocated in 64 KB
+    /// blocks. A positive value therefore always has an effective minimum of
+    /// 64 KB.
+    public static func normalizedRestoreBufferSize(_ bytes: Int) -> Int {
+        let block = 64 * 1_024
+        guard bytes > 0 else { return block }
+        guard bytes <= Int.max - (block - 1) else {
+            return Int.max - (Int.max % block)
+        }
+        let quotient = bytes / block
+        let roundedBlocks = quotient + (bytes % block == 0 ? 0 : 1)
+        return max(1, roundedBlocks) * block
     }
 }
 

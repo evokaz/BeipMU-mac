@@ -48,7 +48,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     private let recoveryStore: SessionRecoveryStore
     private var currentTheme: WorkspaceThemeSettings
     private var configurationManager: ConfigurationManagerWindowController?
-    private var recoveryReview: RecoveryReviewWindowController?
+    private var profileLibraryObserverID: UUID?
     private var keyboardShortcuts = KeyboardShortcutStore.load()
     private var shortcutItems: [ShortcutAction: NSMenuItem] = [:]
     private var isRestoringTabs = false
@@ -72,7 +72,8 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         Self.migrateLegacyMenuStripPosition(profileLibrary: profileLibrary)
         recoveryStore = try! SessionRecoveryStore(
             url: context.configurationDirectory.appendingPathComponent("Recovery.dat"),
-            capacity: profileLibrary.workspace.projection.logging.restoreBufferSize
+            capacity: profileLibrary.workspace.projection.logging.restoreBufferSize,
+            enabled: profileLibrary.workspace.projection.logging.restoreLogs
         )
         currentTheme = WorkspacePreferencesStore.load().theme
         super.init()
@@ -117,12 +118,15 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         NSWindow.allowsAutomaticWindowTabbing = false
         keyboardShortcuts = KeyboardShortcutStore.load(from: profileLibrary.keyEquivalents)
         configureMenu()
+        profileLibraryObserverID = profileLibrary.addChangeObserver { [weak self] in
+            self?.synchronizeRestoreLogsWithConfiguration()
+        }
+        synchronizeRestoreLogsWithConfiguration()
         let shouldResetUITestState = stateContext.isUITesting
             && ProcessInfo.processInfo.environment[RuntimeStateContext.uiTestResetKey] == "1"
         if shouldResetUITestState || !restoreOpenTabs() {
             newWindow(nil)
         }
-        presentRecoveryReviewIfNeeded()
         NSApplication.shared.activate(ignoringOtherApps: true)
         activeController?.startPerformanceSoakIfRequested()
         activeController?.startScaleTestIfRequested()
@@ -441,8 +445,9 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
             saveOpenTabs()
         }
 
+        var openedCharacterIDs: Set<UUID> = []
         for savedGroup in savedGroups where !savedGroup.tabs.isEmpty {
-            let controllers = savedGroup.tabs.map { savedTab -> ClientWindowController in
+            let controllers = savedGroup.tabs.compactMap { savedTab -> ClientWindowController? in
                 let controller = makeController()
                 if let savedServer = profileLibrary.workspace.servers.first(where: {
                     $0.profile.id == savedTab.serverID
@@ -450,6 +455,10 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
                 }) {
                     let character = savedServer.characters.first {
                         $0.id == savedTab.characterID || $0.name == savedTab.characterName
+                    }
+                    if let character, !openedCharacterIDs.insert(character.id).inserted {
+                        windows.removeAll { $0 === controller }
+                        return nil
                     }
                     controller.restoreOpenTab(
                         server: savedServer.profile,
@@ -477,50 +486,6 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         return !windows.isEmpty
     }
 
-    private func presentRecoveryReviewIfNeeded() {
-        guard profileLibrary.workspace.projection.logging.restoreLogs else { return }
-        let candidates = recoveryStore.sessions.filter { session in
-            guard let server = recoveryServer(for: session) else { return false }
-            guard let characterName = session.characterName else { return true }
-            return recoveryCharacter(for: session, server: server)?.restoreLog == true
-                || server.characters.first(where: { $0.name == characterName }) == nil
-        }
-        guard !candidates.isEmpty else { return }
-
-        let review = RecoveryReviewWindowController(candidates: candidates)
-        review.applyTheme(currentTheme.palette)
-        review.onRestore = { [weak self, weak review] ids in
-            guard let self else { return }
-            for id in ids {
-                guard let snapshot = recoveryStore.session(id: id),
-                      let server = recoveryServer(for: snapshot) else { continue }
-                let character = recoveryCharacter(for: snapshot, server: server)
-                let controller = windows.first(where: {
-                    $0.representsSavedProfile(server.profile, character: character)
-                        && $0.isDisconnectedSavedProfileForQuickConnect
-                }) ?? makeController()
-                controller.restoreOpenTab(server: server.profile, character: character)
-                controller.restoreRecoverySession(snapshot)
-                controller.showWindow(nil)
-                controller.window?.makeKeyAndOrderFront(nil)
-            }
-            review?.close()
-            self.recoveryReview = nil
-            saveOpenTabs()
-        }
-        review.onDiscard = { [weak self, weak review] ids in
-            guard let self else { return }
-            for id in ids { try? recoveryStore.remove(sessionID: id) }
-            review?.close()
-            self.recoveryReview = nil
-        }
-        review.onSkip = { [weak self] in self?.recoveryReview = nil }
-        recoveryReview = review
-        review.showWindow(nil)
-        review.window?.center()
-        review.window?.makeKeyAndOrderFront(nil)
-    }
-
     private func recoveryServer(for snapshot: SessionRecoverySession) -> LegacyConfigurationProjection.Server? {
         profileLibrary.workspace.servers.first {
             $0.profile.id == snapshot.serverID
@@ -537,6 +502,34 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
             $0.id == snapshot.characterID
                 || $0.name.caseInsensitiveCompare(name) == .orderedSame
         }
+    }
+
+    private func synchronizeRestoreLogsWithConfiguration() {
+        let logging = profileLibrary.workspace.projection.logging
+        try? recoveryStore.setPerCharacterCapacity(logging.restoreBufferSize)
+        try? recoveryStore.setEnabled(logging.restoreLogs)
+        guard logging.restoreLogs else {
+            windows.forEach { $0.restoreLogConfigurationDidChange() }
+            settingsWindowController?.refreshFromExternalChange()
+            return
+        }
+        for snapshot in recoveryStore.sessions {
+            guard let server = recoveryServer(for: snapshot),
+                  let character = recoveryCharacter(for: snapshot, server: server),
+                  character.restoreLog else {
+                try? recoveryStore.remove(sessionID: snapshot.id)
+                continue
+            }
+            try? recoveryStore.updateIdentity(
+                sessionID: snapshot.id,
+                characterID: character.id,
+                serverID: server.profile.id,
+                serverName: server.profile.name,
+                characterName: character.name
+            )
+        }
+        windows.forEach { $0.restoreLogConfigurationDidChange() }
+        settingsWindowController?.refreshFromExternalChange()
     }
 
     private func saveOpenTabs() {
@@ -577,7 +570,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         let alert = NSAlert()
         alert.alertStyle = .critical
         alert.messageText = "Reset BeipMU configuration?"
-        alert.informativeText = "This permanently erases profiles, automation, preferences, shortcuts, saved tabs and layouts, recovery data, Config.txt's automatic backup, and other BeipMU-managed state. Logs, maps, scripts, and exported files are preserved."
+        alert.informativeText = "This permanently erases profiles, automation, preferences, shortcuts, saved tabs and layouts, Restore Logs data, Config.txt's automatic backup, and other BeipMU-managed state. Logs, maps, scripts, and exported files are preserved."
         alert.addButton(withTitle: "Reset Configuration")
         alert.addButton(withTitle: "Cancel")
 
@@ -612,12 +605,6 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         configurationManager?.prepareForFactoryReset()
         configurationManager?.close()
         configurationManager = nil
-
-        recoveryReview?.onRestore = nil
-        recoveryReview?.onDiscard = nil
-        recoveryReview?.onSkip = nil
-        recoveryReview?.close()
-        recoveryReview = nil
 
         aboutWindowController?.close()
         aboutWindowController = nil
@@ -830,6 +817,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         } else {
             let settings = SettingsWindowController(
                 profileLibrary: profileLibrary,
+                recoveryStore: recoveryStore,
                 preferencesProvider: { WorkspacePreferencesStore.load() },
                 shortcutsProvider: { [weak self] in self?.keyboardShortcuts ?? KeyboardShortcutStore.load() },
                 context: context,
@@ -892,7 +880,6 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         windows.forEach { $0.applyThemeSettings(settings) }
         settingsWindowController?.applyTheme(palette)
         configurationManager?.applyTheme(palette)
-        recoveryReview?.applyTheme(palette)
         aboutWindowController?.applyTheme(palette)
     }
 

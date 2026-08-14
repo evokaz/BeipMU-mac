@@ -49,15 +49,15 @@ Settings, Help, and Quit remain fixed.
 
 ## Customize the workspace
 
-**Settings…** opens a retained window with Appearance, Output, Input,
-Scripting, Shortcuts, and Advanced sections. Output and input settings can apply to the
+**Settings…** opens a retained window with Appearance, Output, Input, Restore
+Logs, Scripting, Shortcuts, and Advanced sections. Output and input settings can apply to the
 global default or to the active world, character, or tab. A non-global scope
 can inherit the default or keep its own font, colors, sizing, spacing, and
 behavior. Changes apply to open windows as they are committed.
 
 The **Advanced** section contains **Reset Configuration…**, which uses the same
 confirmation and factory-reset workflow as `/resetconfig`. It erases profiles,
-automation, preferences, shortcuts, saved tabs and layouts, recovery data, and
+automation, preferences, shortcuts, saved tabs and layouts, Restore Logs data, and
 the automatic `Config.backup.txt`. Logs, maps, scripts, and exported files are
 preserved. A confirmed reset closes the current workspace and opens one clean
 980×700 main window.
@@ -144,20 +144,22 @@ before running them.
 - **WebViews:** Server WebViews are controlled by the configured per-world
   policy. Review a world's policy before allowing server-initiated content.
 
-## Crash recovery
+## Restore Logs
 
-For saved sessions, BeipMU maintains a bounded recovery journal by default.
-Portable configurations can disable it globally with `RestoreLogs=false` or
-per character with the **Restore Log** option in Worlds & Characters. After an
-abnormal termination, the next launch opens **Recover Sessions**. Select
-snapshots to restore or discard, or choose **Skip for Now** to leave them
-available for a later launch.
+Restore Logs are disabled by default. Enable them in **Settings → Restore
+Logs**, then select **Restore Log** for each character whose recent buffer you
+want to retain. The configured size is per character, uses 1,024 bytes per KB,
+and is rounded upward to a 64 KB multiple.
 
-Recovery is passive: it restores rendered output, prompts, spawn output, input
-history, and relevant GMCP state without running triggers, scripts, media, or
-network actions. It never reconnects automatically. Use **Reconnect** after
-reviewing the restored tab. Closing a session or quitting normally removes its
-recovery snapshot.
+Whenever an opted-in character is opened, BeipMU passively refills its tab with
+rendered output, prompts, spawn output, input history, and relevant GMCP state.
+Replay does not run triggers, scripts, media, or network actions and does not
+connect by itself. Buffers survive disconnects, tab closure, normal quit, and
+abnormal termination. Characters not included in the saved startup layout stay
+dormant until opened.
+
+Turning Restore Logs off globally clears all buffers. Turning **Restore Log**
+off for one character, or deleting that character, clears only its buffer.
 
 ## Configuration and backups
 
@@ -179,14 +181,14 @@ The app-owned data directory is:
   from this backup.
 - `Config.mac.json` stores Mac-only state such as customized shortcuts and
   restored tab groups.
-- `Recovery.dat` is the bounded crash-recovery journal. It can contain rendered
+- `Recovery.dat` is the bounded persistent Restore Logs journal. It can contain rendered
   server output, sent input, input history, spawn output, and GMCP state.
 
 `/resetconfig` and Settings → Advanced → Reset Configuration… delete only the
 BeipMU-managed state listed above and the active app preferences domain. They
 do not delete logs, maps, scripts, Atlas files, exported configurations, or
 other user-created files in the Application Support directory. Canceling the
-confirmation leaves all files, windows, preferences, and recovery records
+confirmation leaves all files, windows, preferences, and Restore Log buffers
 unchanged.
 
 Debug builds use `~/Library/Application Support/BeipMU-Debug/` so development

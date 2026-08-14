@@ -173,6 +173,15 @@ public struct LegacyConfigurationWorkspace: Sendable {
         isDirty = true
     }
 
+    /// Updates the lossless Config.txt projection for the global Restore Logs
+    /// controls. The size is normalized here as well as in the UI so callers
+    /// outside Settings cannot persist an invalid capacity.
+    public mutating func setRestoreLogSettings(enabled: Bool, perCharacterBytes: Int) {
+        projection.logging.restoreLogs = enabled
+        projection.logging.restoreBufferSize = SessionLogOptions.normalizedRestoreBufferSize(perCharacterBytes)
+        isDirty = true
+    }
+
     /// The intentionally small action surface exposed by the first native
     /// automation editor. Existing advanced action blocks remain untouched.
     public enum EditableTriggerAction: Sendable, Equatable {

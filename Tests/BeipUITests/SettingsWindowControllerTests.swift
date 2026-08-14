@@ -46,10 +46,54 @@ final class SettingsWindowControllerTests: XCTestCase {
 
         XCTAssertEqual(controller.window?.title, "Settings")
         XCTAssertEqual(controller.window?.minSize, NSSize(width: 760, height: 560))
-        XCTAssertEqual(controller.sidebarTitlesForTesting, ["Appearance", "Output", "Input", "Scripting", "Shortcuts", "Advanced"])
+        XCTAssertEqual(controller.sidebarTitlesForTesting, ["Appearance", "Output", "Input", "Restore Logs", "Scripting", "Shortcuts", "Advanced"])
         XCTAssertEqual(controller.selectedSectionForTesting, .appearance)
         XCTAssertNotNil(findView(withIdentifier: "settingsSidebar", in: controller.window?.contentView))
         XCTAssertNotNil(findView(withIdentifier: "settingsContent", in: controller.window?.contentView))
+    }
+
+    @MainActor
+    func testRestoreLogsSectionEnablesRoundsPersistsAndReportsUsage() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BeipMU.RestoreLogsSettings.\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let library = ProfileLibrary(workspace: try .empty(isDirty: false))
+        let store = try SessionRecoveryStore(url: directory.appendingPathComponent("Recovery.dat"))
+        let controller = SettingsWindowController(
+            profileLibrary: library,
+            recoveryStore: store,
+            shortcutsProvider: { KeyboardShortcutStore.load() },
+            context: .init(
+                section: .restoreLogs,
+                initialScope: nil,
+                identity: .init(world: nil, character: nil, tab: nil)
+            ),
+            onPreferencesMutation: {},
+            onShortcutsMutation: { _ in }
+        )
+        defer { controller.close() }
+
+        let content = try XCTUnwrap(controller.window?.contentView)
+        let enabled = try XCTUnwrap(findView(withIdentifier: "restoreLogsEnabled", in: content) as? NSButton)
+        let size = try XCTUnwrap(findView(withIdentifier: "restoreBufferSizeKB", in: content) as? NSTextField)
+        let status = try XCTUnwrap(findView(withIdentifier: "restoreLogsStatus", in: content) as? NSTextField)
+        XCTAssertEqual(enabled.state, .off)
+        XCTAssertFalse(size.isEnabled)
+        XCTAssertEqual(status.stringValue, "Currently using 0 buffers for a file size of 18 B")
+
+        enabled.performClick(nil)
+        XCTAssertTrue(library.workspace.projection.logging.restoreLogs)
+        XCTAssertTrue(size.isEnabled)
+        size.stringValue = "65"
+        _ = size.target?.perform(size.action, with: size)
+
+        XCTAssertEqual(size.stringValue, "128")
+        XCTAssertEqual(library.workspace.projection.logging.restoreBufferSize, 128 * 1_024)
+        XCTAssertEqual(
+            try library.workspace.renderedDocument().value(at: ["Connections", "Logging", "RestoreBufferSize"]),
+            "128"
+        )
     }
 
     @MainActor

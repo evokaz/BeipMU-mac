@@ -103,7 +103,7 @@ xcodebuild -project BeipMU.xcodeproj -scheme BeipMU \
 | --- | --- |
 | `BeipCoreTests` | Rendered lines, layout indexing, GMCP, media, WebViews |
 | `BeipProtocolsTests` | Telnet, decoding, MCP, network/TLS resilience, connection scale |
-| `BeipPersistenceTests` | Lossless v331 parsing, migration, projections, editable workspaces, backup recovery, crash journals, Atlas, scale |
+| `BeipPersistenceTests` | Lossless v331 parsing, migration, projections, editable workspaces, backup recovery, Restore Logs journals, Atlas, scale |
 | `BeipAutomationTests` | Matching and expansion, aliases, triggers, macros, slash commands, delays |
 | `BeipScriptRuntimeTests` | JavaScript host API, XPC watchdog and recovery |
 | `BeipUITests` | AppKit editors, docking, scoped preferences, tools, trigger spawning, virtualization, live propagation |
