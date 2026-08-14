@@ -236,6 +236,23 @@ final class ProfileLibrary {
         try Self.write(rendered, to: url)
     }
 
+    func exportProfile(
+        _ selection: LegacyConfigurationWorkspace.ProfileEntrySelection,
+        to url: URL
+    ) throws {
+        try Self.write(try workspace.exportProfileHierarchy(selection), to: url)
+    }
+
+    @discardableResult
+    func importProfile(from url: URL) throws -> LegacyConfigurationWorkspace.ProfileMergeResult {
+        let document = try LegacyConfigurationPersistenceEngine.readDocument(from: url)
+        var result: LegacyConfigurationWorkspace.ProfileMergeResult!
+        try mutate { candidate in
+            result = try candidate.mergeProfileHierarchy(from: document)
+        }
+        return result
+    }
+
     private func restore(from url: URL, sourceURL: URL? = nil) -> Bool {
         guard let document = try? LegacyConfigurationPersistenceEngine.readDocument(from: url),
               let restored = try? LegacyConfigurationWorkspace(

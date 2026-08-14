@@ -588,6 +588,49 @@ public struct LegacyConfigurationDocument: Sendable {
 
     public func serialized() -> String { source }
 
+    /// Returns the names of the named blocks directly contained at `path`.
+    /// Names are unquoted by the parser, while their original spelling and
+    /// quoting remain untouched in raw source slices.
+    public func namedBlockNames(at path: [String]) -> [String] {
+        guard let children = descend(path, nodes: nodes) else { return [] }
+        return children.compactMap { node in
+            guard case let .block(name?, _, _, _) = node else { return nil }
+            return name
+        }
+    }
+
+    /// Reports whether a named collection exists at the supplied path.
+    public func hasBlock(at path: [String]) -> Bool {
+        descend(path, nodes: nodes) != nil
+    }
+
+    /// Returns a complete named block source slice, including comments
+    /// attached immediately before it. This is the named-profile counterpart
+    /// to `rawUnnamedBlockSource`.
+    public func rawNamedBlockSource(named name: String, at path: [String]) -> String? {
+        guard let children = descend(path, nodes: nodes) else { return nil }
+        for node in children {
+            guard case let .block(candidate?, _, _, range) = node,
+                  candidate.caseInsensitiveCompare(name) == .orderedSame else { continue }
+            return String(source[expandedRemovalRange(range)])
+        }
+        return nil
+    }
+
+    /// Inserts a complete named block into a collection without interpreting
+    /// or reserializing it.
+    public mutating func appendRawNamedBlock(_ rawSource: String, at path: [String]) throws {
+        if blockInsertionIndex(at: path, nodes: nodes) == nil { try ensureBlocks(at: path) }
+        guard let insertion = blockInsertionIndex(at: path, nodes: nodes) else {
+            throw LegacyConfigurationError.missingPath(path.joined(separator: "."))
+        }
+        let prefix = source[..<insertion].last.map { $0.isNewline ? "" : preferredLineEnding } ?? ""
+        let suffix = rawSource.last.map { $0.isNewline ? "" : preferredLineEnding } ?? preferredLineEnding
+        source.insert(contentsOf: prefix + rawSource + suffix, at: insertion)
+        var parser = LegacyParser(source: source)
+        nodes = try parser.parse()
+    }
+
     /// Returns complete source slices for unnamed entries, including comments
     /// attached to those entries. This is used for lossless macro import and
     /// export when the Mac projection does not know every Windows field.

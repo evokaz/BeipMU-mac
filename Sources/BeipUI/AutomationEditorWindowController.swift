@@ -2201,21 +2201,31 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
     @objc private func importAliases(_ sender: Any?) {
         guard kind == .aliases, resolvePendingFormChanges() else { return }
         let targetScope = selectedAliasScope ?? scope
-        let parentPath = selectedAliasPath ?? []
+        let destination = automationImportDestination(
+            scope: targetScope,
+            path: selectedAliasPath,
+            kind: .aliases,
+            workspace: library.workspace
+        )
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.allowedContentTypes = [.plainText]
         panel.beginSheetModal(for: window!) { [weak self] response in
             guard response == .OK, let url = panel.url else { return }
-            Task { @MainActor in self?.performAliasImport(from: url, into: targetScope, parentPath: parentPath) }
+            Task { @MainActor in self?.performAliasImport(from: url, destination: destination) }
         }
     }
 
     @objc private func importMacros(_ sender: Any?) {
         guard kind == .macros, resolvePendingFormChanges() else { return }
         stageMacroFormIfNeeded()
-        let targetScope = macroDestinationScope ?? selectedMacroScope ?? macroEditingScope
-        let parentPath = macroDestinationParentPath
+        let targetScope = selectedMacroScope ?? macroEditingScope
+        let destination = automationImportDestination(
+            scope: targetScope,
+            path: selectedMacroPath,
+            kind: .macros,
+            workspace: macroWorkspace
+        )
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
@@ -2224,14 +2234,17 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
         panel.message = "Import keyboard macros into \(macroScopeTitle(targetScope))."
         panel.beginSheetModal(for: window!) { [weak self] response in
             guard response == .OK, let url = panel.url else { return }
-            Task { @MainActor in self?.performMacroImport(from: url, into: targetScope, parentPath: parentPath) }
+            Task { @MainActor in self?.performMacroImport(from: url, destination: destination) }
         }
     }
 
     @objc private func exportMacros(_ sender: Any?) {
         guard kind == .macros, resolvePendingFormChanges() else { return }
         stageMacroFormIfNeeded()
-        let targetScope = selectedMacroScope ?? macroEditingScope
+        guard !macroSampleSelected, macroOutline.selectedRow >= 0, let targetScope = selectedMacroScope else {
+            presentMissingExportSelection()
+            return
+        }
         let targetPath = selectedMacroPath
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.plainText]
@@ -2252,7 +2265,10 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
 
     @objc private func exportAliases(_ sender: Any?) {
         guard kind == .aliases, resolvePendingFormChanges() else { return }
-        let targetScope = selectedAliasScope ?? scope
+        guard !aliasSampleSelected, triggerOutline.selectedRow >= 0, let targetScope = selectedAliasScope else {
+            presentMissingExportSelection()
+            return
+        }
         let targetPath = selectedAliasPath
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.plainText]
@@ -2413,6 +2429,12 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
     @objc private func importTriggers(_ sender: Any?) {
         guard kind == .triggers else { return }
         let targetScope = selectedTriggerScope ?? scope
+        let destination = automationImportDestination(
+            scope: targetScope,
+            path: selectedTriggerPath,
+            kind: .triggers,
+            workspace: library.workspace
+        )
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
@@ -2421,20 +2443,24 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
         panel.message = "Import triggers into \(triggerScopeTitle(targetScope))."
         panel.beginSheetModal(for: window!) { [weak self] response in
             guard response == .OK, let url = panel.url else { return }
-            Task { @MainActor in self?.performTriggerImport(from: url, into: targetScope) }
+            Task { @MainActor in self?.performTriggerImport(from: url, destination: destination) }
         }
     }
 
     @objc private func exportTriggers(_ sender: Any?) {
         guard kind == .triggers else { return }
-        let targetScope = selectedTriggerScope ?? scope
+        guard !triggerSampleSelected, triggerOutline.selectedRow >= 0, let targetScope = selectedTriggerScope else {
+            presentMissingExportSelection()
+            return
+        }
+        let targetPath = selectedTriggerPath
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.plainText]
         panel.nameFieldStringValue = "\(triggerScopeTitle(targetScope))-triggers.txt"
         panel.message = "Export triggers from \(triggerScopeTitle(targetScope))."
         panel.beginSheetModal(for: window!) { [weak self] response in
             guard response == .OK, let url = panel.url else { return }
-            Task { @MainActor in self?.performTriggerExport(to: url, from: targetScope) }
+            Task { @MainActor in self?.performTriggerExport(to: url, from: targetScope, path: targetPath) }
         }
     }
 
@@ -2933,23 +2959,22 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
 
     private func performMacroImport(
         from url: URL,
-        into scope: LegacyConfigurationWorkspace.AutomationScope,
-        parentPath: [Int]
+        destination: LegacyConfigurationWorkspace.AutomationImportDestination
     ) {
         guard resolvePendingFormChanges() else { return }
         do {
             let source = try String(contentsOf: url, encoding: .utf8)
             let imported = try LegacyConfigurationDocument(source: source)
             var candidate = macroWorkspace
-            let count = try candidate.importMacros(from: imported, into: scope, parentPath: parentPath)
-            guard count > 0 else {
+            let result = try candidate.importAutomation(from: imported, kind: .macros, destination: destination)
+            guard !result.paths.isEmpty else {
                 status.stringValue = "No keyboard macros found to import."
                 return
             }
             stagedMacroWorkspace = candidate
-            let suffix = count == 1 ? "" : "s"
-            status.stringValue = "Imported \(count) macro\(suffix) into the staged workspace."
-            reloadMacroOutline(selecting: macroSelectionKey(scope: scope, path: parentPath.isEmpty ? nil : parentPath))
+            let suffix = result.paths.count == 1 ? "" : "s"
+            status.stringValue = "Imported \(result.paths.count) macro\(suffix) into the staged workspace."
+            reloadMacroOutline(selecting: macroSelectionKey(scope: result.scope, path: result.paths.last))
         } catch { present(error) }
     }
 
@@ -2959,7 +2984,10 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
         path: [Int]?
     ) {
         do {
-            let document = try macroWorkspace.exportMacros(in: scope, path: path)
+            let selection: LegacyConfigurationWorkspace.AutomationEntrySelection = path.map {
+                .item(.init(scope: scope, path: $0))
+            } ?? .scope(scope)
+            let document = try macroWorkspace.exportAutomation(kind: .macros, selection: selection)
             try Data(document.serialized().utf8).write(to: url, options: .atomic)
             status.stringValue = "Exported keyboard macros."
         } catch { present(error) }
@@ -3361,51 +3389,46 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
         actionField.placeholderString = isSend ? "Text sent when the trigger matches" : ""
     }
 
-    private func performTriggerImport(from url: URL, into scope: LegacyConfigurationWorkspace.AutomationScope) {
+    private func performTriggerImport(
+        from url: URL,
+        destination: LegacyConfigurationWorkspace.AutomationImportDestination
+    ) {
         guard resolvePendingFormChanges() else { return }
         do {
             let source = try String(contentsOf: url, encoding: .utf8)
-            let imported = try LegacyConfigurationWorkspace(document: .init(source: source))
-            let triggers = imported.globalTriggers
-            guard !triggers.isEmpty else {
+            let imported = try LegacyConfigurationDocument(source: source)
+            var result: LegacyConfigurationWorkspace.AutomationImportResult!
+            try library.mutate { workspace in
+                result = try workspace.importAutomation(from: imported, kind: .triggers, destination: destination)
+            }
+            guard !result.paths.isEmpty else {
                 status.stringValue = "No triggers found to import."
                 return
             }
-            var lastIndex = 0
-            var selection = triggerSelectionKey(scope: scope, triggerPath: nil)
-            try library.mutate { workspace in
-                for trigger in triggers {
-                    lastIndex = try workspace.addTrigger(in: scope, trigger: trigger)
-                }
-            }
-            status.stringValue = "Imported \(triggers.count) trigger\(triggers.count == 1 ? "" : "s")."
-            selection.triggerPath = [lastIndex]
+            status.stringValue = "Imported \(result.paths.count) trigger\(result.paths.count == 1 ? "" : "s")."
+            let selection = triggerSelectionKey(scope: result.scope, triggerPath: result.paths.last)
             reloadTriggerOutline(selecting: selection)
         } catch { present(error) }
     }
 
     private func performAliasImport(
         from url: URL,
-        into scope: LegacyConfigurationWorkspace.AutomationScope,
-        parentPath: [Int]
+        destination: LegacyConfigurationWorkspace.AutomationImportDestination
     ) {
         guard resolvePendingFormChanges() else { return }
         do {
             let source = try String(contentsOf: url, encoding: .utf8)
-            let imported = try LegacyConfigurationWorkspace(document: .init(source: source))
-            let aliases = imported.globalAliases
-            guard !aliases.isEmpty else {
+            let imported = try LegacyConfigurationDocument(source: source)
+            var result: LegacyConfigurationWorkspace.AutomationImportResult!
+            try library.mutate { workspace in
+                result = try workspace.importAutomation(from: imported, kind: .aliases, destination: destination)
+            }
+            guard !result.paths.isEmpty else {
                 status.stringValue = "No aliases found to import."
                 return
             }
-            var lastPath: [Int] = parentPath
-            try library.mutate { workspace in
-                for alias in aliases {
-                    lastPath = try workspace.addAlias(in: scope, parentPath: parentPath, alias: alias)
-                }
-            }
-            status.stringValue = "Imported \(aliases.count) alias\(aliases.count == 1 ? "" : "es")."
-            reloadAliasOutline(selecting: aliasSelectionKey(scope: scope, aliasPath: lastPath))
+            status.stringValue = "Imported \(result.paths.count) alias\(result.paths.count == 1 ? "" : "es")."
+            reloadAliasOutline(selecting: aliasSelectionKey(scope: result.scope, aliasPath: result.paths.last))
         } catch { present(error) }
     }
 
@@ -3415,18 +3438,12 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
         path: [Int]?
     ) {
         do {
-            let aliases: [Alias]
-            if let path, let alias = library.workspace.alias(at: path, in: scope) {
-                aliases = [alias]
-            } else {
-                aliases = library.workspace.aliases(in: scope)
-            }
-            var exported = try LegacyConfigurationWorkspace.empty()
-            for alias in aliases {
-                _ = try exported.addAlias(in: .global, parentPath: [], alias: alias)
-            }
-            try Data(exported.document.serialized().utf8).write(to: url, options: .atomic)
-            status.stringValue = "Exported \(aliases.count) alias\(aliases.count == 1 ? "" : "es")."
+            let selection: LegacyConfigurationWorkspace.AutomationEntrySelection = path.map {
+                .item(.init(scope: scope, path: $0))
+            } ?? .scope(scope)
+            let exported = try library.workspace.exportAutomation(kind: .aliases, selection: selection)
+            try Data(exported.serialized().utf8).write(to: url, options: .atomic)
+            status.stringValue = "Exported aliases."
         } catch { present(error) }
     }
 
@@ -3448,16 +3465,18 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
         }
     }
 
-    private func performTriggerExport(to url: URL, from scope: LegacyConfigurationWorkspace.AutomationScope) {
+    private func performTriggerExport(
+        to url: URL,
+        from scope: LegacyConfigurationWorkspace.AutomationScope,
+        path: [Int]?
+    ) {
         do {
-            let triggers = library.workspace.triggers(in: scope)
-            var exported = try LegacyConfigurationWorkspace.empty()
-            for trigger in triggers {
-                try exported.addGlobalTrigger(trigger)
-            }
-            let document = try exported.renderedDocument()
+            let selection: LegacyConfigurationWorkspace.AutomationEntrySelection = path.map {
+                .item(.init(scope: scope, path: $0))
+            } ?? .scope(scope)
+            let document = try library.workspace.exportAutomation(kind: .triggers, selection: selection)
             try Data(document.serialized().utf8).write(to: url, options: .atomic)
-            status.stringValue = "Exported \(triggers.count) trigger\(triggers.count == 1 ? "" : "s")."
+            status.stringValue = "Exported triggers."
         } catch { present(error) }
     }
 
@@ -3481,6 +3500,31 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
             }
             return "\(server.profile.name)-\(character.name)-\(puppet.name)"
         }
+    }
+
+    private func automationImportDestination(
+        scope: LegacyConfigurationWorkspace.AutomationScope,
+        path: [Int]?,
+        kind: LegacyConfigurationWorkspace.AutomationKind,
+        workspace: LegacyConfigurationWorkspace
+    ) -> LegacyConfigurationWorkspace.AutomationImportDestination {
+        guard let path else { return .scope(scope) }
+        let item = LegacyConfigurationWorkspace.AutomationItemPath(scope: scope, path: path)
+        let isFolder: Bool = switch kind {
+        case .aliases: workspace.alias(at: path, in: scope)?.folder == true
+        case .triggers: workspace.trigger(at: path, in: scope)?.folder == true
+        case .macros: workspace.macro(at: path, in: scope)?.folder == true
+        }
+        return isFolder ? .folder(item) : .afterItem(item)
+    }
+
+    private func presentMissingExportSelection() {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "Select an Item or Scope"
+        alert.informativeText = "Select an automation item or scope to export."
+        if let window { alert.beginSheetModal(for: window) }
+        else { alert.runModal() }
     }
 
     private func present(_ error: Error) {

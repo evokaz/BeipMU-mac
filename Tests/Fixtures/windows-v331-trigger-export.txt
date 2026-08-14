@@ -1,0 +1,43 @@
+Version=331
+Connections
+{
+  Triggers
+  {
+    Active=true
+    // Windows client trigger export
+    {
+      Description="Windows formatting trigger"
+      FindString.MatchText="^(\\w+) says, \\\"(.+)\\\"$"
+      FindString.RegularExpression=true
+      Color
+      {
+        UseForeColor=true
+        Fore=RGB(12,34,56)
+      }
+      Paragraph
+      {
+        "UseIndent_Left"=true
+        Indent_Left=4
+        UseBackgroundColor=true
+        Background=RGB(7,8,9)
+      }
+      Filter.Active=true
+      Filter.Replace="<b>$2</b>"
+      Spawn
+      {
+        Active=true
+        Title="$1"
+        TabGroup="Conversations"
+      }
+      Triggers.Active=false
+      Triggers
+      {
+        Active=false
+        {
+          Description="Inactive child"
+          FindString.MatchText="child\\s+pattern"
+        }
+      }
+    }
+  }
+}

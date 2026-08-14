@@ -113,9 +113,9 @@ final class LegacyAutomationWorkspaceTests: XCTestCase {
         let imported = try LegacyConfigurationDocument(source: """
         Version=331
         Connections {
-          Shortcuts { World { KeyboardMacros2 {
+          KeyboardMacros2 {
             { Description="Imported" Macro="west" key=NumPad4 Vendor="preserve" }
-          } } }
+          }
         }
         """)
         XCTAssertEqual(try workspace.importMacros(from: imported, into: .global), 1)

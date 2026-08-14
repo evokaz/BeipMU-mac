@@ -22,6 +22,55 @@ public struct LegacyConfigurationWorkspace: Sendable {
         }
     }
 
+    public enum ProfileEntrySelection: Sendable, Equatable {
+        case world(UUID)
+        case character(world: UUID, character: UUID)
+        case puppet(world: UUID, character: UUID, puppet: UUID)
+    }
+
+    public struct AutomationItemPath: Sendable, Equatable {
+        public var scope: AutomationScope
+        public var path: [Int]
+
+        public init(scope: AutomationScope, path: [Int]) {
+            self.scope = scope
+            self.path = path
+        }
+    }
+
+    public enum AutomationEntrySelection: Sendable, Equatable {
+        case scope(AutomationScope)
+        case item(AutomationItemPath)
+    }
+
+    public enum AutomationImportDestination: Sendable, Equatable {
+        case scope(AutomationScope)
+        case folder(AutomationItemPath)
+        case afterItem(AutomationItemPath)
+    }
+
+    public struct AutomationImportResult: Sendable, Equatable {
+        public var scope: AutomationScope
+        public var paths: [[Int]]
+
+        public init(scope: AutomationScope, paths: [[Int]]) {
+            self.scope = scope
+            self.paths = paths
+        }
+    }
+
+    public struct ProfileMergeResult: Sendable, Equatable {
+        public var worldID: UUID
+        public var characterIDs: [UUID]
+        public var puppetIDs: [UUID]
+
+        public init(worldID: UUID, characterIDs: [UUID], puppetIDs: [UUID]) {
+            self.worldID = worldID
+            self.characterIDs = characterIDs
+            self.puppetIDs = puppetIDs
+        }
+    }
+
     public enum WorkspaceError: LocalizedError, Equatable {
         case serverNotFound
         case characterNotFound
@@ -30,6 +79,10 @@ public struct LegacyConfigurationWorkspace: Sendable {
         case emptyName
         case duplicateName(String)
         case macroTextTooLong
+        case wrongAutomationCategory(expected: AutomationKind)
+        case multipleContextualScopes
+        case multipleWorlds
+        case noProfilesFound
 
         public var errorDescription: String? {
             switch self {
@@ -40,6 +93,14 @@ public struct LegacyConfigurationWorkspace: Sendable {
             case .emptyName: "Names cannot be empty."
             case let .duplicateName(name): "“\(name)” is already in use at this level."
             case .macroTextTooLong: "Macro Text cannot exceed 65,536 characters."
+            case let .wrongAutomationCategory(expected):
+                "The selected file does not contain \(expected.displayName.lowercased())."
+            case .multipleContextualScopes:
+                "The selected file contains automation from more than one world, character, or puppet scope."
+            case .multipleWorlds:
+                "Profile imports must contain exactly one world."
+            case .noProfilesFound:
+                "The selected file does not contain a world profile."
             }
         }
     }
@@ -571,23 +632,14 @@ public struct LegacyConfigurationWorkspace: Sendable {
         into scope: AutomationScope,
         parentPath: [Int] = []
     ) throws -> Int {
-        guard parentPath.isEmpty || macro(at: parentPath, in: scope)?.folder == true else {
-            throw WorkspaceError.automationEntryNotFound
-        }
-        let sources = imported.rawUnnamedBlockSources(named: "KeyboardMacros2")
-        guard !sources.isEmpty else { return 0 }
-        let collectionPath = try automationCollectionPath(scope, kind: .macros)
-        try document.upsertValue("true", at: collectionPath + ["Active"], quoted: false)
-        for raw in sources {
-            _ = try document.appendRawUnnamedBlock(
-                raw,
-                at: collectionPath,
-                nestedIn: parentPath,
-                nestedCollectionPath: ["KeyboardMacros2"]
-            )
-        }
-        try reloadProjectionAfterAutomationEdit()
-        return sources.count
+        let destination: AutomationImportDestination = parentPath.isEmpty
+            ? .scope(scope)
+            : .folder(.init(scope: scope, path: parentPath))
+        return try importAutomation(
+            from: imported,
+            kind: .macros,
+            destination: destination
+        ).paths.count
     }
 
     @discardableResult
@@ -601,27 +653,10 @@ public struct LegacyConfigurationWorkspace: Sendable {
 
     /// Exports one macro subtree or all macros below a selected scope/folder.
     public func exportMacros(in scope: AutomationScope, path: [Int]? = nil) throws -> LegacyConfigurationDocument {
-        let collectionPath = try automationCollectionPath(scope, kind: .macros)
-        let sources: [String]
-        if let path {
-            guard !path.isEmpty, macro(at: path, in: scope) != nil else { throw WorkspaceError.automationEntryNotFound }
-            guard let source = document.rawUnnamedBlockSource(
-                at: path,
-                collectionPath: collectionPath,
-                nestedCollectionPath: ["KeyboardMacros2"]
-            ) else { throw WorkspaceError.automationEntryNotFound }
-            sources = [source]
-        } else {
-            sources = document.rawUnnamedBlockSources(at: collectionPath)
-        }
-        var exported = try LegacyConfigurationWorkspace.empty(isDirty: false)
-        let exportedCollection = ["Connections", "KeyboardMacros2"]
-        try exported.document.upsertValue("true", at: exportedCollection + ["Active"], quoted: false)
-        for source in sources {
-            _ = try exported.document.appendRawUnnamedBlock(source, at: exportedCollection)
-        }
-        try exported.reloadProjectionAfterAutomationEdit()
-        return try exported.renderedDocument()
+        let selection: AutomationEntrySelection = path.map {
+            .item(.init(scope: scope, path: $0))
+        } ?? .scope(scope)
+        return try exportAutomation(kind: .macros, selection: selection)
     }
 
     public mutating func updateAlias(at index: Int, in scope: AutomationScope, description: String, match: MatchDefinition, replacement: String) throws {
@@ -821,12 +856,10 @@ public struct LegacyConfigurationWorkspace: Sendable {
         into scope: AutomationScope,
         parentPath: [Int] = []
     ) throws -> [[Int]] {
-        let imported = try LegacyConfigurationWorkspace(document: source)
-        var paths: [[Int]] = []
-        for alias in imported.globalAliases {
-            paths.append(try addAlias(in: scope, parentPath: parentPath, alias: alias))
-        }
-        return paths
+        let destination: AutomationImportDestination = parentPath.isEmpty
+            ? .scope(scope)
+            : .folder(.init(scope: scope, path: parentPath))
+        return try importAutomation(from: source, kind: .aliases, destination: destination).paths
     }
 
     /// Exports either one alias subtree or every alias in a selected scope as
@@ -835,20 +868,32 @@ public struct LegacyConfigurationWorkspace: Sendable {
         in scope: AutomationScope,
         path: [Int]? = nil
     ) throws -> LegacyConfigurationDocument {
-        let selected: [Alias]
-        if let path {
-            guard let alias = alias(at: path, in: scope) else {
-                throw WorkspaceError.automationEntryNotFound
-            }
-            selected = [alias]
-        } else {
-            selected = aliases(in: scope)
-        }
-        var exported = try LegacyConfigurationWorkspace.empty(isDirty: false)
-        for alias in selected {
-            _ = try exported.addAlias(in: .global, parentPath: [], alias: alias)
-        }
-        return try exported.renderedDocument()
+        let selection: AutomationEntrySelection = path.map {
+            .item(.init(scope: scope, path: $0))
+        } ?? .scope(scope)
+        return try exportAutomation(kind: .aliases, selection: selection)
+    }
+
+    @discardableResult
+    public mutating func importTriggers(
+        from source: LegacyConfigurationDocument,
+        into scope: AutomationScope,
+        parentPath: [Int] = []
+    ) throws -> [[Int]] {
+        let destination: AutomationImportDestination = parentPath.isEmpty
+            ? .scope(scope)
+            : .folder(.init(scope: scope, path: parentPath))
+        return try importAutomation(from: source, kind: .triggers, destination: destination).paths
+    }
+
+    public func exportTriggers(
+        in scope: AutomationScope,
+        path: [Int]? = nil
+    ) throws -> LegacyConfigurationDocument {
+        let selection: AutomationEntrySelection = path.map {
+            .item(.init(scope: scope, path: $0))
+        } ?? .scope(scope)
+        return try exportAutomation(kind: .triggers, selection: selection)
     }
 
     public mutating func updateTrigger(at index: Int, in scope: AutomationScope, description: String, match: MatchDefinition, action: EditableTriggerAction) throws {
@@ -930,7 +975,17 @@ public struct LegacyConfigurationWorkspace: Sendable {
         try reloadProjectionAfterAutomationEdit()
     }
 
-    public enum AutomationKind: Sendable, Equatable { case aliases, triggers, macros }
+    public enum AutomationKind: Sendable, Equatable {
+        case aliases, triggers, macros
+
+        public var displayName: String {
+            switch self {
+            case .aliases: "Aliases"
+            case .triggers: "Triggers"
+            case .macros: "Keyboard macros"
+            }
+        }
+    }
 
     private func server(_ id: UUID) -> LegacyConfigurationProjection.Server? {
         projection.servers.first { $0.profile.id == id }
@@ -1627,6 +1682,267 @@ public struct LegacyConfigurationWorkspace: Sendable {
         isDirty = true
     }
 
+    /// Exports only the selected world hierarchy in ordinary Windows v331
+    /// syntax. The selected named profile blocks are copied from the syntax
+    /// tree, so comments and fields unknown to the projection survive.
+    public func exportProfileHierarchy(
+        _ selection: ProfileEntrySelection
+    ) throws -> LegacyConfigurationDocument {
+        let names = try profileNames(for: selection)
+        guard let rawWorld = document.rawNamedBlockSource(
+            named: names.world,
+            at: ["Connections", "Shortcuts"]
+        ) else { throw WorkspaceError.serverNotFound }
+
+        var result = try Self.profileWrapper()
+        try result.appendRawNamedBlock(rawWorld, at: ["Connections", "Shortcuts"])
+        let worldPath = ["Connections", "Shortcuts", names.world]
+
+        switch selection {
+        case .world:
+            break
+        case .character:
+            try Self.removeAutomationCollections(at: worldPath, from: &result)
+            for candidate in result.namedBlockNames(at: worldPath + ["Characters"])
+                where candidate.caseInsensitiveCompare(names.character!) != .orderedSame {
+                _ = try result.removeCollectionEntry(named: candidate, at: worldPath + ["Characters"])
+            }
+        case .puppet:
+            try Self.removeAutomationCollections(at: worldPath, from: &result)
+            for candidate in result.namedBlockNames(at: worldPath + ["Characters"])
+                where candidate.caseInsensitiveCompare(names.character!) != .orderedSame {
+                _ = try result.removeCollectionEntry(named: candidate, at: worldPath + ["Characters"])
+            }
+            let characterPath = worldPath + ["Characters", names.character!]
+            try Self.removeAutomationCollections(at: characterPath, from: &result)
+            for candidate in result.namedBlockNames(at: characterPath + ["Puppets"])
+                where candidate.caseInsensitiveCompare(names.puppet!) != .orderedSame {
+                _ = try result.removeCollectionEntry(named: candidate, at: characterPath + ["Puppets"])
+            }
+        }
+        return result
+    }
+
+    /// Exports a complete selected automation scope, or one exact raw item.
+    /// Single items are intentionally context-free and always live beneath
+    /// the global collection, matching the Windows client's export shape.
+    public func exportAutomation(
+        kind: AutomationKind,
+        selection: AutomationEntrySelection
+    ) throws -> LegacyConfigurationDocument {
+        switch selection {
+        case let .item(item):
+            let collectionPath = try automationCollectionPath(item.scope, kind: kind)
+            guard !item.path.isEmpty,
+                  let raw = document.rawUnnamedBlockSource(
+                      at: item.path,
+                      collectionPath: collectionPath,
+                      nestedCollectionPath: [Self.collectionName(for: kind)]
+                  ) else { throw WorkspaceError.automationEntryNotFound }
+            var result = try Self.automationWrapper(kind: kind)
+            _ = try result.appendRawUnnamedBlock(raw, at: ["Connections", Self.collectionName(for: kind)])
+            return result
+
+        case .scope(.global):
+            var result = try Self.profileWrapper()
+            let collection = Self.collectionName(for: kind)
+            if let raw = document.rawNamedBlockSource(named: collection, at: ["Connections"]) {
+                try result.appendRawNamedBlock(raw, at: ["Connections"])
+            } else {
+                result = try Self.automationWrapper(kind: kind)
+            }
+            return result
+
+        case let .scope(scope):
+            let profileSelection = try profileSelection(for: scope)
+            var result = try exportProfileHierarchy(profileSelection)
+            let selectedNames = try scopeNames(for: scope)
+            let exported = try LegacyConfigurationWorkspace(document: result)
+            for world in exported.servers {
+                let worldPath = ["Connections", "Shortcuts", world.profile.name]
+                try Self.pruneAutomation(
+                    at: worldPath,
+                    context: .init(world: world.profile.name, character: nil, puppet: nil),
+                    selected: selectedNames,
+                    kind: kind,
+                    document: &result
+                )
+                for character in world.characters {
+                    let characterPath = worldPath + ["Characters", character.name]
+                    try Self.pruneAutomation(
+                        at: characterPath,
+                        context: .init(world: world.profile.name, character: character.name, puppet: nil),
+                        selected: selectedNames,
+                        kind: kind,
+                        document: &result
+                    )
+                    for puppet in character.puppets {
+                        try Self.pruneAutomation(
+                            at: characterPath + ["Puppets", puppet.name],
+                            context: .init(world: world.profile.name, character: character.name, puppet: puppet.name),
+                            selected: selectedNames,
+                            kind: kind,
+                            document: &result
+                        )
+                    }
+                }
+            }
+            return result
+        }
+    }
+
+    /// Imports automation atomically into a selection-aware destination.
+    /// Context-free files use the current destination; contextual files merge
+    /// into the hierarchy encoded by the document.
+    @discardableResult
+    public mutating func importAutomation(
+        from source: LegacyConfigurationDocument,
+        kind: AutomationKind,
+        destination: AutomationImportDestination
+    ) throws -> AutomationImportResult {
+        var candidate = self
+        let result = try candidate.importAutomationImpl(
+            from: source,
+            kind: kind,
+            destination: destination
+        )
+        self = candidate
+        return result
+    }
+
+    private mutating func importAutomationImpl(
+        from source: LegacyConfigurationDocument,
+        kind: AutomationKind,
+        destination: AutomationImportDestination
+    ) throws -> AutomationImportResult {
+        let imported = try LegacyConfigurationWorkspace(document: source)
+        let contexts = try imported.sourceAutomationContexts(for: kind)
+        guard !contexts.isEmpty else {
+            throw WorkspaceError.wrongAutomationCategory(expected: kind)
+        }
+        let contextual = contexts.filter { $0.character != nil || $0.puppet != nil || $0.world != nil }
+        guard contextual.count <= 1, !(contexts.contains(where: { $0.world == nil }) && !contextual.isEmpty) else {
+            throw WorkspaceError.multipleContextualScopes
+        }
+
+        if let context = contextual.first {
+            let before = try matchingScope(for: context).map { automationCount(in: $0, kind: kind) } ?? 0
+            _ = try mergeProfileHierarchy(from: source)
+            guard let scope = try matchingScope(for: context) else {
+                throw WorkspaceError.automationEntryNotFound
+            }
+            let after = automationCount(in: scope, kind: kind)
+            return .init(scope: scope, paths: (before..<after).map { [$0] })
+        }
+
+        let (scope, parentPath, index) = try importLocation(destination, kind: kind)
+        let rawSources = source.rawUnnamedBlockSources(at: ["Connections", Self.collectionName(for: kind)])
+        var paths: [[Int]] = []
+        var insertion = index
+        for raw in rawSources {
+            let prepared = try uniquelyNamedRawAutomation(raw, kind: kind, scope: scope, parentPath: parentPath)
+            let collectionPath = try automationCollectionPath(scope, kind: kind)
+            let inserted = try document.appendRawUnnamedBlock(
+                prepared,
+                at: collectionPath,
+                nestedIn: parentPath,
+                nestedCollectionPath: [Self.collectionName(for: kind)],
+                index: insertion
+            )
+            paths.append(parentPath + [inserted])
+            if let currentInsertion = insertion { insertion = currentInsertion + 1 }
+            try reloadProjectionAfterAutomationEdit()
+        }
+        return .init(scope: scope, paths: paths)
+    }
+
+    /// Merges one contextual world hierarchy without applying root settings.
+    /// Existing case-insensitive parents keep their settings; missing profile
+    /// blocks are copied raw and automation leaf conflicts are renamed.
+    @discardableResult
+    public mutating func mergeProfileHierarchy(
+        from source: LegacyConfigurationDocument
+    ) throws -> ProfileMergeResult {
+        var candidate = self
+        let result = try candidate.mergeProfileHierarchyImpl(from: source)
+        self = candidate
+        return result
+    }
+
+    private mutating func mergeProfileHierarchyImpl(
+        from source: LegacyConfigurationDocument
+    ) throws -> ProfileMergeResult {
+        let imported = try LegacyConfigurationWorkspace(document: source)
+        guard !imported.servers.isEmpty else { throw WorkspaceError.noProfilesFound }
+        guard imported.servers.count == 1 else { throw WorkspaceError.multipleWorlds }
+        let sourceWorld = imported.servers[0]
+        let shortcuts = ["Connections", "Shortcuts"]
+
+        if !projection.servers.contains(where: {
+            $0.profile.name.caseInsensitiveCompare(sourceWorld.profile.name) == .orderedSame
+        }) {
+            guard let raw = source.rawNamedBlockSource(named: sourceWorld.profile.name, at: shortcuts) else {
+                throw WorkspaceError.noProfilesFound
+            }
+            try document.appendRawNamedBlock(raw, at: shortcuts)
+            try reloadProjectionAfterAutomationEdit()
+        } else {
+            let targetWorldName = projection.servers.first {
+                $0.profile.name.caseInsensitiveCompare(sourceWorld.profile.name) == .orderedSame
+            }!.profile.name
+            let sourceWorldPath = shortcuts + [sourceWorld.profile.name]
+            let targetWorldPath = shortcuts + [targetWorldName]
+            try mergeAutomationCollections(from: source, sourcePath: sourceWorldPath, targetPath: targetWorldPath)
+
+            let targetWorld = projection.servers.first {
+                $0.profile.name.caseInsensitiveCompare(sourceWorld.profile.name) == .orderedSame
+            }!
+            for sourceCharacter in sourceWorld.characters {
+                if let targetCharacter = targetWorld.characters.first(where: {
+                    $0.name.caseInsensitiveCompare(sourceCharacter.name) == .orderedSame
+                }) {
+                    let sourceCharacterPath = sourceWorldPath + ["Characters", sourceCharacter.name]
+                    let targetCharacterPath = targetWorldPath + ["Characters", targetCharacter.name]
+                    try mergeAutomationCollections(from: source, sourcePath: sourceCharacterPath, targetPath: targetCharacterPath)
+                    for sourcePuppet in sourceCharacter.puppets {
+                        if let targetPuppet = targetCharacter.puppets.first(where: {
+                            $0.name.caseInsensitiveCompare(sourcePuppet.name) == .orderedSame
+                        }) {
+                            try mergeAutomationCollections(
+                                from: source,
+                                sourcePath: sourceCharacterPath + ["Puppets", sourcePuppet.name],
+                                targetPath: targetCharacterPath + ["Puppets", targetPuppet.name]
+                            )
+                        } else if let raw = source.rawNamedBlockSource(
+                            named: sourcePuppet.name,
+                            at: sourceCharacterPath + ["Puppets"]
+                        ) {
+                            try document.appendRawNamedBlock(raw, at: targetCharacterPath + ["Puppets"])
+                        }
+                    }
+                } else if let raw = source.rawNamedBlockSource(
+                    named: sourceCharacter.name,
+                    at: sourceWorldPath + ["Characters"]
+                ) {
+                    try document.appendRawNamedBlock(raw, at: targetWorldPath + ["Characters"])
+                }
+            }
+            try reloadProjectionAfterAutomationEdit()
+        }
+
+        guard let world = projection.servers.first(where: {
+            $0.profile.name.caseInsensitiveCompare(sourceWorld.profile.name) == .orderedSame
+        }) else { throw WorkspaceError.serverNotFound }
+        let importedCharacterNames = Set(sourceWorld.characters.map { $0.name.lowercased() })
+        let characters = world.characters.filter { importedCharacterNames.contains($0.name.lowercased()) }
+        let importedPuppetNames = Set(sourceWorld.characters.flatMap(\.puppets).map { $0.name.lowercased() })
+        return .init(
+            worldID: world.profile.id,
+            characterIDs: characters.map(\.id),
+            puppetIDs: characters.flatMap(\.puppets).filter { importedPuppetNames.contains($0.name.lowercased()) }.map(\.id)
+        )
+    }
+
     public func renderedDocument() throws -> LegacyConfigurationDocument {
         try projection.applying(to: document)
     }
@@ -1636,6 +1952,285 @@ public struct LegacyConfigurationWorkspace: Sendable {
         sourceURL = url
         recoveredFrom = nil
         isDirty = false
+    }
+
+    private struct ScopeNames: Equatable {
+        var world: String?
+        var character: String?
+        var puppet: String?
+    }
+
+    private func profileNames(for selection: ProfileEntrySelection) throws -> (world: String, character: String?, puppet: String?) {
+        switch selection {
+        case let .world(worldID):
+            guard let world = server(worldID) else { throw WorkspaceError.serverNotFound }
+            return (world.profile.name, nil, nil)
+        case let .character(worldID, characterID):
+            guard let world = server(worldID),
+                  let character = world.characters.first(where: { $0.id == characterID }) else {
+                throw WorkspaceError.characterNotFound
+            }
+            return (world.profile.name, character.name, nil)
+        case let .puppet(worldID, characterID, puppetID):
+            guard let world = server(worldID),
+                  let character = world.characters.first(where: { $0.id == characterID }),
+                  let puppet = character.puppets.first(where: { $0.id == puppetID }) else {
+                throw WorkspaceError.puppetNotFound
+            }
+            return (world.profile.name, character.name, puppet.name)
+        }
+    }
+
+    private func profileSelection(for scope: AutomationScope) throws -> ProfileEntrySelection {
+        switch scope {
+        case .global:
+            throw WorkspaceError.serverNotFound
+        case let .server(world):
+            return .world(world)
+        case let .character(world, character):
+            return .character(world: world, character: character)
+        case let .puppet(world, character, puppet):
+            return .puppet(world: world, character: character, puppet: puppet)
+        }
+    }
+
+    private func scopeNames(for scope: AutomationScope) throws -> ScopeNames {
+        switch scope {
+        case .global:
+            return .init(world: nil, character: nil, puppet: nil)
+        case let .server(worldID):
+            guard let world = server(worldID) else { throw WorkspaceError.serverNotFound }
+            return .init(world: world.profile.name, character: nil, puppet: nil)
+        case let .character(worldID, characterID):
+            guard let world = server(worldID),
+                  let character = world.characters.first(where: { $0.id == characterID }) else {
+                throw WorkspaceError.characterNotFound
+            }
+            return .init(world: world.profile.name, character: character.name, puppet: nil)
+        case let .puppet(worldID, characterID, puppetID):
+            guard let world = server(worldID),
+                  let character = world.characters.first(where: { $0.id == characterID }),
+                  let puppet = character.puppets.first(where: { $0.id == puppetID }) else {
+                throw WorkspaceError.puppetNotFound
+            }
+            return .init(world: world.profile.name, character: character.name, puppet: puppet.name)
+        }
+    }
+
+    private static func profileWrapper() throws -> LegacyConfigurationDocument {
+        try LegacyConfigurationDocument(source: """
+        Version=331
+        Connections
+        {
+          Shortcuts
+          {
+          }
+        }
+        """)
+    }
+
+    private static func automationWrapper(kind: AutomationKind) throws -> LegacyConfigurationDocument {
+        let collection = collectionName(for: kind)
+        return try LegacyConfigurationDocument(source: """
+        Version=331
+        Connections
+        {
+          \(collection)
+          {
+          }
+        }
+        """)
+    }
+
+    private static func collectionName(for kind: AutomationKind) -> String {
+        switch kind {
+        case .aliases: "Aliases"
+        case .triggers: "Triggers"
+        case .macros: "KeyboardMacros2"
+        }
+    }
+
+    private static func removeAutomationCollections(
+        at path: [String],
+        from document: inout LegacyConfigurationDocument
+    ) throws {
+        for kind in [AutomationKind.aliases, .triggers, .macros] {
+            _ = try document.removeCollectionEntry(named: collectionName(for: kind), at: path)
+        }
+    }
+
+    private static func pruneAutomation(
+        at path: [String],
+        context: ScopeNames,
+        selected: ScopeNames,
+        kind: AutomationKind,
+        document: inout LegacyConfigurationDocument
+    ) throws {
+        for candidate in [AutomationKind.aliases, .triggers, .macros]
+            where context != selected || candidate != kind {
+            _ = try document.removeCollectionEntry(named: collectionName(for: candidate), at: path)
+        }
+    }
+
+    private func sourceAutomationContexts(for kind: AutomationKind) throws -> [ScopeNames] {
+        let collection = Self.collectionName(for: kind)
+        var contexts: [ScopeNames] = []
+        if document.hasBlock(at: ["Connections", collection]) {
+            contexts.append(.init(world: nil, character: nil, puppet: nil))
+        }
+        for world in servers {
+            let worldPath = ["Connections", "Shortcuts", world.profile.name]
+            if document.hasBlock(at: worldPath + [collection]) {
+                contexts.append(.init(world: world.profile.name, character: nil, puppet: nil))
+            }
+            for character in world.characters {
+                let characterPath = worldPath + ["Characters", character.name]
+                if document.hasBlock(at: characterPath + [collection]) {
+                    contexts.append(.init(world: world.profile.name, character: character.name, puppet: nil))
+                }
+                for puppet in character.puppets where document.hasBlock(
+                    at: characterPath + ["Puppets", puppet.name, collection]
+                ) {
+                    contexts.append(.init(world: world.profile.name, character: character.name, puppet: puppet.name))
+                }
+            }
+        }
+        return contexts
+    }
+
+    private func matchingScope(for names: ScopeNames) throws -> AutomationScope? {
+        guard let worldName = names.world else { return .global }
+        guard let world = projection.servers.first(where: {
+            $0.profile.name.caseInsensitiveCompare(worldName) == .orderedSame
+        }) else { return nil }
+        guard let characterName = names.character else { return .server(world.profile.id) }
+        guard let character = world.characters.first(where: {
+            $0.name.caseInsensitiveCompare(characterName) == .orderedSame
+        }) else { return nil }
+        guard let puppetName = names.puppet else {
+            return .character(server: world.profile.id, character: character.id)
+        }
+        guard let puppet = character.puppets.first(where: {
+            $0.name.caseInsensitiveCompare(puppetName) == .orderedSame
+        }) else { return nil }
+        return .puppet(server: world.profile.id, character: character.id, puppet: puppet.id)
+    }
+
+    private func automationCount(in scope: AutomationScope, kind: AutomationKind) -> Int {
+        switch kind {
+        case .aliases: aliases(in: scope).count
+        case .triggers: triggers(in: scope).count
+        case .macros: macros(in: scope).count
+        }
+    }
+
+    private func importLocation(
+        _ destination: AutomationImportDestination,
+        kind: AutomationKind
+    ) throws -> (scope: AutomationScope, parentPath: [Int], index: Int?) {
+        switch destination {
+        case let .scope(scope):
+            _ = try automationCollectionPath(scope, kind: kind)
+            return (scope, [], nil)
+        case let .folder(item):
+            guard isFolder(at: item.path, in: item.scope, kind: kind) else {
+                throw WorkspaceError.automationEntryNotFound
+            }
+            return (item.scope, item.path, nil)
+        case let .afterItem(item):
+            guard item.path.last != nil, automationExists(at: item.path, in: item.scope, kind: kind) else {
+                throw WorkspaceError.automationEntryNotFound
+            }
+            return (item.scope, Array(item.path.dropLast()), item.path.last! + 1)
+        }
+    }
+
+    private func automationExists(at path: [Int], in scope: AutomationScope, kind: AutomationKind) -> Bool {
+        switch kind {
+        case .aliases: alias(at: path, in: scope) != nil
+        case .triggers: trigger(at: path, in: scope) != nil
+        case .macros: macro(at: path, in: scope) != nil
+        }
+    }
+
+    private func isFolder(at path: [Int], in scope: AutomationScope, kind: AutomationKind) -> Bool {
+        switch kind {
+        case .aliases: alias(at: path, in: scope)?.folder == true
+        case .triggers: trigger(at: path, in: scope)?.folder == true
+        case .macros: macro(at: path, in: scope)?.folder == true
+        }
+    }
+
+    private func uniquelyNamedRawAutomation(
+        _ raw: String,
+        kind: AutomationKind,
+        scope: AutomationScope,
+        parentPath: [Int]
+    ) throws -> String {
+        let names: [String] = switch kind {
+        case .aliases:
+            parentPath.isEmpty ? aliases(in: scope).map(\.description) : alias(at: parentPath, in: scope)?.children.map(\.description) ?? []
+        case .triggers:
+            parentPath.isEmpty ? triggers(in: scope).map(\.description) : trigger(at: parentPath, in: scope)?.children.map(\.description) ?? []
+        case .macros:
+            parentPath.isEmpty ? macros(in: scope).map(\.description) : macro(at: parentPath, in: scope)?.children.map(\.description) ?? []
+        }
+        return try Self.uniquelyNamedRawAutomation(raw, kind: kind, existingNames: names)
+    }
+
+    private static func uniquelyNamedRawAutomation(
+        _ raw: String,
+        kind: AutomationKind,
+        existingNames: [String]
+    ) throws -> String {
+        var temporary = try automationWrapper(kind: kind)
+        let path = ["Connections", collectionName(for: kind)]
+        _ = try temporary.appendRawUnnamedBlock(raw, at: path)
+        guard let description = temporary.value(
+            inUnnamedBlockAt: 0,
+            collectionPath: path,
+            relativePath: ["Description"]
+        ), !description.isEmpty else { return raw }
+        let unique = uniqueName(description, among: existingNames)
+        guard unique != description else { return raw }
+        try temporary.upsertValue(
+            unique,
+            inUnnamedBlockAt: 0,
+            collectionPath: path,
+            relativePath: ["Description"]
+        )
+        return temporary.rawUnnamedBlockSource(
+            at: [0],
+            collectionPath: path,
+            nestedCollectionPath: [collectionName(for: kind)]
+        ) ?? raw
+    }
+
+    private mutating func mergeAutomationCollections(
+        from source: LegacyConfigurationDocument,
+        sourcePath: [String],
+        targetPath: [String]
+    ) throws {
+        for kind in [AutomationKind.aliases, .triggers, .macros] {
+            let collection = Self.collectionName(for: kind)
+            let sourceCollection = sourcePath + [collection]
+            guard source.hasBlock(at: sourceCollection) else { continue }
+            let targetCollection = targetPath + [collection]
+            var existingNames = document.unnamedBlockValues(at: targetCollection).compactMap { values in
+                values.first(where: { $0.key.caseInsensitiveCompare("Description") == .orderedSame })?.value
+            }
+            for raw in source.rawUnnamedBlockSources(at: sourceCollection) {
+                let prepared = try Self.uniquelyNamedRawAutomation(raw, kind: kind, existingNames: existingNames)
+                _ = try document.appendRawUnnamedBlock(prepared, at: targetCollection)
+                var temporary = try Self.automationWrapper(kind: kind)
+                _ = try temporary.appendRawUnnamedBlock(prepared, at: ["Connections", collection])
+                if let name = temporary.value(
+                    inUnnamedBlockAt: 0,
+                    collectionPath: ["Connections", collection],
+                    relativePath: ["Description"]
+                ) { existingNames.append(name) }
+            }
+        }
     }
 
     private func characterLocation(id: UUID, serverID: UUID) throws -> (server: Int, character: Int) {

@@ -1292,19 +1292,62 @@ final class ConfigurationManagerWindowController: NSWindowController, NSOutlineV
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
-            try library.importConfiguration(from: url)
-            reload()
+            let imported = try library.importProfile(from: url)
+            reload(select: selection(for: imported))
         } catch { present(error) }
     }
 
     @objc private func exportConfiguration(_ sender: Any?) {
+        guard resolvePendingFormChanges() else { return }
+        guard activeList == .saved, let selection,
+              let profileSelection = persistenceSelection(for: selection) else {
+            let alert = NSAlert()
+            alert.alertStyle = .informational
+            alert.messageText = "Select an Item or Scope"
+            alert.informativeText = "Select a world, character, or puppet to export."
+            if let window { alert.beginSheetModal(for: window) }
+            else { alert.runModal() }
+            return
+        }
         let panel = NSSavePanel()
         panel.title = "Export World Configuration"
         panel.nameFieldStringValue = "Config-export.txt"
         panel.allowedContentTypes = [.plainText]
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        do { try library.export(to: url) }
+        do { try library.exportProfile(profileSelection, to: url) }
         catch { present(error) }
+    }
+
+    private func persistenceSelection(
+        for selection: Selection
+    ) -> LegacyConfigurationWorkspace.ProfileEntrySelection? {
+        switch selection {
+        case let .server(world):
+            .world(world)
+        case let .character(world, character):
+            .character(world: world, character: character)
+        case let .puppet(world, character, puppet):
+            .puppet(world: world, character: character, puppet: puppet)
+        }
+    }
+
+    private func selection(
+        for result: LegacyConfigurationWorkspace.ProfileMergeResult
+    ) -> Selection {
+        if let puppetID = result.puppetIDs.last {
+            for world in library.workspace.servers {
+                for character in world.characters where character.puppets.contains(where: { $0.id == puppetID }) {
+                    return .puppet(server: world.profile.id, character: character.id, puppet: puppetID)
+                }
+            }
+        }
+        if let characterID = result.characterIDs.last,
+           let world = library.workspace.servers.first(where: {
+               $0.characters.contains(where: { $0.id == characterID })
+           }) {
+            return .character(server: world.profile.id, character: characterID)
+        }
+        return .server(result.worldID)
     }
 
     @objc private func closeManager(_ sender: Any?) {
