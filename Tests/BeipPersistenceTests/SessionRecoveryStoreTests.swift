@@ -153,6 +153,61 @@ final class SessionRecoveryStoreTests: XCTestCase {
         XCTAssertEqual(store.statistics.fileSize, Data("BeipMU Recovery 1\n".utf8).count)
     }
 
+    func testEnqueuedBurstFlushesInOrderAndReopensCompletely() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("Recovery.dat")
+        let store = try SessionRecoveryStore(
+            url: url,
+            capacity: 4 * 1_024 * 1_024,
+            perSessionCapacity: 4 * 1_024 * 1_024
+        )
+        let id = try store.beginSession(serverName: "World", characterName: "Hero")
+
+        let start = ContinuousClock.now
+        for index in 0..<5_000 {
+            store.enqueue(.sentInput("event-\(index)"), to: id)
+        }
+        let enqueueDuration = start.duration(to: .now)
+        XCTAssertLessThan(enqueueDuration, .seconds(1))
+
+        try store.flush()
+        let reopened = try SessionRecoveryStore(
+            url: url,
+            capacity: 4 * 1_024 * 1_024,
+            perSessionCapacity: 4 * 1_024 * 1_024
+        )
+        let values = reopened.session(id: id)?.records.compactMap { record -> String? in
+            if case let .sentInput(value) = record.event { return value }
+            return nil
+        }
+        XCTAssertEqual(values, (0..<5_000).map { "event-\($0)" })
+    }
+
+    func testResetDisableResizeAndRemoveAreBarriersForEnqueuedEvents() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("Recovery.dat")
+        let store = try SessionRecoveryStore(url: url, capacity: 64 * 1_024)
+        let resetID = try store.beginSession(serverName: "Reset")
+        for index in 0..<500 { store.enqueue(.sentInput("reset-\(index)"), to: resetID) }
+        try store.reset()
+        XCTAssertTrue(store.sessions.isEmpty)
+
+        let removeID = try store.beginSession(serverName: "Remove")
+        for index in 0..<500 { store.enqueue(.sentInput("remove-\(index)"), to: removeID) }
+        try store.setPerCharacterCapacity(32 * 1_024)
+        try store.remove(sessionID: removeID)
+        XCTAssertNil(store.session(id: removeID))
+
+        let disableID = try store.beginSession(serverName: "Disable")
+        for index in 0..<500 { store.enqueue(.sentInput("disable-\(index)"), to: disableID) }
+        try store.setEnabled(false)
+        try store.flush()
+        XCTAssertTrue(store.sessions.isEmpty)
+        XCTAssertEqual(try Data(contentsOf: url), Data("BeipMU Recovery 1\n".utf8))
+    }
+
     private func temporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("BeipMU.SessionRecoveryStoreTests.\(UUID().uuidString)", isDirectory: true)

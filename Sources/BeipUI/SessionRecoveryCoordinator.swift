@@ -68,7 +68,7 @@ final class SessionRecoveryCoordinator {
         guard !isReplaying,
               let store,
               let sessionID else { return }
-        try? store.append(event, to: sessionID, at: timestamp)
+        store.enqueue(event, to: sessionID, at: timestamp)
     }
 
     /// Detaches the tab from its buffer. Persistent Restore Logs deliberately

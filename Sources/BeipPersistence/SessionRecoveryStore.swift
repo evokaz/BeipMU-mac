@@ -104,10 +104,14 @@ public final class SessionRecoveryStore: @unchecked Sendable {
     public let url: URL
     /// Compatibility name. Capacity is now enforced independently for every
     /// saved-character buffer, rather than as one allowance shared by a file.
-    public private(set) var capacity: Int
-    public private(set) var perSessionCapacity: Int
+    private var storedCapacity: Int
+    private var storedPerSessionCapacity: Int
+    private var storedIsEnabled: Bool
+
+    public var capacity: Int { executionQueue.sync { storedCapacity } }
+    public var perSessionCapacity: Int { executionQueue.sync { storedPerSessionCapacity } }
     public var perCharacterCapacity: Int { perSessionCapacity }
-    public private(set) var isEnabled: Bool
+    public var isEnabled: Bool { executionQueue.sync { storedIsEnabled } }
 
     private enum Frame: Codable {
         case begin(SessionRecoverySession)
@@ -156,6 +160,14 @@ public final class SessionRecoveryStore: @unchecked Sendable {
     private var sessionsByID: [UUID: SessionRecoverySession] = [:]
     private var fileHandle: FileHandle?
     private var statisticsObservers: [UUID: @Sendable (SessionRecoveryStatistics) -> Void] = [:]
+    private let executionQueue = DispatchQueue(label: "com.beipmu.session-recovery")
+    private let pendingLock = NSLock()
+    private var pendingEvents: [(SessionRecoveryEvent, UUID, Date)] = []
+    private var drainScheduled = false
+    private var recordFrameSizes: [UUID: [Int]] = [:]
+    private var recordByteCounts: [UUID: Int] = [:]
+    private var metadataByteCounts: [UUID: Int] = [:]
+    private var physicalByteCount = 0
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
@@ -180,9 +192,9 @@ public final class SessionRecoveryStore: @unchecked Sendable {
         let requestedCapacity = perSessionCapacity ?? capacity
         guard requestedCapacity >= Self.minimumCapacity else { throw SessionRecoveryStoreError.invalidCapacity }
         self.url = url
-        self.capacity = capacity
-        self.perSessionCapacity = requestedCapacity
-        self.isEnabled = enabled
+        storedCapacity = capacity
+        storedPerSessionCapacity = requestedCapacity
+        storedIsEnabled = enabled
         encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .millisecondsSince1970
         encoder.outputFormatting = [.sortedKeys]
@@ -194,7 +206,10 @@ public final class SessionRecoveryStore: @unchecked Sendable {
             withIntermediateDirectories: true
         )
         try loadExistingFile()
+        rebuildByteCaches()
         normalizeCharacterBuffers()
+        rebuildByteCaches()
+        for id in Array(sessionsByID.keys) { trimSession(id) }
         if !enabled { try resetFileWithoutNotification() }
         try openForAppend()
         if enabled { try compactIfNeeded() }
@@ -202,20 +217,17 @@ public final class SessionRecoveryStore: @unchecked Sendable {
 
     deinit { try? fileHandle?.close() }
 
-    public var sessionCount: Int { sessionsByID.count }
+    public var sessionCount: Int { executionQueue.sync { sessionsByID.count } }
 
     public var statistics: SessionRecoveryStatistics {
-        SessionRecoveryStatistics(bufferCount: sessionsByID.count, fileSize: physicalFileSize)
+        executionQueue.sync { currentStatistics }
     }
 
     public var sessions: [SessionRecoverySession] {
-        sessionsByID.values.sorted {
-            if $0.updatedAt != $1.updatedAt { return $0.updatedAt > $1.updatedAt }
-            return $0.id.uuidString < $1.id.uuidString
-        }
+        executionQueue.sync { sortedSessions() }
     }
 
-    public func session(id: UUID) -> SessionRecoverySession? { sessionsByID[id] }
+    public func session(id: UUID) -> SessionRecoverySession? { executionQueue.sync { sessionsByID[id] } }
 
     /// Finds the persistent buffer belonging to a saved character. Stable IDs
     /// win; names are a migration fallback for journals written before IDs
@@ -226,55 +238,52 @@ public final class SessionRecoveryStore: @unchecked Sendable {
         serverName: String,
         characterName: String
     ) -> SessionRecoverySession? {
-        if let characterID,
-           let match = sessions.first(where: { $0.characterID == characterID }) {
-            return match
-        }
-        return sessions.first {
-            ($0.serverID == serverID || $0.serverName.caseInsensitiveCompare(serverName) == .orderedSame)
-                && $0.characterName?.caseInsensitiveCompare(characterName) == .orderedSame
+        executionQueue.sync {
+            findBuffer(serverID: serverID, characterID: characterID, serverName: serverName, characterName: characterName)
         }
     }
 
     public func addStatisticsObserver(
         _ observer: @escaping @Sendable (SessionRecoveryStatistics) -> Void
     ) -> UUID {
-        let id = UUID()
-        statisticsObservers[id] = observer
-        observer(statistics)
-        return id
+        executionQueue.sync {
+            let id = UUID()
+            statisticsObservers[id] = observer
+            observer(currentStatistics)
+            return id
+        }
     }
 
     public func removeStatisticsObserver(_ id: UUID?) {
         guard let id else { return }
-        statisticsObservers.removeValue(forKey: id)
+        executionQueue.sync { _ = statisticsObservers.removeValue(forKey: id) }
     }
 
     public func setEnabled(_ enabled: Bool) throws {
-        guard isEnabled != enabled else {
+        try executionQueue.sync {
+            guard storedIsEnabled != enabled else {
+                notifyStatisticsChanged()
+                return
+            }
+            storedIsEnabled = enabled
+            if !enabled { try resetFileWithoutNotification() }
             notifyStatisticsChanged()
-            return
         }
-        isEnabled = enabled
-        if !enabled { try reset() }
-        else { notifyStatisticsChanged() }
     }
 
     public func setPerCharacterCapacity(_ bytes: Int) throws {
         guard bytes >= Self.minimumCapacity else { throw SessionRecoveryStoreError.invalidCapacity }
-        guard bytes != perSessionCapacity else {
-            notifyStatisticsChanged()
-            return
+        try executionQueue.sync {
+            guard bytes != storedPerSessionCapacity else {
+                notifyStatisticsChanged()
+                return
+            }
+            storedPerSessionCapacity = bytes
+            storedCapacity = bytes
+            rebuildByteCaches()
+            for id in Array(sessionsByID.keys) { trimSession(id) }
+            try compactLocked()
         }
-        perSessionCapacity = bytes
-        capacity = bytes
-        var trimmed: [UUID: SessionRecoverySession] = [:]
-        for var session in sessionsByID.values {
-            trim(&session)
-            trimmed[session.id] = session
-        }
-        sessionsByID = trimmed
-        try compact()
     }
 
     public func updateIdentity(
@@ -283,13 +292,16 @@ public final class SessionRecoveryStore: @unchecked Sendable {
         serverName: String,
         characterName: String
     ) throws {
-        guard var session = sessions.first(where: { $0.characterID == characterID }) else { return }
-        session.serverID = serverID
-        session.characterID = characterID
-        session.serverName = serverName
-        session.characterName = characterName
-        sessionsByID[session.id] = session
-        try compact()
+        try executionQueue.sync {
+            guard var session = sortedSessions().first(where: { $0.characterID == characterID }) else { return }
+            session.serverID = serverID
+            session.characterID = characterID
+            session.serverName = serverName
+            session.characterName = characterName
+            sessionsByID[session.id] = session
+            rebuildByteCaches()
+            try compactLocked()
+        }
     }
 
     public func updateIdentity(
@@ -299,19 +311,17 @@ public final class SessionRecoveryStore: @unchecked Sendable {
         serverName: String,
         characterName: String
     ) throws {
-        try updateSessionIdentity(
-            sessionID,
-            serverID: serverID,
-            characterID: characterID,
-            serverName: serverName,
-            characterName: characterName,
-            at: Date()
-        )
+        try executionQueue.sync {
+            try updateSessionIdentity(sessionID, serverID: serverID, characterID: characterID,
+                                      serverName: serverName, characterName: characterName, at: Date())
+        }
     }
 
     public func removeBuffer(characterID: UUID) throws {
-        let ids = sessions.filter { $0.characterID == characterID }.map(\.id)
-        for id in ids { try remove(sessionID: id) }
+        try executionQueue.sync {
+            let ids = sortedSessions().filter { $0.characterID == characterID }.map(\.id)
+            for id in ids { try removeLocked(sessionID: id) }
+        }
     }
 
     public func removeBuffer(
@@ -320,13 +330,11 @@ public final class SessionRecoveryStore: @unchecked Sendable {
         serverName: String,
         characterName: String
     ) throws {
-        guard let match = buffer(
-            serverID: serverID,
-            characterID: characterID,
-            serverName: serverName,
-            characterName: characterName
-        ) else { return }
-        try remove(sessionID: match.id)
+        try executionQueue.sync {
+            guard let match = findBuffer(serverID: serverID, characterID: characterID,
+                                         serverName: serverName, characterName: characterName) else { return }
+            try removeLocked(sessionID: match.id)
+        }
     }
 
     @discardableResult
@@ -338,45 +346,45 @@ public final class SessionRecoveryStore: @unchecked Sendable {
         characterName: String? = nil,
         at date: Date = Date()
     ) throws -> UUID {
-        guard isEnabled else { return id }
-        if let characterName,
-           let existing = buffer(
-               serverID: serverID,
-               characterID: characterID,
-               serverName: serverName,
-               characterName: characterName
-           ) {
-            try updateSessionIdentity(
-                existing.id,
-                serverID: serverID,
-                characterID: characterID,
-                serverName: serverName,
-                characterName: characterName,
-                at: date
-            )
-            return existing.id
-        }
-        let session = SessionRecoverySession(
-            id: id,
-            serverID: serverID,
-            characterID: characterID,
-            serverName: serverName,
-            characterName: characterName,
-            createdAt: date,
-            updatedAt: date
-        )
-        try append(.begin(session))
-        let previous = sessionsByID[id]
-        sessionsByID[id] = session
-        do {
+        try executionQueue.sync {
+            guard storedIsEnabled else { return id }
+            if let characterName,
+               let existing = findBuffer(serverID: serverID, characterID: characterID,
+                                         serverName: serverName, characterName: characterName) {
+                try updateSessionIdentity(existing.id, serverID: serverID, characterID: characterID,
+                                          serverName: serverName, characterName: characterName, at: date)
+                return existing.id
+            }
+            let session = SessionRecoverySession(id: id, serverID: serverID, characterID: characterID,
+                                                  serverName: serverName, characterName: characterName,
+                                                  createdAt: date, updatedAt: date)
+            let data = try Self.frameData(.begin(session), encoder: encoder)
+            try write(data, synchronize: true)
+            sessionsByID[id] = session
+            recordFrameSizes[id] = []
+            recordByteCounts[id] = 0
+            metadataByteCounts[id] = data.count
             try compactIfNeeded()
-        } catch {
-            if let previous { sessionsByID[id] = previous }
-            else { sessionsByID.removeValue(forKey: id) }
-            throw error
+            notifyStatisticsChanged()
+            return id
         }
-        notifyStatisticsChanged()
-        return id
+    }
+
+    /// Enqueues a live recovery event without blocking the caller on encoding
+    /// or filesystem I/O. Events are drained on the journal's serial executor.
+    public func enqueue(
+        _ event: SessionRecoveryEvent,
+        to sessionID: UUID,
+        at date: Date = Date()
+    ) {
+        pendingLock.lock()
+        pendingEvents.append((event, sessionID, date))
+        let shouldSchedule = !drainScheduled
+        drainScheduled = true
+        pendingLock.unlock()
+        if shouldSchedule {
+            executionQueue.async { [self] in drainPendingEvents() }
+        }
     }
 
     public func append(
@@ -384,38 +392,25 @@ public final class SessionRecoveryStore: @unchecked Sendable {
         to sessionID: UUID,
         at date: Date = Date()
     ) throws {
-        guard var session = sessionsByID[sessionID] else {
-            throw SessionRecoveryStoreError.sessionNotFound(sessionID)
+        try executionQueue.sync {
+            try appendEvent(event, to: sessionID, at: date, synchronize: true)
+            try compactIfNeeded()
+            notifyStatisticsChanged()
         }
-        let record = SessionRecoveryRecord(timestamp: date, event: event)
-        let previous = session
-        session.records.append(record)
-        session.updatedAt = date
-        trim(&session)
-        guard session.records.last == record else { return }
-        do {
-            try append(.event(sessionID, record))
-        } catch {
-            sessionsByID[sessionID] = previous
-            throw error
-        }
-        sessionsByID[sessionID] = session
-        try compactIfNeeded()
-        notifyStatisticsChanged()
     }
 
     public func remove(sessionID: UUID) throws {
-        guard sessionsByID[sessionID] != nil else { return }
-        try append(.remove(sessionID))
-        sessionsByID.removeValue(forKey: sessionID)
-        try compactIfNeeded()
-        notifyStatisticsChanged()
+        try executionQueue.sync { try removeLocked(sessionID: sessionID) }
     }
 
     public func discard(_ sessionID: UUID) throws { try remove(sessionID: sessionID) }
 
     /// Rewrites the live state even when the journal has not reached its limit.
     public func compact() throws {
+        try executionQueue.sync { try compactLocked() }
+    }
+
+    private func compactLocked() throws {
         let live = sessionsForCompaction()
         let frames = try Self.encodeCompacted(live, encoder: encoder)
         try fileHandle?.synchronize()
@@ -423,6 +418,8 @@ public final class SessionRecoveryStore: @unchecked Sendable {
         fileHandle = nil
         try replaceDurably(with: frames)
         sessionsByID = Dictionary(uniqueKeysWithValues: live.map { ($0.id, $0) })
+        physicalByteCount = frames.count
+        rebuildByteCaches()
         try openForAppend()
         notifyStatisticsChanged()
     }
@@ -430,8 +427,10 @@ public final class SessionRecoveryStore: @unchecked Sendable {
     /// Removes every recovery session and durably replaces the currently open
     /// journal with an empty, valid journal header.
     public func reset() throws {
-        try resetFileWithoutNotification()
-        notifyStatisticsChanged()
+        try executionQueue.sync {
+            try resetFileWithoutNotification()
+            notifyStatisticsChanged()
+        }
     }
 
     private func resetFileWithoutNotification() throws {
@@ -440,22 +439,29 @@ public final class SessionRecoveryStore: @unchecked Sendable {
         fileHandle = nil
         try replaceDurably(with: Self.magic)
         sessionsByID.removeAll(keepingCapacity: false)
+        recordFrameSizes.removeAll(keepingCapacity: false)
+        recordByteCounts.removeAll(keepingCapacity: false)
+        metadataByteCounts.removeAll(keepingCapacity: false)
+        physicalByteCount = Self.magic.count
         try openForAppend()
     }
 
-    /// Synchronizes the append handle. Each append already calls this method;
-    /// exposing it makes normal-quit handling explicit and testable.
-    public func flush() throws { try fileHandle?.synchronize() }
+    /// Waits for all earlier enqueued events, then synchronizes the journal.
+    public func flush() throws {
+        try executionQueue.sync { try fileHandle?.synchronize() }
+    }
 
     private func loadExistingFile() throws {
         guard FileManager.default.fileExists(atPath: url.path) else {
             try replaceDurably(with: Self.magic)
+            physicalByteCount = Self.magic.count
             return
         }
         let data = try Data(contentsOf: url)
         guard data.count >= Self.magic.count,
               data.prefix(Self.magic.count) == Self.magic else {
             try replaceDurably(with: Self.magic)
+            physicalByteCount = Self.magic.count
             return
         }
 
@@ -477,6 +483,7 @@ public final class SessionRecoveryStore: @unchecked Sendable {
         if validEnd != data.count {
             try replaceDurably(with: Data(data[..<validEnd]))
         }
+        physicalByteCount = validEnd
     }
 
     private func openForAppend() throws {
@@ -485,62 +492,37 @@ public final class SessionRecoveryStore: @unchecked Sendable {
         try fileHandle?.seekToEnd()
     }
 
-    private func append(_ frame: Frame) throws {
-        let payload = try encoder.encode(frame)
-        guard payload.count <= Int(UInt32.max) else { throw SessionRecoveryStoreError.recordTooLarge }
-        var data = Data()
-        data.append(contentsOf: Self.uint32(UInt32(payload.count)))
-        data.append(contentsOf: Self.uint32(Self.checksum(payload)))
-        data.append(payload)
+    private func write(_ data: Data, synchronize: Bool) throws {
         if fileHandle == nil { try openForAppend() }
         try fileHandle?.write(contentsOf: data)
-        try fileHandle?.synchronize()
+        physicalByteCount += data.count
+        if synchronize { try fileHandle?.synchronize() }
     }
 
     private func apply(_ frame: Frame) {
         switch frame {
-        case .begin(let session): sessionsByID[session.id] = session
+        case .begin(let session):
+            sessionsByID[session.id] = session
         case .event(let id, let record):
             guard var session = sessionsByID[id] else { return }
             session.records.append(record)
             session.updatedAt = max(session.updatedAt, record.timestamp)
-            trim(&session)
             sessionsByID[id] = session
         case .remove(let id): sessionsByID.removeValue(forKey: id)
         }
     }
 
-    private func trim(_ session: inout SessionRecoverySession) {
-        while session.records.count > 1,
-              encodedSize(of: session) > perSessionCapacity {
-            session.records.removeFirst()
-        }
-        if encodedSize(of: session) > perSessionCapacity, let last = session.records.last {
-            // A single oversized event cannot be made useful by retaining an
-            // older event. Drop it instead of allowing one session to defeat
-            // the configured bound.
-            session.records.removeAll(keepingCapacity: true)
-            if encodedSize(of: session) > perSessionCapacity {
-                _ = last
-            }
-        }
-    }
-
     private func compactIfNeeded() throws {
-        let estimated = try Self.encodeCompacted(sessionsForCompaction(), encoder: encoder).count
-        let currentSize = physicalFileSize
+        let estimated = compactedByteCount
+        let currentSize = physicalByteCount
         let aggregateBound = compactedAggregateBound
         if currentSize > aggregateBound || currentSize > max(estimated * 2, Self.magic.count) {
-            try compact()
+            try compactLocked()
         }
     }
 
     private func sessionsForCompaction() -> [SessionRecoverySession] {
-        var live = sessions
-        for index in live.indices {
-            trim(&live[index])
-        }
-        return live
+        sortedSessions()
     }
 
     private static func encodeCompacted(
@@ -561,6 +543,7 @@ public final class SessionRecoveryStore: @unchecked Sendable {
 
     private static func frameData(_ frame: Frame, encoder: JSONEncoder) throws -> Data {
         let payload = try encoder.encode(frame)
+        guard payload.count <= Int(UInt32.max) else { throw SessionRecoveryStoreError.recordTooLarge }
         var result = Data()
         result.append(contentsOf: uint32(UInt32(payload.count)))
         result.append(contentsOf: uint32(checksum(payload)))
@@ -568,25 +551,11 @@ public final class SessionRecoveryStore: @unchecked Sendable {
         return result
     }
 
-    private func encodedSize(of session: SessionRecoverySession) -> Int {
-        guard let data = try? Self.encodeCompacted([session], encoder: encoder) else { return Int.max }
-        var metadata = session
-        metadata.records = []
-        let metadataSize = (try? Self.frameData(.begin(metadata), encoder: encoder).count) ?? 0
-        return max(0, data.count - Self.magic.count - metadataSize)
-    }
-
-    private var physicalFileSize: Int {
-        (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
-    }
-
     private var compactedAggregateBound: Int {
         var bound = Self.magic.count
         for session in sessionsByID.values {
-            var metadata = session
-            metadata.records = []
-            bound += (try? Self.frameData(.begin(metadata), encoder: encoder).count) ?? 0
-            bound += perSessionCapacity
+            bound += metadataByteCounts[session.id] ?? 0
+            bound += storedPerSessionCapacity
         }
         return bound
     }
@@ -607,7 +576,8 @@ public final class SessionRecoveryStore: @unchecked Sendable {
         session.updatedAt = max(session.updatedAt, date)
         sessionsByID[id] = session
         normalizeCharacterBuffers()
-        try compact()
+        rebuildByteCaches()
+        try compactLocked()
     }
 
     private func normalizeCharacterBuffers() {
@@ -635,15 +605,158 @@ public final class SessionRecoveryStore: @unchecked Sendable {
             existing.characterName = newest.characterName
             existing.updatedAt = max(existing.updatedAt, session.updatedAt)
             existing.records = (existing.records + session.records).sorted { $0.timestamp < $1.timestamp }
-            trim(&existing)
             normalized[key] = existing
         }
         sessionsByID = Dictionary(uniqueKeysWithValues: normalized.values.map { ($0.id, $0) })
     }
 
     private func notifyStatisticsChanged() {
-        let value = statistics
+        let value = currentStatistics
         statisticsObservers.values.forEach { $0(value) }
+    }
+
+    private var currentStatistics: SessionRecoveryStatistics {
+        SessionRecoveryStatistics(bufferCount: sessionsByID.count, fileSize: physicalByteCount)
+    }
+
+    private func sortedSessions() -> [SessionRecoverySession] {
+        sessionsByID.values.sorted {
+            if $0.updatedAt != $1.updatedAt { return $0.updatedAt > $1.updatedAt }
+            return $0.id.uuidString < $1.id.uuidString
+        }
+    }
+
+    private func findBuffer(
+        serverID: UUID?, characterID: UUID?, serverName: String, characterName: String
+    ) -> SessionRecoverySession? {
+        let values = sortedSessions()
+        if let characterID, let match = values.first(where: { $0.characterID == characterID }) {
+            return match
+        }
+        return values.first {
+            ($0.serverID == serverID || $0.serverName.caseInsensitiveCompare(serverName) == .orderedSame)
+                && $0.characterName?.caseInsensitiveCompare(characterName) == .orderedSame
+        }
+    }
+
+    private func appendEvent(
+        _ event: SessionRecoveryEvent, to sessionID: UUID, at date: Date, synchronize: Bool
+    ) throws {
+        let previousSession = sessionsByID[sessionID]
+        let previousSizes = recordFrameSizes[sessionID]
+        let previousBytes = recordByteCounts[sessionID]
+        guard let data = try stageEvent(event, to: sessionID, at: date) else { return }
+        do {
+            try write(data, synchronize: synchronize)
+        } catch {
+            sessionsByID[sessionID] = previousSession
+            recordFrameSizes[sessionID] = previousSizes
+            recordByteCounts[sessionID] = previousBytes
+            throw error
+        }
+    }
+
+    private func stageEvent(
+        _ event: SessionRecoveryEvent, to sessionID: UUID, at date: Date
+    ) throws -> Data? {
+        guard storedIsEnabled, var session = sessionsByID[sessionID] else {
+            throw SessionRecoveryStoreError.sessionNotFound(sessionID)
+        }
+        let record = SessionRecoveryRecord(timestamp: date, event: event)
+        let data = try Self.frameData(.event(sessionID, record), encoder: encoder)
+        if data.count > storedPerSessionCapacity { return nil }
+        session.records.append(record)
+        session.updatedAt = date
+        sessionsByID[sessionID] = session
+        recordFrameSizes[sessionID, default: []].append(data.count)
+        recordByteCounts[sessionID, default: 0] += data.count
+        trimSession(sessionID)
+        return data
+    }
+
+    private func trimSession(_ id: UUID) {
+        guard var session = sessionsByID[id] else { return }
+        var sizes = recordFrameSizes[id] ?? []
+        var bytes = recordByteCounts[id] ?? 0
+        while session.records.count > 1 && bytes > storedPerSessionCapacity {
+            session.records.removeFirst()
+            if !sizes.isEmpty { bytes -= sizes.removeFirst() }
+        }
+        if bytes > storedPerSessionCapacity {
+            session.records.removeAll(keepingCapacity: true)
+            sizes.removeAll(keepingCapacity: true)
+            bytes = 0
+        }
+        sessionsByID[id] = session
+        recordFrameSizes[id] = sizes
+        recordByteCounts[id] = bytes
+    }
+
+    private func rebuildByteCaches() {
+        recordFrameSizes.removeAll(keepingCapacity: true)
+        recordByteCounts.removeAll(keepingCapacity: true)
+        metadataByteCounts.removeAll(keepingCapacity: true)
+        for session in sessionsByID.values {
+            var metadata = session
+            metadata.records = []
+            metadataByteCounts[session.id] = (try? Self.frameData(.begin(metadata), encoder: encoder).count) ?? 0
+            let sizes = session.records.map {
+                (try? Self.frameData(.event(session.id, $0), encoder: encoder).count) ?? Int.max
+            }
+            recordFrameSizes[session.id] = sizes
+            recordByteCounts[session.id] = sizes.reduce(0) { partial, value in
+                partial > Int.max - value ? Int.max : partial + value
+            }
+        }
+    }
+
+    private var compactedByteCount: Int {
+        Self.magic.count + sessionsByID.keys.reduce(0) {
+            $0 + (metadataByteCounts[$1] ?? 0) + (recordByteCounts[$1] ?? 0)
+        }
+    }
+
+    private func removeLocked(sessionID: UUID) throws {
+        guard sessionsByID[sessionID] != nil else { return }
+        let data = try Self.frameData(.remove(sessionID), encoder: encoder)
+        try write(data, synchronize: true)
+        sessionsByID.removeValue(forKey: sessionID)
+        recordFrameSizes.removeValue(forKey: sessionID)
+        recordByteCounts.removeValue(forKey: sessionID)
+        metadataByteCounts.removeValue(forKey: sessionID)
+        try compactIfNeeded()
+        notifyStatisticsChanged()
+    }
+
+    private func drainPendingEvents() {
+        while true {
+            pendingLock.lock()
+            if pendingEvents.isEmpty {
+                drainScheduled = false
+                pendingLock.unlock()
+                return
+            }
+            let batch = pendingEvents
+            pendingEvents.removeAll(keepingCapacity: true)
+            pendingLock.unlock()
+
+            var frames = Data()
+            for (event, id, date) in batch {
+                if let data = try? stageEvent(event, to: id, at: date) { frames.append(data) }
+            }
+            if !frames.isEmpty {
+                do {
+                    try write(frames, synchronize: true)
+                } catch {
+                    // The in-memory state already reflects the batch. An
+                    // atomic rewrite is the safest recovery from append I/O
+                    // failure and keeps later barriers deterministic.
+                    try? compactLocked()
+                }
+            }
+            try? compactIfNeeded()
+            notifyStatisticsChanged()
+        }
     }
 
     private func replaceDurably(with data: Data) throws {

@@ -5,7 +5,7 @@ import XCTest
 
 @MainActor
 final class SessionRecoveryReplayTests: XCTestCase {
-    func testReplayRestoresRenderedPromptSpawnHistoryAndGMCPWithoutConnecting() throws {
+    func testReplayRestoresRenderedPromptSpawnHistoryAndGMCPWithoutConnecting() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("BeipMU.SessionRecoveryReplayTests.\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -81,6 +81,16 @@ final class SessionRecoveryReplayTests: XCTestCase {
             if case let .renderedLine(line) = $0.event { return line.text == "room output" }
             return false
         } == true)
+
+        XCTAssertFalse(TextWindowSettings().smoothScrolling)
+        for index in 0..<5_000 {
+            store.enqueue(.sentInput("queued-\(index)"), to: id)
+        }
+        let start = ContinuousClock.now
+        await controller.testingReceiveLine("incoming while recovery drains")
+        XCTAssertLessThan(start.duration(to: .now), .seconds(1))
+        XCTAssertTrue(controller.testingOutputLines().contains("incoming while recovery drains"))
+
         controller.prepareForApplicationTermination()
         XCTAssertNotNil(store.session(id: id))
         controller.close()

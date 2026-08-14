@@ -84,7 +84,10 @@ temporary directory and preferences suite.
 
 `SessionRecoveryStore` appends checksummed, length-prefixed JSON frames to the
 bounded `Recovery.dat` journal. Startup repair keeps the valid prefix after an
-incomplete final frame. Each opted-in saved character owns one independently
+incomplete final frame. Live presentation events enter a nonblocking ordered
+queue; its serial drain coalesces frames and synchronizes once per burst, while
+flushes and configuration changes remain durable ordering barriers. Each
+opted-in saved character owns one independently
 capped buffer, and compaction bounds the file by the sum of those buffers plus
 format metadata. Restore Logs record final presentation state so opening a
 character can refill text, prompts, spawn output, input history, and GMCP state
