@@ -5,20 +5,16 @@ import BeipCore
 final class InputHistoryPaneView: NSView {
     private let textView: NSTextView
     private let scrollView: NSScrollView
+    private enum ScrollPosition {
+        case bottom
+        case origin(NSPoint)
+    }
+    private var pendingScrollPosition: ScrollPosition?
 
     override init(frame frameRect: NSRect) {
-        let storage = NSTextStorage()
-        let layoutManager = NSLayoutManager()
-        storage.addLayoutManager(layoutManager)
-        let container = NSTextContainer(containerSize: NSSize(
-            width: 0,
-            height: CGFloat.greatestFiniteMagnitude
-        ))
-        container.widthTracksTextView = true
-        layoutManager.addTextContainer(container)
-
-        textView = NSTextView(frame: .zero, textContainer: container)
-        scrollView = NSScrollView(frame: .zero)
+        let scroll = NSTextView.scrollableTextView()
+        textView = scroll.documentView as! NSTextView
+        scrollView = scroll
         super.init(frame: frameRect)
 
         wantsLayer = true
@@ -26,22 +22,12 @@ final class InputHistoryPaneView: NSView {
         layer?.borderWidth = 1
         updateBorderColor()
         setAccessibilityIdentifier("inputHistoryPane")
-        scrollView.documentView = textView
-        scrollView.autoresizingMask = [.width, .height]
         textView.isEditable = false
         textView.isSelectable = true
         textView.isRichText = false
         textView.drawsBackground = true
         textView.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
         textView.textContainerInset = NSSize(width: 2, height: 1)
-        textView.isHorizontallyResizable = false
-        textView.isVerticallyResizable = true
-        textView.autoresizingMask = [.width]
-        textView.textContainer?.widthTracksTextView = true
-        textView.textContainer?.containerSize = NSSize(
-            width: 0,
-            height: CGFloat.greatestFiniteMagnitude
-        )
         textView.setAccessibilityIdentifier("inputHistoryText")
         scrollView.borderType = .noBorder
         scrollView.drawsBackground = true
@@ -58,19 +44,27 @@ final class InputHistoryPaneView: NSView {
     required init?(coder: NSCoder) { nil }
 
     override func layout() {
+        let scrollPosition = pendingScrollPosition ?? currentScrollPosition()
         super.layout()
         scrollView.frame = bounds
-        textView.frame = NSRect(origin: .zero, size: scrollView.contentSize)
-        textView.textContainer?.containerSize = NSSize(
-            width: scrollView.contentSize.width,
-            height: CGFloat.greatestFiniteMagnitude
-        )
+        scrollView.layoutSubtreeIfNeeded()
+        if let textContainer = textView.textContainer {
+            textView.layoutManager?.ensureLayout(for: textContainer)
+        }
+        apply(scrollPosition)
+        pendingScrollPosition = nil
     }
 
     func update(_ entries: [String]) {
+        pendingScrollPosition = currentScrollPosition()
         textView.string = entries.isEmpty ? "No input history." : entries.joined(separator: "\n")
         needsLayout = true
-        textView.scrollRangeToVisible(NSRange(location: 0, length: 0))
+    }
+
+    func show(_ entries: [String]) {
+        pendingScrollPosition = .bottom
+        textView.string = entries.isEmpty ? "No input history." : entries.joined(separator: "\n")
+        needsLayout = true
     }
 
     func applyTheme(_ palette: WorkspaceThemePalette) {
@@ -88,6 +82,31 @@ final class InputHistoryPaneView: NSView {
 
     private func updateBorderColor() {
         layer?.borderColor = NSColor.separatorColor.cgColor
+    }
+
+    private func currentScrollPosition() -> ScrollPosition {
+        isAtBottom ? .bottom : .origin(scrollView.contentView.bounds.origin)
+    }
+
+    private var isAtBottom: Bool {
+        let maximumY = max(0, textView.bounds.height - scrollView.contentSize.height)
+        return maximumY - scrollView.contentView.bounds.origin.y <= 1
+    }
+
+    private func apply(_ scrollPosition: ScrollPosition) {
+        let maximumY = max(0, textView.bounds.height - scrollView.contentSize.height)
+        let origin: NSPoint
+        switch scrollPosition {
+        case .bottom:
+            origin = NSPoint(x: scrollView.contentView.bounds.origin.x, y: maximumY)
+        case let .origin(previousOrigin):
+            origin = NSPoint(
+                x: previousOrigin.x,
+                y: min(max(0, previousOrigin.y), maximumY)
+            )
+        }
+        scrollView.contentView.scroll(to: origin)
+        scrollView.reflectScrolledClipView(scrollView.contentView)
     }
 }
 

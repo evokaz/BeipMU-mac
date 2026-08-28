@@ -322,8 +322,8 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
         XCTAssertFalse(controller.inputSplitArrangedIdentifiersForTesting.contains("inputHistoryPane"))
         XCTAssertFalse(controller.isInputHistoryPaneVisibleForTesting)
 
-        controller.addInputHistoryEntryForTesting("test")
-        controller.addInputHistoryEntryForTesting("test 2")
+        let entries = (0..<18).map { "history \($0)" }
+        entries.forEach { controller.addInputHistoryEntryForTesting($0) }
         controller.toggleInputHistoryWindow()
         XCTAssertTrue(controller.isInputHistoryPaneVisibleForTesting)
         XCTAssertTrue(controller.inputSplitArrangedIdentifiersForTesting.contains("inputHistoryPane"))
@@ -350,21 +350,73 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
                 .compactMap { $0 as? NSTextView }
                 .first { $0.accessibilityIdentifier() == "inputHistoryText" }
         )
-        XCTAssertEqual(historyText.string, "test\ntest 2")
+        XCTAssertEqual(historyText.string, entries.joined(separator: "\n"))
         XCTAssertGreaterThanOrEqual(historyPane.frame.width, inputSplit.bounds.width - 1)
         XCTAssertGreaterThanOrEqual(historyPane.frame.height, 80)
         XCTAssertEqual(historyPane.layer?.borderWidth, 1)
         XCTAssertNotNil(historyPane.layer?.borderColor)
         let initialHistoryHeight = historyPane.frame.height
+        let documentHeight = historyScroll.documentView?.bounds.height ?? 0
+        XCTAssertGreaterThan(documentHeight, historyScroll.contentSize.height)
+        let initialMaximumY = max(0, documentHeight - historyScroll.contentSize.height)
+        XCTAssertEqual(historyScroll.contentView.bounds.origin.y, initialMaximumY, accuracy: 1)
+        let finalRange = (historyText.string as NSString).range(of: entries.last!)
+        let finalGlyphRange = try XCTUnwrap(
+            historyText.layoutManager?.glyphRange(
+                forCharacterRange: finalRange,
+                actualCharacterRange: nil
+            )
+        )
+        let finalRect = try XCTUnwrap(historyText.layoutManager).boundingRect(
+            forGlyphRange: finalGlyphRange,
+            in: try XCTUnwrap(historyText.textContainer)
+        )
+        let visibleRect = historyText.convert(
+            historyScroll.contentView.bounds,
+            from: historyScroll.contentView
+        )
+        XCTAssertTrue(visibleRect.intersects(finalRect))
         XCTAssertEqual(historyScroll.frame.minX, historyPane.bounds.minX, accuracy: 0.5)
         XCTAssertEqual(historyScroll.frame.maxX, historyPane.bounds.maxX, accuracy: 0.5)
         XCTAssertEqual(historyScroll.frame.minY, historyPane.bounds.minY, accuracy: 0.5)
         XCTAssertEqual(historyScroll.frame.maxY, historyPane.bounds.maxY, accuracy: 0.5)
 
-        controller.addInputHistoryEntryForTesting("test 3")
+        historyScroll.contentView.scroll(to: NSPoint(x: 0, y: initialMaximumY / 2))
+        historyScroll.reflectScrolledClipView(historyScroll.contentView)
+        let preservedOriginY = historyScroll.contentView.bounds.origin.y
+        XCTAssertLessThan(preservedOriginY, initialMaximumY)
+
+        controller.addInputHistoryEntryForTesting("history preserved")
         window.contentView?.layoutSubtreeIfNeeded()
-        XCTAssertEqual(historyText.string, "test\ntest 2\ntest 3")
+        XCTAssertTrue(historyText.string.hasSuffix("history preserved"))
         XCTAssertEqual(historyPane.frame.height, initialHistoryHeight, accuracy: 0.5)
+        XCTAssertEqual(historyScroll.contentView.bounds.origin.y, preservedOriginY, accuracy: 1)
+
+        let appendedLongEntry = String(repeating: "wrapped ", count: 60)
+        let oldDocumentHeight = historyScroll.documentView?.bounds.height ?? 0
+        let oldMaximumY = max(0, oldDocumentHeight - historyScroll.contentSize.height)
+        historyScroll.contentView.scroll(to: NSPoint(x: 0, y: oldMaximumY))
+        historyScroll.reflectScrolledClipView(historyScroll.contentView)
+        controller.addInputHistoryEntryForTesting(appendedLongEntry)
+        window.contentView?.layoutSubtreeIfNeeded()
+        let bottomDocumentHeight = historyScroll.documentView?.bounds.height ?? 0
+        let bottomMaximumY = max(0, bottomDocumentHeight - historyScroll.contentSize.height)
+        XCTAssertGreaterThan(bottomDocumentHeight, oldDocumentHeight)
+        XCTAssertEqual(historyScroll.contentView.bounds.origin.y, bottomMaximumY, accuracy: 1)
+
+        let widthBeforeResize = window.frame.width
+        window.setFrame(
+            NSRect(
+                origin: window.frame.origin,
+                size: NSSize(width: max(420, widthBeforeResize / 2), height: window.frame.height)
+            ),
+            display: false
+        )
+        window.contentView?.layoutSubtreeIfNeeded()
+        let resizedDocumentHeight = historyScroll.documentView?.bounds.height ?? 0
+        let resizedMaximumY = max(0, resizedDocumentHeight - historyScroll.contentSize.height)
+        XCTAssertGreaterThan(resizedDocumentHeight, bottomDocumentHeight)
+        XCTAssertEqual(historyScroll.contentView.bounds.origin.y, resizedMaximumY, accuracy: 1)
 
         controller.toggleInputHistoryWindow()
         XCTAssertFalse(controller.isInputHistoryPaneVisibleForTesting)

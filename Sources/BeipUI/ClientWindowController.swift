@@ -2017,13 +2017,14 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
 
     func toggleInputHistoryWindow() {
         isInputHistoryPaneVisible.toggle()
-        inputHistoryPane.update(input.historyEntriesForDisplay)
         if isInputHistoryPaneVisible {
+            inputHistoryPane.show(input.historyEntriesForDisplay)
             inputSplitView.insertArrangedSubview(inputHistoryPane, at: 1)
             inputSplitView.setHoldingPriority(.defaultLow, forSubviewAt: 0)
             inputSplitView.setHoldingPriority(.defaultHigh, forSubviewAt: 1)
             inputSplitView.setHoldingPriority(.defaultLow, forSubviewAt: 2)
         } else {
+            inputHistoryPane.update(input.historyEntriesForDisplay)
             inputSplitView.removeArrangedSubview(inputHistoryPane)
             inputHistoryPane.removeFromSuperview()
             inputSplitView.setHoldingPriority(.defaultLow, forSubviewAt: 0)
