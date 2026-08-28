@@ -55,12 +55,21 @@ final class SessionLoggingCoordinator {
 
     private let context: Context
     private let callbacks: Callbacks
+    private let fileHandleFactory: SessionLogFileHandleFactory?
+    private let bufferSizeOverride: Int?
     private var writers: [URL: ActiveLog] = [:]
     private var dailyRolloverTimer: Timer?
 
-    init(context: Context, callbacks: Callbacks) {
+    init(
+        context: Context,
+        callbacks: Callbacks,
+        fileHandleFactory: SessionLogFileHandleFactory? = nil,
+        bufferSizeOverride: Int? = nil
+    ) {
         self.context = context
         self.callbacks = callbacks
+        self.fileHandleFactory = fileHandleFactory
+        self.bufferSizeOverride = bufferSizeOverride
     }
 
     var activeLogCount: Int { writers.count }
@@ -80,46 +89,25 @@ final class SessionLoggingCoordinator {
 
     func append(_ line: RenderedLine) {
         rollOverIfNeeded()
-        var failures: [(URL, Error)] = []
-        for (url, log) in writers {
-            do { try log.writer.append(line) }
-            catch { failures.append((url, error)) }
-        }
-        removeFailed(failures)
+        for (_, log) in Array(writers) { log.writer.append(line) }
     }
 
     func appendTyped(_ text: String) {
         rollOverIfNeeded()
-        var failures: [(URL, Error)] = []
-        for (url, log) in writers {
-            do { try log.writer.appendTyped(text) }
-            catch { failures.append((url, error)) }
-        }
-        removeFailed(failures)
+        for (_, log) in Array(writers) { log.writer.appendTyped(text) }
     }
 
     func appendSent(_ text: String) {
         rollOverIfNeeded()
-        var failures: [(URL, Error)] = []
-        for (url, log) in writers {
-            do { try log.writer.appendSent(text) }
-            catch { failures.append((url, error)) }
-        }
-        removeFailed(failures)
+        for (_, log) in Array(writers) { log.writer.appendSent(text) }
     }
 
     func appendScript(_ text: String, asLine: Bool) {
         rollOverIfNeeded()
-        var failures: [(URL, Error)] = []
-        for (url, log) in writers {
-            do {
-                if asLine { try log.writer.appendScriptLine(text) }
-                else { try log.writer.appendScript(text) }
-            } catch {
-                failures.append((url, error))
-            }
+        for (_, log) in Array(writers) {
+            if asLine { log.writer.appendScriptLine(text) }
+            else { log.writer.appendScript(text) }
         }
-        removeFailed(failures)
     }
 
     func start(
@@ -145,7 +133,7 @@ final class SessionLoggingCoordinator {
         }
         let palette = context.themePalette()
         do {
-            let writer = try SessionLogWriter(
+            let writer = try makeWriter(
                 url: url,
                 options: context.options(),
                 title: context.baseWindowTitle(),
@@ -255,7 +243,7 @@ final class SessionLoggingCoordinator {
             }
             let palette = context.themePalette()
             do {
-                let writer = try SessionLogWriter(
+                let writer = try makeWriter(
                     url: replacement.url,
                     options: context.options(),
                     title: context.baseWindowTitle(),
@@ -316,6 +304,39 @@ final class SessionLoggingCoordinator {
             if let log = writers.removeValue(forKey: url) { try? log.writer.stop() }
             callbacks.error("Logging stopped for " + url.lastPathComponent + ": " + error.localizedDescription)
         }
+        scheduleDailyRollover()
+        callbacks.stateChanged()
+    }
+
+    private func makeWriter(
+        url: URL,
+        options: SessionLogOptions,
+        title: String,
+        foregroundHex: String,
+        backgroundHex: String,
+        history: [RenderedLine] = []
+    ) throws -> SessionLogWriter {
+        let writer = try SessionLogWriter(
+            url: url,
+            options: options,
+            title: title,
+            foregroundHex: foregroundHex,
+            backgroundHex: backgroundHex,
+            history: history,
+            bufferSizeOverride: bufferSizeOverride,
+            fileHandleFactory: fileHandleFactory ?? SessionLogWriter.defaultFileHandle,
+            failureHandler: { [weak self] failure in
+                self?.handleBackgroundFailure(for: url, failure: failure)
+            }
+        )
+        return writer
+    }
+
+    private func handleBackgroundFailure(for url: URL, failure: SessionLogWriterFailure) {
+        guard let log = writers[url], log.writer.token == failure.token else { return }
+        writers.removeValue(forKey: url)
+        log.writer.cancel()
+        callbacks.error("Logging stopped for " + url.lastPathComponent + ": " + failure.message)
         scheduleDailyRollover()
         callbacks.stateChanged()
     }

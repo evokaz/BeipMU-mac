@@ -827,9 +827,9 @@ final class VirtualizedOutputViewTests: XCTestCase {
             backgroundHex: "#000000",
             history: [.init(text: "history <line>")]
         )
-        try writer.append(.init(text: "live line"))
-        try writer.appendTyped("look")
-        try writer.appendSent("north")
+        writer.append(.init(text: "live line"))
+        writer.appendTyped("look")
+        writer.appendSent("north")
         try writer.stop()
 
         let result = try String(contentsOf: url, encoding: .utf8)

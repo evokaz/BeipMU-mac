@@ -140,8 +140,9 @@ final class BeipMUXCUITests: XCTestCase {
         XCTAssertTrue((output.value as? String)?.contains("Welcome to BeipMU") == true)
         try assertScreenshotBaseline(named: "workspace-main", element: window)
 
-        input.click()
-        input.typeText("look")
+        let command = "look"
+        pasteText(command, into: input)
+        XCTAssertTrue((input.value as? String)?.contains(command) == true)
         input.typeKey(.return, modifierFlags: [])
         XCTAssertTrue(waitUntil { (output.value as? String)?.contains("Not connected.") == true })
         try assertScreenshotBaseline(named: "workspace-command-error", element: window)
@@ -441,6 +442,14 @@ private enum BaselineError: Error {
 }
 
 @MainActor
+private func pasteText(_ text: String, into element: XCUIElement) {
+    NSPasteboard.general.clearContents()
+    XCTAssertTrue(NSPasteboard.general.setString(text, forType: .string))
+    element.click()
+    element.typeKey("v", modifierFlags: .command)
+}
+
+@MainActor
 final class WorkspaceScaleUITests: XCTestCase {
     func testWorkspaceScaleInteractiveResponsivenessRSSAndCleanup() throws {
         continueAfterFailure = false
@@ -467,8 +476,9 @@ final class WorkspaceScaleUITests: XCTestCase {
             (output.value as? String)?.contains("BEIPMU_SCALE_TEST_COMPLETE") == true
         })
 
-        input.click()
-        input.typeText("scale-responsive")
+        let command = "scale-responsive"
+        pasteText(command, into: input)
+        XCTAssertTrue((input.value as? String)?.contains(command) == true)
         input.typeKey(.return, modifierFlags: [])
         XCTAssertTrue(waitUntil(timeout: 3) {
             (output.value as? String)?.contains("Not connected.") == true
