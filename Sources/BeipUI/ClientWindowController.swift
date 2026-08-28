@@ -1128,6 +1128,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     func windowWillClose(_ notification: Notification) {
         NotificationCenter.default.removeObserver(self, name: .NSCalendarDayChanged, object: nil)
         NotificationCenter.default.removeObserver(self, name: .NSSystemTimeZoneDidChange, object: nil)
+        output.prepareForTeardown()
         output.unregisterFromUnreadBoundaryCoordinator()
         profileLibrary.removeChangeObserver(profileLibraryObserverID)
         profileLibraryObserverID = nil
@@ -1979,6 +1980,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
                 dockController.setLayout(session.isMultiple(of: 2) ? .stackedRight : .splitSidebars)
             }
             dockController.setLayout(.splitSidebars)
+            output.flushPendingOutput()
             window?.displayIfNeeded()
             let result: [String: Any] = [
                 "schemaVersion": 1,
@@ -3254,6 +3256,14 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         triggerSpawnWindows[title]?.retainedLines.map(\.text) ?? []
     }
 
+    func testingSpawnOutput(named title: String) -> OutputTextView? {
+        triggerSpawnWindows[title]?.outputForTesting
+    }
+
+    func testingSpawnTabOutput(named group: String, title: String) -> OutputTextView? {
+        triggerSpawnTabGroups[group]?.outputForTesting(named: title)
+    }
+
     func testingOutputLines() -> [String] { output.retainedLines.map(\.text) }
     func testingInputHistory() -> [String] { input.historyEntriesForDisplay }
     func testingGMCPRoom() -> GMCPRoomInfo? { gmcpState.currentRoom }
@@ -3265,6 +3275,36 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         (
             triggerSpawnWindows.mapValues(\.isDocked),
             triggerSpawnTabGroups.mapValues(\.isDocked)
+        )
+    }
+
+    func testingSpawnPresentationCounts() -> (
+        standalone: [String: Int],
+        tabGroups: [String: Int]
+    ) {
+        (
+            triggerSpawnWindows.mapValues(\.presentationCountForTesting),
+            triggerSpawnTabGroups.mapValues(\.presentationCountForTesting)
+        )
+    }
+
+    func testingSpawnViewTransitionCounts() -> (
+        standalone: [String: Int],
+        tabGroups: [String: Int]
+    ) {
+        (
+            triggerSpawnWindows.mapValues(\.viewTransitionCountForTesting),
+            triggerSpawnTabGroups.mapValues(\.viewTransitionCountForTesting)
+        )
+    }
+
+    func testingSpawnKeyPromotionCounts() -> (
+        standalone: [String: Int],
+        tabGroups: [String: Int]
+    ) {
+        (
+            triggerSpawnWindows.mapValues(\.keyPromotionCountForTesting),
+            triggerSpawnTabGroups.mapValues(\.keyPromotionCountForTesting)
         )
     }
 
@@ -4961,6 +5001,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     private func refreshDiagnostics() {
+        output.flushPendingOutput()
         let serverDescription = currentServer.map {
             "\($0.host):\($0.port)\($0.usesTLS ? " (TLS)" : "")"
         } ?? "None"
@@ -5391,19 +5432,21 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             at: line.timestamp
         )
         if group.isEmpty {
-            let controller = spawnWindow(named: title)
+            let lookup = spawnWindow(named: title)
+            let controller = lookup.controller
             if startsCapture, action.clear { controller.clear() }
             controller.append(line)
-            presentSpawnWindow(controller, title: title)
+            if lookup.created { presentSpawnWindow(controller, title: title) }
         } else {
-            let controller = spawnTabGroup(named: group)
+            let lookup = spawnTabGroup(named: group)
+            let controller = lookup.controller
             controller.deliver(
                 line,
                 to: title,
                 clear: startsCapture && action.clear,
                 showTab: startsCapture && action.showTab
             )
-            presentSpawnTabGroup(controller, title: group)
+            if lookup.created { presentSpawnTabGroup(controller, title: group) }
         }
         if startsCapture, !action.captureUntil.isEmpty {
             spawnCapture = .init(title: title, action: action, children: children)
@@ -5416,7 +5459,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         line: RenderedLine
     ) {
         if let tabGroup, !tabGroup.isEmpty {
-            let controller = spawnTabGroup(named: tabGroup)
+            let lookup = spawnTabGroup(named: tabGroup)
+            let controller = lookup.controller
             controller.deliver(
                 line,
                 to: title,
@@ -5424,11 +5468,12 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
                 showTab: false,
                 highlight: false
             )
-            presentSpawnTabGroup(controller, title: tabGroup)
+            if lookup.created { presentSpawnTabGroup(controller, title: tabGroup) }
         } else {
-            let controller = spawnWindow(named: title)
+            let lookup = spawnWindow(named: title)
+            let controller = lookup.controller
             controller.append(line)
-            presentSpawnWindow(controller, title: title)
+            if lookup.created { presentSpawnWindow(controller, title: title) }
         }
     }
 
@@ -5449,8 +5494,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         return line
     }
 
-    private func spawnWindow(named title: String) -> TriggerSpawnWindowController {
-        if let existing = triggerSpawnWindows[title] { return existing }
+    private func spawnWindow(named title: String) -> (controller: TriggerSpawnWindowController, created: Bool) {
+        if let existing = triggerSpawnWindows[title] { return (existing, false) }
         let controller = TriggerSpawnWindowController(
             title: title,
             unreadBoundaryCoordinator: unreadBoundaryCoordinator
@@ -5481,11 +5526,11 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         }
         triggerSpawnWindows[title] = controller
         saveSpawnSurfacePreferences()
-        return controller
+        return (controller, true)
     }
 
-    private func spawnTabGroup(named title: String) -> TriggerSpawnTabGroupWindowController {
-        if let existing = triggerSpawnTabGroups[title] { return existing }
+    private func spawnTabGroup(named title: String) -> (controller: TriggerSpawnTabGroupWindowController, created: Bool) {
+        if let existing = triggerSpawnTabGroups[title] { return (existing, false) }
         let controller = TriggerSpawnTabGroupWindowController(
             title: title,
             unreadBoundaryCoordinator: unreadBoundaryCoordinator
@@ -5533,7 +5578,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         }
         triggerSpawnTabGroups[title] = controller
         saveSpawnSurfacePreferences()
-        return controller
+        return (controller, true)
     }
 
     private func saveSpawnSurfacePreferences() {
@@ -5549,6 +5594,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     private func presentSpawnWindow(_ controller: TriggerSpawnWindowController, title: String) {
+        controller.notePresentationForTesting()
         guard !controller.isDocked else { return }
         let pane = WorkspacePaneKind.spawn(title)
         let view = controller.contentViewForDocking()
@@ -5573,6 +5619,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     private func presentSpawnTabGroup(_ controller: TriggerSpawnTabGroupWindowController, title: String) {
+        controller.notePresentationForTesting()
         guard !controller.isDocked else { return }
         let pane = WorkspacePaneKind.spawnTabs(title)
         let view = controller.contentViewForDocking()
@@ -5716,14 +5763,18 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         suppressSpawnPersistence = true
         defer { suppressSpawnPersistence = false }
         for title in state.standaloneWindows where !title.isEmpty {
-            presentSpawnWindow(spawnWindow(named: title), title: title)
+            let lookup = spawnWindow(named: title)
+            if lookup.created { presentSpawnWindow(lookup.controller, title: title) }
         }
         for saved in state.tabGroups where !saved.title.isEmpty {
-            let group = spawnTabGroup(named: saved.title)
+            let lookup = spawnTabGroup(named: saved.title)
+            let group = lookup.controller
             for title in saved.tabs where !title.isEmpty {
                 group.ensureTab(named: title, selected: title == saved.selectedTab)
             }
-            if !group.tabTitles.isEmpty { presentSpawnTabGroup(group, title: saved.title) }
+            if lookup.created, !group.tabTitles.isEmpty {
+                presentSpawnTabGroup(group, title: saved.title)
+            }
         }
     }
 

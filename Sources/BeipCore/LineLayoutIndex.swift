@@ -39,6 +39,19 @@ public struct LineLayoutIndex: Sendable, Equatable {
         }
     }
 
+    /// Removes the last retained height and returns it without rebuilding the
+    /// retained prefix, including when the prefix has a lazy head.
+    @discardableResult
+    public mutating func removeLast() -> Double? {
+        guard !isEmpty else { return nil }
+        let removed = heights.removeLast()
+        ends.removeLast()
+        if head == heights.count {
+            removeAll(keepingCapacity: true)
+        }
+        return removed
+    }
+
     public mutating func removeAll(keepingCapacity: Bool = false) {
         heights.removeAll(keepingCapacity: keepingCapacity)
         ends.removeAll(keepingCapacity: keepingCapacity)

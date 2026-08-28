@@ -24,6 +24,15 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         var paragraph: ParagraphStyle = .init()
     }
 
+    /// A measured item is prepared before the document is mutated. Keeping the
+    /// width alongside the result prevents a height measured for one split
+    /// pane from being reused after its effective width changes.
+    struct PreparedItem {
+        var item: Item
+        var height: Double
+        var measuredWidth: CGFloat
+    }
+
     private struct Position: Equatable {
         var item: Int
         var offset: Int
@@ -59,6 +68,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     var onPageDown: (() -> Bool)?
     var onUserScrollToEnd: (() -> Void)?
     var onSelectionCompleted: (() -> Void)?
+    var onInteractionWillBegin: (() -> Void)?
     var onInteractionCompleted: (() -> Void)?
     private(set) var renderedItemCount = 0
     private(set) var lastDrawnItemCount = 0
@@ -89,6 +99,9 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     private(set) var previewDownloadCount = 0
     private var animationTimer: Timer?
     private var displayOptions = AccessibilityDisplayOptions.current
+    private(set) var batchMutationCountForTesting = 0
+    private(set) var scrollAnimationTargetUpdateCountForTesting = 0
+    private(set) var heightMeasurementCountForTesting = 0
     var showsInlineImagePreviews = false {
         didSet {
             guard showsInlineImagePreviews != oldValue else { return }
@@ -143,7 +156,8 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         return item(at: newContentBoundaryPosition)?.id
     }
     var newContentBoundaryPositionForTesting: Int? { newContentBoundaryPosition }
-    var effectiveContentWidthForTesting: CGFloat { contentWidth }
+    var effectiveContentWidth: CGFloat { contentWidth }
+    var effectiveContentWidthForTesting: CGFloat { effectiveContentWidth }
     func renderedAttributedTextForTesting(at index: Int) -> NSAttributedString? {
         item(at: index).map(attributedTextForLayout(_:))
     }
@@ -205,7 +219,11 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         return item(at: range.lowerBound)?.id
     }
 
-    func setItems(_ items: [Item]) {
+    func setItems(
+        _ items: [Item],
+        preparedHeights: [Double]? = nil,
+        measuredAtWidth: CGFloat? = nil
+    ) {
         let boundaryPosition = newContentBoundaryPosition
         storage = items
         head = 0
@@ -229,20 +247,174 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
             : []
         cancelPreviewLoads(keeping: activePreviewURLs)
         rebuildIndexMap()
-        rebuildMeasurements()
+        let reusableHeights: [Double]? = if let preparedHeights,
+                                             preparedHeights.count == items.count,
+                                             let measuredAtWidth,
+                                             abs(measuredAtWidth - contentWidth) <= 0.5 {
+            preparedHeights
+        } else {
+            nil
+        }
+        rebuildMeasurements(using: reusableHeights)
         updateBlinkTimer()
         needsDisplay = true
     }
 
+    /// Measures a batch for the current effective width without changing the
+    /// document. The caller can then commit it as one mutation.
+    func prepareItem(_ item: Item) -> PreparedItem {
+        .init(item: item, height: measuredHeight(for: item), measuredWidth: contentWidth)
+    }
+
+    func prepareItems(_ items: [Item]) -> [PreparedItem] {
+        items.map(prepareItem(_:))
+    }
+
+    /// Returns the heights already held by the primary view. This is used when
+    /// a split view has the same effective width and therefore needs no second
+    /// Core Text measurement pass.
+    func preparedHeightsForCurrentItems() -> (width: CGFloat, heights: [Double]) {
+        (
+            measuredWidth,
+            (0..<itemCount).compactMap { layoutIndex.height(at: $0) }
+        )
+    }
+
+    func itemsForCurrentContent() -> [Item] { Array(retainedItems) }
+
     func append(_ item: Item) {
-        storage.append(item)
-        if hasBlink(item) { blinkingItemCount += 1 }
-        itemIndices[item.id] = storage.count - 1
-        layoutIndex.append(height: measuredHeight(for: item))
-        renderedItemCount += 1
+        applyBatch(removingFirst: 0, appending: [item], postsAccessibilityNotification: false)
+    }
+
+    /// Evicts a retained prefix and appends the new item as one document
+    /// mutation. This keeps the document height, blink timer, and display
+    /// invalidation work to one pass while preserving the scrollback offset
+    /// for callers that are not following the live end.
+    func evictFirstAndAppend(_ appendedItem: Item, removingFirst requestedCount: Int) {
+        applyBatch(
+            removingFirst: requestedCount,
+            appending: [appendedItem],
+            postsAccessibilityNotification: false
+        )
+    }
+
+    /// Applies a prefix eviction and any number of appended items as one
+    /// visual mutation. `boundaryPosition` is authoritative when supplied;
+    /// this lets OutputTextView apply its shared logical boundary after the
+    /// history mutation without applying the prefix adjustment twice.
+    /// Marker changes are applied before the one final display invalidation.
+    func applyBatch(
+        removingFirst requestedCount: Int,
+        appending appendedItems: [Item],
+        boundaryPosition: Int? = nil,
+        boundaryPositionIsAuthoritative: Bool = false,
+        markerChanges: [UUID: Bool] = [:],
+        postsAccessibilityNotification: Bool = true
+    ) {
+        applyPreparedBatchMutation(
+            removingFirst: requestedCount,
+            appending: prepareItems(appendedItems),
+            boundaryPosition: boundaryPosition,
+            boundaryPositionIsAuthoritative: boundaryPositionIsAuthoritative,
+            markerChanges: markerChanges,
+            postsAccessibilityNotification: postsAccessibilityNotification
+        )
+    }
+
+    /// Applies a previously measured batch. If the receiving view's width no
+    /// longer matches the preparation width, only that view is remeasured.
+    func applyPreparedBatch(
+        removingFirst requestedCount: Int,
+        appending preparedItems: [PreparedItem],
+        boundaryPosition: Int? = nil,
+        boundaryPositionIsAuthoritative: Bool = false,
+        markerChanges: [UUID: Bool] = [:],
+        postsAccessibilityNotification: Bool = true
+    ) {
+        applyPreparedBatchMutation(
+            removingFirst: requestedCount,
+            appending: preparedItems,
+            boundaryPosition: boundaryPosition,
+            boundaryPositionIsAuthoritative: boundaryPositionIsAuthoritative,
+            markerChanges: markerChanges,
+            postsAccessibilityNotification: postsAccessibilityNotification
+        )
+    }
+
+    private func applyPreparedBatchMutation(
+        removingFirst requestedCount: Int,
+        appending preparedItems: [PreparedItem],
+        boundaryPosition: Int?,
+        boundaryPositionIsAuthoritative: Bool,
+        markerChanges: [UUID: Bool],
+        postsAccessibilityNotification: Bool
+    ) {
+        let removed = min(max(0, requestedCount), itemCount)
+        let removedHeight = layoutIndex.yOffset(for: removed) ?? 0
+
+        if removed > 0 {
+            if let hoveredLink,
+               let physicalIndex = itemIndices[hoveredLink.itemID],
+               physicalIndex - head < removed {
+                self.hoveredLink = nil
+            }
+            for index in 0..<removed {
+                if let removedItem = self.item(at: index) {
+                    if hasBlink(removedItem) { blinkingItemCount -= 1 }
+                    itemIndices.removeValue(forKey: removedItem.id)
+                    markedItems.remove(removedItem.id)
+                }
+            }
+            head += removed
+            if let newContentBoundaryPosition {
+                self.newContentBoundaryPosition = max(0, newContentBoundaryPosition - removed)
+            }
+            layoutIndex.removeFirst(removed)
+            adjustSelectionAfterRemovingFirst(removed)
+
+            if head >= 1_024, head * 2 >= storage.count {
+                storage.removeFirst(head)
+                head = 0
+                rebuildIndexMap()
+            }
+        }
+
+        for preparedItem in preparedItems {
+            let appendedItem = preparedItem.item
+            storage.append(appendedItem)
+            if hasBlink(appendedItem) { blinkingItemCount += 1 }
+            itemIndices[appendedItem.id] = storage.count - 1
+            let height = abs(preparedItem.measuredWidth - contentWidth) <= 0.5
+                ? preparedItem.height
+                : measuredHeight(for: appendedItem)
+            layoutIndex.append(height: height)
+        }
+        renderedItemCount += preparedItems.count
+        for (itemID, marked) in markerChanges {
+            if marked { markedItems.insert(itemID) } else { markedItems.remove(itemID) }
+        }
+        if boundaryPositionIsAuthoritative {
+            newContentBoundaryPosition = boundaryPosition.map { min(max(0, $0), itemCount) }
+        }
+        measuredWidth = contentWidth
+        if removed > 0, let scrollView = enclosingScrollView {
+            let origin = scrollView.contentView.bounds.origin
+            scrollView.contentView.scroll(to: NSPoint(
+                x: origin.x,
+                y: max(0, origin.y - CGFloat(removedHeight))
+            ))
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+        }
         updateDocumentHeight()
         updateBlinkTimer()
-        setNeedsDisplay(itemRect(at: itemCount - 1))
+        needsDisplay = true
+        guard removed > 0 || !preparedItems.isEmpty || !markerChanges.isEmpty || boundaryPositionIsAuthoritative else {
+            return
+        }
+        batchMutationCountForTesting += 1
+        if postsAccessibilityNotification {
+            NSAccessibility.post(element: self, notification: .valueChanged)
+        }
     }
 
     func removeFirst(_ count: Int) {
@@ -289,13 +461,16 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         if hoveredLink?.itemID == item.id { hoveredLink = nil }
         if hasBlink(item) { blinkingItemCount -= 1 }
         markedItems.remove(item.id)
+        itemIndices.removeValue(forKey: item.id)
         if let newContentBoundaryPosition {
             self.newContentBoundaryPosition = min(newContentBoundaryPosition, itemCount)
         }
-        let heights = (0..<(itemCount - 1)).compactMap(layoutIndex.height(at:))
-        layoutIndex.replaceHeights(with: heights)
+        layoutIndex.removeLast()
+        if head == storage.count {
+            storage.removeAll(keepingCapacity: true)
+            head = 0
+        }
         clampSelection()
-        rebuildIndexMap()
         updateDocumentHeight()
         updateBlinkTimer()
         needsDisplay = true
@@ -381,6 +556,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         let target = max(0, bounds.height - scrollView.contentSize.height)
         let point = NSPoint(x: 0, y: target)
         if animated, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            scrollAnimationTargetUpdateCountForTesting += 1
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = 0.12
                 scrollView.contentView.animator().setBoundsOrigin(point)
@@ -561,6 +737,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     }
 
     override func mouseDown(with event: NSEvent) {
+        onInteractionWillBegin?()
         window?.makeFirstResponder(self)
         let point = convert(event.locationInWindow, from: nil)
         mouseDownPreview = previewHit(at: point)
@@ -641,6 +818,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     }
 
     @objc func copy(_ sender: Any?) {
+        onInteractionWillBegin?()
         guard let selected = selectedAttributedString(), selected.length > 0 else { return }
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
@@ -653,7 +831,10 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         }
     }
 
-    override func selectAll(_ sender: Any?) { selectAllContent() }
+    override func selectAll(_ sender: Any?) {
+        onInteractionWillBegin?()
+        selectAllContent()
+    }
 
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 116, onPageUp?() == true {
@@ -709,6 +890,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     }
 
     private func measuredHeight(for item: Item) -> Double {
+        heightMeasurementCountForTesting += 1
         let framesetter = CTFramesetterCreateWithAttributedString(attributedTextForLayout(item))
         let size = CTFramesetterSuggestFrameSizeWithConstraints(
             framesetter,
@@ -725,9 +907,9 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         return Double(max(18, compactAssetHeight, ceil(size.height) + 1 + previewHeight + verticalSpacing))
     }
 
-    private func rebuildMeasurements() {
+    private func rebuildMeasurements(using preparedHeights: [Double]? = nil) {
         measuredWidth = contentWidth
-        layoutIndex.replaceHeights(with: retainedItems.map(measuredHeight(for:)))
+        layoutIndex.replaceHeights(with: preparedHeights ?? retainedItems.map(measuredHeight(for:)))
         renderedItemCount += itemCount
         updateDocumentHeight()
         needsDisplay = true

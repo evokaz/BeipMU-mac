@@ -27,6 +27,386 @@ final class VirtualizedOutputViewTests: XCTestCase {
         XCTAssertLessThan(view.visibleItemCount(in: NSRect(x: 0, y: 120_000, width: 800, height: 700)), 50)
     }
 
+    func testOutputQueuesAt256LinesAndFlushesRemainingItemsOnDemand() {
+        let output = OutputTextView()
+
+        for index in 0..<255 {
+            output.append(.init(text: "line \(index)"))
+        }
+
+        XCTAssertEqual(output.visibleLineCount, 255)
+        XCTAssertEqual(output.renderedLineCount, 0)
+        XCTAssertEqual(output.pendingOutputLineCountForTesting, 255)
+        XCTAssertEqual(output.pendingOutputItemCountForTesting, 255)
+        XCTAssertEqual(output.batchMutationCountForTesting, 0)
+
+        output.append(.init(text: "line 255"))
+
+        XCTAssertEqual(output.renderedLineCount, 0)
+        XCTAssertEqual(output.pendingOutputLineCountForTesting, 256)
+        XCTAssertEqual(output.pendingOutputItemCountForTesting, 256)
+        XCTAssertEqual(output.batchMutationCountForTesting, 0)
+
+        output.append(.init(text: "line 256"))
+        XCTAssertEqual(output.renderedLineCount, 0)
+        XCTAssertEqual(output.pendingOutputLineCountForTesting, 257)
+
+        output.flushPendingOutput()
+        XCTAssertEqual(output.renderedLineCount, 257)
+        XCTAssertEqual(output.batchMutationCountForTesting, 2)
+        XCTAssertEqual(output.maxLinesPerSliceForTesting, 256)
+    }
+
+    func testOutputFlushesAQuietBurstAfterOneDisplayFrame() async throws {
+        let output = OutputTextView()
+        output.append(.init(text: "quiet burst"))
+
+        XCTAssertEqual(output.renderedLineCount, 0)
+        try await Task.sleep(for: .milliseconds(32))
+
+        XCTAssertEqual(output.renderedLineCount, 1)
+        XCTAssertEqual(output.pendingOutputLineCountForTesting, 0)
+        XCTAssertEqual(output.batchMutationCountForTesting, 1)
+    }
+
+    func testTerminalSizeDoesNotFlushQueuedOutput() {
+        let output = OutputTextView()
+
+        for index in 0..<700 {
+            output.append(.init(text: "sized \(index)"))
+        }
+
+        let pendingBefore = output.pendingOutputItemCountForTesting
+        let renderedBefore = output.renderedLineCount
+        let size = output.terminalSize
+
+        XCTAssertEqual(output.pendingOutputItemCountForTesting, pendingBefore)
+        XCTAssertEqual(output.renderedLineCount, renderedBefore)
+        XCTAssertGreaterThanOrEqual(size.columns, 1)
+        XCTAssertLessThanOrEqual(size.columns, UInt16.max)
+        XCTAssertGreaterThanOrEqual(size.rows, 1)
+        XCTAssertLessThanOrEqual(size.rows, UInt16.max)
+    }
+
+    func testClearDiscardsQueuedOutputWithoutDelayedRendering() async throws {
+        let output = OutputTextView()
+
+        for index in 0..<700 {
+            output.append(.init(text: "clear \(index)"))
+        }
+
+        output.clear()
+
+        XCTAssertTrue(output.retainedLines.isEmpty)
+        XCTAssertEqual(output.renderedLineCount, 0)
+        XCTAssertEqual(output.pendingOutputItemCountForTesting, 0)
+        let slicesAfterClear = output.sliceCountForTesting
+
+        try await Task.sleep(for: .milliseconds(32))
+
+        XCTAssertTrue(output.retainedLines.isEmpty)
+        XCTAssertEqual(output.renderedLineCount, 0)
+        XCTAssertEqual(output.pendingOutputItemCountForTesting, 0)
+        XCTAssertEqual(output.sliceCountForTesting, slicesAfterClear)
+    }
+
+    func testPrepareForTeardownDiscardsQueuedOutputWithoutDelayedRendering() async throws {
+        let output = OutputTextView()
+
+        for index in 0..<700 {
+            output.append(.init(text: "teardown \(index)"))
+        }
+
+        let renderedBefore = output.renderedLineCount
+        let slicesBefore = output.sliceCountForTesting
+        output.prepareForTeardown()
+
+        XCTAssertEqual(output.pendingOutputItemCountForTesting, 0)
+        XCTAssertEqual(output.renderedLineCount, renderedBefore)
+        XCTAssertEqual(output.sliceCountForTesting, slicesBefore)
+
+        try await Task.sleep(for: .milliseconds(32))
+
+        XCTAssertEqual(output.pendingOutputItemCountForTesting, 0)
+        XCTAssertEqual(output.renderedLineCount, renderedBefore)
+        XCTAssertEqual(output.sliceCountForTesting, slicesBefore)
+    }
+
+    func testAutomaticDrainUsesMultipleBoundedSlicesAndPreservesOrder() async throws {
+        let output = OutputTextView()
+
+        for index in 0..<700 {
+            output.append(.init(text: "ordered \(index)"))
+        }
+
+        XCTAssertEqual(output.renderedLineCount, 0)
+        XCTAssertEqual(output.pendingOutputLineCountForTesting, 700)
+
+        try await eventuallyOnMainActor("automatic output drain", timeout: .seconds(3)) {
+            output.pendingOutputLineCountForTesting == 0
+        }
+
+        XCTAssertGreaterThan(output.sliceCountForTesting, 1)
+        XCTAssertLessThanOrEqual(output.maxLinesPerSliceForTesting, 256)
+        XCTAssertEqual(output.renderedLineCount, 700)
+        XCTAssertEqual(
+            (0..<700).compactMap {
+                output.primaryOutputViewForTesting.renderedAttributedTextForTesting(at: $0)?.string
+            },
+            (0..<700).map { "ordered \($0)\n" }
+        )
+    }
+
+    func testHistoryEvictionSpansRenderedAndPendingSlices() {
+        let output = OutputTextView()
+        output.historyLimit = 100
+
+        for index in 0..<80 { output.append(.init(text: "history \(index)")) }
+        output.flushPendingOutput()
+
+        for index in 80..<780 { output.append(.init(text: "history \(index)")) }
+        XCTAssertEqual(output.visibleLineCount, 100)
+        XCTAssertEqual(output.pendingOutputLineCountForTesting, 100)
+
+        output.flushPendingOutput()
+
+        XCTAssertEqual(output.renderedLineCount, 100)
+        XCTAssertEqual(output.retainedLines.map(\.text), (680..<780).map { "history \($0)" })
+        XCTAssertEqual(
+            (0..<100).compactMap {
+                output.primaryOutputViewForTesting.renderedAttributedTextForTesting(at: $0)?.string
+            },
+            (680..<780).map { "history \($0)\n" }
+        )
+        XCTAssertLessThanOrEqual(output.maxLinesPerSliceForTesting, 256)
+    }
+
+    func testPreparedHeightsAreReusedOnlyWhenEffectiveWidthsMatch() {
+        let primary = VirtualizedOutputView(frame: NSRect(x: 0, y: 0, width: 500, height: 200))
+        let secondary = VirtualizedOutputView(frame: NSRect(x: 0, y: 0, width: 500, height: 200))
+        let items = [VirtualizedOutputView.Item(
+            id: UUID(),
+            attributedText: NSAttributedString(string: String(repeating: "wrapped ", count: 30)),
+            contentRange: NSRange(location: 0, length: 240),
+            assets: []
+        )]
+
+        primary.setItems(items)
+        let prepared = primary.preparedHeightsForCurrentItems()
+        let measurementsBeforeReuse = secondary.heightMeasurementCountForTesting
+        secondary.setItems(
+            items,
+            preparedHeights: prepared.heights,
+            measuredAtWidth: prepared.width
+        )
+
+        XCTAssertEqual(secondary.heightMeasurementCountForTesting, measurementsBeforeReuse)
+        XCTAssertEqual(primary.measuredHeightForTesting(at: 0), secondary.measuredHeightForTesting(at: 0))
+
+        secondary.setFrameSize(NSSize(width: 300, height: 200))
+        secondary.setItems(
+            items,
+            preparedHeights: prepared.heights,
+            measuredAtWidth: prepared.width
+        )
+        XCTAssertGreaterThan(secondary.heightMeasurementCountForTesting, measurementsBeforeReuse)
+    }
+
+    func testPendingItemsDiscardHistoryEvictionsBeforeRendererFlush() {
+        let output = OutputTextView()
+        output.historyLimit = 10
+
+        for index in 0..<10 { output.append(.init(text: "line \(index)")) }
+        output.flushPendingOutput()
+        let firstRetainedID = output.retainedLines.first?.id
+        let batchesBeforeBurst = output.batchMutationCountForTesting
+
+        for index in 10..<40 { output.append(.init(text: "line \(index)")) }
+
+        XCTAssertEqual(output.visibleLineCount, 10)
+        XCTAssertEqual(output.retainedLines.first?.text, "line 30")
+        XCTAssertEqual(output.pendingOutputItemCountForTesting, 10)
+        XCTAssertEqual(output.renderedLineCount, 10)
+        XCTAssertEqual(output.primaryOutputViewForTesting.itemID(at: 0), firstRetainedID)
+
+        output.flushPendingOutput()
+
+        XCTAssertEqual(output.renderedLineCount, 10)
+        XCTAssertEqual(output.primaryOutputViewForTesting.itemID(at: 0), output.retainedLines.first?.id)
+        XCTAssertEqual(output.primaryOutputViewForTesting.renderedAttributedTextForTesting(at: 0)?.string, "line 30\n")
+        XCTAssertEqual(output.batchMutationCountForTesting, batchesBeforeBurst + 1)
+    }
+
+    func testOneOutputFlushDoesNotDrainAnotherOutputsBurst() {
+        let sustained = OutputTextView()
+        let local = OutputTextView()
+
+        for index in 0..<128 {
+            sustained.append(.init(text: "sustained \(index)"))
+        }
+        local.append(.init(text: "local output"))
+
+        XCTAssertEqual(sustained.renderedLineCount, 0)
+        XCTAssertEqual(local.renderedLineCount, 0)
+
+        local.selectAll()
+
+        XCTAssertEqual(local.renderedLineCount, 1)
+        XCTAssertEqual(local.pendingOutputLineCountForTesting, 0)
+        XCTAssertEqual(sustained.renderedLineCount, 0)
+        XCTAssertEqual(sustained.pendingOutputLineCountForTesting, 128)
+
+        sustained.flushPendingOutput()
+        XCTAssertEqual(sustained.renderedLineCount, 128)
+    }
+
+    func testSmoothScrollCatchesUpSustainedOutputAndAnimatesIsolatedOutput() async throws {
+        let output = OutputTextView()
+        let host = NSView(frame: NSRect(x: 0, y: 0, width: 500, height: 180))
+        output.containerView.frame = host.bounds
+        host.addSubview(output.containerView)
+        output.containerView.layoutSubtreeIfNeeded()
+        output.applySettings(.init(smoothScrolling: true))
+
+        for index in 0..<512 {
+            output.append(.init(text: "smooth \(index)"))
+        }
+
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        XCTAssertEqual(output.batchMutationCountForTesting, 0)
+        try await eventuallyOnMainActor("smooth output catch-up", timeout: .seconds(3)) {
+            output.pendingOutputLineCountForTesting == 0
+        }
+        XCTAssertGreaterThan(output.batchMutationCountForTesting, 1)
+        XCTAssertEqual(output.sliceCountForTesting, output.batchMutationCountForTesting)
+        XCTAssertEqual(output.maxLinesPerSliceForTesting, 256)
+        XCTAssertGreaterThan(output.catchUpScrollsForTesting, 0)
+        XCTAssertEqual(output.primaryOutputViewForTesting.scrollAnimationTargetUpdateCountForTesting, 0)
+        XCTAssertTrue(isAtBottom(output.primaryScrollViewForTesting))
+
+        try? await Task.sleep(for: .milliseconds(140))
+        output.append(.init(text: "isolated smooth"))
+        output.flushPendingOutput()
+        XCTAssertEqual(output.primaryOutputViewForTesting.scrollAnimationTargetUpdateCountForTesting, 1)
+
+        let catchUpsBeforeOverlap = output.catchUpScrollsForTesting
+        output.append(.init(text: "arrives during animation"))
+        output.flushPendingOutput()
+        XCTAssertEqual(output.primaryOutputViewForTesting.scrollAnimationTargetUpdateCountForTesting, 1)
+        XCTAssertGreaterThan(output.catchUpScrollsForTesting, catchUpsBeforeOverlap)
+
+        try? await Task.sleep(for: .milliseconds(140))
+        output.append(.init(text: "smooth after quiet"))
+        output.flushPendingOutput()
+        XCTAssertEqual(output.primaryOutputViewForTesting.scrollAnimationTargetUpdateCountForTesting, 2)
+    }
+
+    func testPauseFlushesVisibleOutputAndResumeRebuildsBufferedHistory() {
+        let output = OutputTextView()
+        output.append(.init(text: "before pause"))
+
+        output.setPaused(true)
+        XCTAssertEqual(output.renderedLineCount, 1)
+
+        output.append(.init(text: "buffered one"))
+        output.append(.init(text: "buffered two"))
+        XCTAssertEqual(output.visibleLineCount, 1)
+        XCTAssertEqual(output.pendingLineCount, 2)
+        XCTAssertEqual(output.renderedLineCount, 1)
+
+        output.setPaused(false)
+
+        XCTAssertEqual(output.pendingLineCount, 0)
+        XCTAssertEqual(output.visibleLineCount, 3)
+        XCTAssertEqual(output.renderedLineCount, 3)
+        XCTAssertEqual(output.retainedLines.map(\.text), ["before pause", "buffered one", "buffered two"])
+    }
+
+    func testSearchFlushesPendingOutputBeforeSelectingIt() throws {
+        let output = OutputTextView()
+        output.append(.init(text: "searchable output"))
+
+        XCTAssertTrue(try output.find("searchable"))
+        XCTAssertEqual(output.renderedLineCount, 1)
+        XCTAssertEqual(output.primaryOutputViewForTesting.selectedString(), "searchable")
+    }
+
+    func testUnterminatedPromptAppendsWithoutRebuildingFullHistoryAndCanBeRemoved() throws {
+        let output = OutputTextView()
+        let host = NSView(frame: NSRect(x: 0, y: 0, width: 700, height: 180))
+        output.containerView.translatesAutoresizingMaskIntoConstraints = true
+        output.containerView.frame = host.bounds
+        host.addSubview(output.containerView)
+        host.layoutSubtreeIfNeeded()
+        output.containerView.layoutSubtreeIfNeeded()
+
+        for index in 0..<10_000 {
+            output.append(.init(text: "History line \(index)"))
+        }
+        output.flushPendingOutput()
+        let retainedBeforePrompt = output.retainedLines
+        let selectedLine = try XCTUnwrap(retainedBeforePrompt[5_000])
+        XCTAssertTrue(output.primaryOutputViewForTesting.select(
+            itemID: selectedLine.id,
+            range: NSRange(location: 0, length: selectedLine.text.utf16.count)
+        ))
+        output.primaryOutputViewForTesting.scrollToEnd()
+        let scrollOriginBeforePrompt = output.primaryScrollViewForTesting.contentView.bounds.origin
+        let rebuildGeneration = output.rebuildGenerationForTesting
+
+        output.setWindowFocused(false)
+        let prompt = RenderedLine(text: "Name: ", source: .prompt)
+        output.append(prompt, terminator: "")
+        output.flushPendingOutput()
+
+        XCTAssertEqual(output.rebuildGenerationForTesting, rebuildGeneration)
+        XCTAssertEqual(output.visibleLineCount, 10_000)
+        XCTAssertEqual(output.renderedLineCount, 10_000)
+        XCTAssertEqual(output.retainedLines.last?.id, prompt.id)
+        XCTAssertEqual(output.primaryOutputViewForTesting.renderedAttributedTextForTesting(at: 9_999)?.string, "Name: ")
+        XCTAssertEqual(output.primaryOutputViewForTesting.selectedString(), selectedLine.text)
+        XCTAssertEqual(output.newContentBoundaryPositionForTesting, 9_999)
+        XCTAssertEqual(output.primaryScrollViewForTesting.contentView.bounds.origin.y, scrollOriginBeforePrompt.y, accuracy: 0.5)
+
+        output.removeLastLine()
+
+        XCTAssertEqual(output.visibleLineCount, 9_999)
+        XCTAssertEqual(output.renderedLineCount, 9_999)
+        XCTAssertEqual(output.primaryOutputViewForTesting.selectedString(), selectedLine.text)
+        XCTAssertEqual(output.newContentBoundaryPositionForTesting, 9_999)
+        XCTAssertNil(output.newContentBoundaryIDForTesting)
+    }
+
+    func testAtomicEvictionKeepsPrimaryAtBottomAndSplitScrollbackStationary() async throws {
+        let output = OutputTextView()
+        output.historyLimit = 100
+        let host = NSView(frame: NSRect(x: 0, y: 0, width: 700, height: 320))
+        output.containerView.translatesAutoresizingMaskIntoConstraints = true
+        output.containerView.frame = host.bounds
+        host.addSubview(output.containerView)
+        output.containerView.layoutSubtreeIfNeeded()
+
+        for index in 0..<100 { output.append(.init(text: "Line \(index)")) }
+        output.flushPendingOutput()
+        output.toggleSplit()
+        await awaitMainActorQuiescence()
+        output.containerView.layoutSubtreeIfNeeded()
+        let upper = try XCTUnwrap(output.secondaryScrollViewForTesting)
+        let upperView = try XCTUnwrap(upper.documentView as? VirtualizedOutputView)
+        let scrollbackOrigin = max(0, upper.contentView.bounds.origin.y - 54)
+        upper.contentView.scroll(to: NSPoint(x: 0, y: scrollbackOrigin))
+        upper.reflectScrolledClipView(upper.contentView)
+        let stationaryItemID = upperView.firstVisibleItemID
+
+        output.append(.init(text: "Line 100"))
+        output.flushPendingOutput()
+
+        XCTAssertEqual(output.visibleLineCount, 100)
+        XCTAssertEqual(output.renderedLineCount, 100)
+        XCTAssertTrue(isAtBottom(output.primaryScrollViewForTesting))
+        XCTAssertEqual(upperView.firstVisibleItemID, stationaryItemID)
+    }
+
     func testOutputDocumentWidthTracksNarrowScrollViewport() {
         let output = OutputTextView()
         let host = NSView(frame: NSRect(x: 0, y: 0, width: 310, height: 180))
@@ -182,6 +562,7 @@ final class VirtualizedOutputViewTests: XCTestCase {
         let firstNewLine = RenderedLine(text: "first inactive line")
         output.append(firstNewLine)
         (2...20).forEach { output.append(.init(text: "inactive line \($0)")) }
+        output.flushPendingOutput()
 
         XCTAssertEqual(output.newContentBoundaryIDForTesting, firstNewLine.id)
         XCTAssertEqual(output.primaryOutputViewForTesting.newContentBoundaryItemIDForTesting, firstNewLine.id)
@@ -223,6 +604,7 @@ final class VirtualizedOutputViewTests: XCTestCase {
         main.setWindowFocused(false)
         coordinated.setWindowFocused(false)
         (1...40).forEach { main.append(.init(text: "inactive line \($0)")) }
+        main.flushPendingOutput()
 
         let scrollView = main.primaryScrollViewForTesting
         let bottomY = scrollView.contentView.bounds.origin.y
@@ -371,6 +753,7 @@ final class VirtualizedOutputViewTests: XCTestCase {
         output.containerView.layoutSubtreeIfNeeded()
 
         (1...80).forEach { output.append(.init(text: "line \($0)")) }
+        output.flushPendingOutput()
         XCTAssertGreaterThan(output.primaryScrollViewForTesting.contentView.bounds.origin.y, 0)
 
         output.toggleSplit()
@@ -384,6 +767,7 @@ final class VirtualizedOutputViewTests: XCTestCase {
         let frozenOrigin = upperScrollback.contentView.bounds.origin.y
         let liveOrigin = output.primaryScrollViewForTesting.contentView.bounds.origin.y
         output.append(.init(text: "new live line"))
+        output.flushPendingOutput()
         output.containerView.layoutSubtreeIfNeeded()
 
         XCTAssertEqual(upperScrollback.contentView.bounds.origin.y, frozenOrigin, accuracy: 0.5)
@@ -420,6 +804,7 @@ final class VirtualizedOutputViewTests: XCTestCase {
         output.containerView.layoutSubtreeIfNeeded()
 
         (1...120).forEach { output.append(.init(text: "line \($0)")) }
+        output.flushPendingOutput()
         let liveBottom = output.primaryScrollViewForTesting.contentView.bounds.origin.y
 
         XCTAssertTrue(output.performPageUp())
@@ -501,6 +886,7 @@ final class VirtualizedOutputViewTests: XCTestCase {
         let output = OutputTextView()
         output.append(.init(text: "Existing output", timestamp: Date(timeIntervalSince1970: 0)))
         let generationBeforeSettings = output.rebuildGenerationForTesting
+        XCTAssertEqual(output.renderedLineCount, 0)
 
         output.applySettings(TextWindowSettings(
             usesFanFoldBackgrounds: true,
@@ -508,6 +894,7 @@ final class VirtualizedOutputViewTests: XCTestCase {
         ))
 
         XCTAssertEqual(output.rebuildGenerationForTesting, generationBeforeSettings + 1)
+        XCTAssertEqual(output.renderedLineCount, 1)
     }
 
     func testOutputParagraphUsesEightConfiguredFontCellsForTabs() throws {
@@ -515,6 +902,7 @@ final class VirtualizedOutputViewTests: XCTestCase {
         let settings = TextWindowSettings(fontName: "Menlo", fontSize: 17)
         output.applySettings(settings)
         output.append(.init(text: "\t1tab"))
+        output.flushPendingOutput()
 
         let rendered = try XCTUnwrap(output.primaryOutputViewForTesting.renderedAttributedTextForTesting(at: 0))
         let paragraph = try XCTUnwrap(rendered.attribute(
@@ -536,6 +924,7 @@ final class VirtualizedOutputViewTests: XCTestCase {
         output.append(.init(text: "\t1tab"))
         output.append(.init(text: "\t\t2tab"))
         output.append(.init(text: "12\t1234\t123456\t12345678\tEnd"))
+        output.flushPendingOutput()
 
         let font = try XCTUnwrap(NSFont(name: settings.fontName, size: settings.fontSize))
         let interval = 8 * ("M" as NSString).size(withAttributes: [.font: font]).width
@@ -571,6 +960,7 @@ final class VirtualizedOutputViewTests: XCTestCase {
     func testChangingOutputFontRecalculatesTabInterval() throws {
         let output = OutputTextView()
         output.append(.init(text: "\tretained text"))
+        output.flushPendingOutput()
         output.toggleSplit()
         let secondary = try XCTUnwrap(
             output.secondaryScrollViewForTesting?.documentView as? VirtualizedOutputView
@@ -639,6 +1029,7 @@ final class VirtualizedOutputViewTests: XCTestCase {
     func testAutomaticWebLinksUnderlineOnlyWhileHovered() throws {
         let output = OutputTextView()
         output.append(.init(text: "Visit https://example.com/path"))
+        output.flushPendingOutput()
 
         let view = output.primaryOutputViewForTesting
         view.selectAllContent()
@@ -664,6 +1055,7 @@ final class VirtualizedOutputViewTests: XCTestCase {
     func testBrowserLinksRequireCommandClick() throws {
         let output = OutputTextView()
         output.append(.init(text: "https://example.com"))
+        output.flushPendingOutput()
         let view = output.primaryOutputViewForTesting
         view.selectAllContent()
         let selected = try XCTUnwrap(view.selectedAttributedString())

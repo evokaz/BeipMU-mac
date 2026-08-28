@@ -1,6 +1,7 @@
 import BeipAutomation
 import BeipCore
 import BeipPersistence
+import BeipTestSupport
 @testable import BeipUI
 import XCTest
 
@@ -235,6 +236,151 @@ final class TriggerLivePropagationTests: XCTestCase {
         await controller.testingReceiveLine("after")
 
         XCTAssertEqual(controller.testingSpawnLines(named: "Capture"), ["START", "body", "END"])
+    }
+
+    func testCopiedSpawnBurstPresentsOnceAndPreservesBothOutputQueues() async throws {
+        var workspace = try Self.workspace(
+            """
+            Version=331
+            Connections {
+              Shortcuts {
+                TestServer { Host="testserver.example:8888" }
+              }
+            }
+            """
+        )
+        try workspace.addTrigger(
+            in: .global,
+            trigger: Trigger(
+                description: "Burst",
+                match: .init(text: "BURST"),
+                actions: [.spawn(.init(title: "Burst", copy: true))]
+            )
+        )
+        let server = try XCTUnwrap(workspace.servers.first?.profile)
+        let library = ProfileLibrary(workspace: workspace)
+        var settings = TextWindowSettings()
+        settings.smoothScrolling = true
+        let preferences = WorkspacePreferences(globalTextWindowSettings: settings)
+        let controller = ClientWindowController(
+            profileLibrary: library,
+            runsScriptServices: false,
+            initialPreferences: preferences
+        )
+        defer { controller.close() }
+        controller.restoreOpenTab(server: server, character: nil)
+
+        let expected = (0..<320).map { "BURST \($0)" }
+        for line in expected { await controller.testingReceiveLine(line) }
+
+        XCTAssertEqual(controller.testingSpawnLines(named: "Burst"), expected)
+        XCTAssertEqual(
+            controller.testingOutputLines().filter { $0.hasPrefix("BURST ") },
+            expected
+        )
+        XCTAssertEqual(controller.testingSpawnPresentationCounts().standalone["Burst"], 1)
+        XCTAssertEqual(controller.testingSpawnKeyPromotionCounts().standalone["Burst"], 1)
+
+        let spawnOutput = try XCTUnwrap(controller.testingSpawnOutput(named: "Burst"))
+        try await eventuallyOnMainActor("spawn burst drain", timeout: .seconds(3)) {
+            spawnOutput.pendingOutputLineCountForTesting == 0
+        }
+        XCTAssertGreaterThan(spawnOutput.batchMutationCountForTesting, 1)
+        XCTAssertLessThanOrEqual(spawnOutput.maxLinesPerSliceForTesting, 256)
+        XCTAssertEqual(spawnOutput.retainedLines.map(\.text), expected)
+
+        let mainOutput = controller.outputForTesting
+        try await eventuallyOnMainActor("main burst drain", timeout: .seconds(3)) {
+            mainOutput.pendingOutputLineCountForTesting == 0
+        }
+        XCTAssertGreaterThan(mainOutput.catchUpScrollsForTesting, 0)
+        XCTAssertLessThan(mainOutput.primaryOutputViewForTesting.scrollAnimationTargetUpdateCountForTesting, expected.count)
+    }
+
+    func testDockedSpawnBurstDoesNotRebuildItsDockingSurface() async throws {
+        var workspace = try Self.workspace(
+            """
+            Version=331
+            Connections {
+              Shortcuts {
+                TestServer { Host="testserver.example:8888" }
+              }
+            }
+            """
+        )
+        try workspace.addTrigger(
+            in: .global,
+            trigger: Trigger(
+                description: "Docked Burst",
+                match: .init(text: "DOCKED"),
+                actions: [.spawn(.init(title: "Docked", copy: true))]
+            )
+        )
+        let server = try XCTUnwrap(workspace.servers.first?.profile)
+        let key = try XCTUnwrap(TextWindowSettingsIdentity(world: server.name, character: nil, tab: nil).worldKey)
+        let layout = WorkspaceLayoutNode.mainOnly.inserting(.spawn("Docked"), side: .right)
+        let preferences = WorkspacePreferences(
+            workspaceLayouts: [key: layout],
+            spawnSurfaces: [key: .init(standaloneWindows: ["Docked"])]
+        )
+        let controller = ClientWindowController(
+            profileLibrary: ProfileLibrary(workspace: workspace),
+            runsScriptServices: false,
+            initialPreferences: preferences
+        )
+        defer { controller.close() }
+        controller.restoreOpenTab(server: server, character: nil)
+
+        let expected = (0..<320).map { "DOCKED \($0)" }
+        for line in expected { await controller.testingReceiveLine(line) }
+
+        XCTAssertEqual(controller.testingSpawnLines(named: "Docked"), expected)
+        XCTAssertEqual(controller.testingSpawnSurfaceState().standalone["Docked"], true)
+        XCTAssertEqual(controller.testingSpawnPresentationCounts().standalone["Docked"], 1)
+        XCTAssertEqual(controller.testingSpawnViewTransitionCounts().standalone["Docked"], 1)
+        XCTAssertEqual(controller.testingSpawnKeyPromotionCounts().standalone["Docked"], 0)
+
+        let spawnOutput = try XCTUnwrap(controller.testingSpawnOutput(named: "Docked"))
+        try await eventuallyOnMainActor("docked spawn burst drain", timeout: .seconds(3)) {
+            spawnOutput.pendingOutputLineCountForTesting == 0
+        }
+        XCTAssertLessThanOrEqual(spawnOutput.maxLinesPerSliceForTesting, 256)
+    }
+
+    func testTabGroupSpawnBurstPresentsOnce() async throws {
+        var workspace = try Self.workspace(
+            """
+            Version=331
+            Connections {
+              Shortcuts {
+                TestServer { Host="testserver.example:8888" }
+              }
+            }
+            """
+        )
+        try workspace.addTrigger(
+            in: .global,
+            trigger: Trigger(
+                description: "Tab Burst",
+                match: .init(text: "TABBURST"),
+                actions: [.spawn(.init(title: "Feed", tabGroup: "Channels", showTab: true, copy: true))]
+            )
+        )
+        let server = try XCTUnwrap(workspace.servers.first?.profile)
+        let controller = ClientWindowController(
+            profileLibrary: ProfileLibrary(workspace: workspace),
+            runsScriptServices: false
+        )
+        defer { controller.close() }
+        controller.restoreOpenTab(server: server, character: nil)
+
+        let expected = (0..<320).map { "TABBURST \($0)" }
+        for line in expected { await controller.testingReceiveLine(line) }
+
+        XCTAssertEqual(controller.testingSpawnTabOutput(named: "Channels", title: "Feed")?.retainedLines.map(\.text), expected)
+        XCTAssertEqual(controller.testingSpawnPresentationCounts().tabGroups["Channels"], 1)
+        XCTAssertEqual(controller.testingSpawnKeyPromotionCounts().tabGroups["Channels"], 1)
+        XCTAssertEqual(controller.testingSpawnViewTransitionCounts().tabGroups["Channels"], 2)
     }
 
     func testFirstEligibleSpawnWinsWhenMultipleTriggersMatchLine() async throws {

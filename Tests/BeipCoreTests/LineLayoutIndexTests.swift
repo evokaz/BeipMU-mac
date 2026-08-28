@@ -34,6 +34,43 @@ final class LineLayoutIndexTests: XCTestCase {
         XCTAssertEqual(index.visibleRange(intersecting: 0..<1), 0..<1)
     }
 
+    func testRemoveLastAfterNormalAppendsKeepsOffsetsAndReturnsHeight() {
+        var index = LineLayoutIndex(heights: [10, 20, 30])
+
+        XCTAssertEqual(index.removeLast(), 30)
+        XCTAssertEqual(index.count, 2)
+        XCTAssertEqual(index.totalHeight, 30)
+        XCTAssertEqual(index.yOffset(for: 2), 30)
+        XCTAssertEqual(index.height(at: 1), 20)
+    }
+
+    func testRemoveLastAfterLazyPrefixEvictionKeepsRetainedIndex() {
+        var index = LineLayoutIndex()
+        for value in 0..<4_000 { index.append(height: Double(value % 7 + 1)) }
+        let originalHeight = index.totalHeight
+        let removedPrefixHeight = (0..<2_500).reduce(0.0) { $0 + Double($1 % 7 + 1) }
+        let removedTailHeight = Double(3_999 % 7 + 1)
+
+        index.removeFirst(2_500)
+        XCTAssertEqual(index.removeLast(), removedTailHeight)
+
+        XCTAssertEqual(index.count, 1_499)
+        XCTAssertEqual(index.totalHeight, originalHeight - removedPrefixHeight - removedTailHeight)
+        XCTAssertEqual(index.height(at: index.count - 1), Double(3_998 % 7 + 1))
+    }
+
+    func testRemoveLastToEmptyResetsTheIndex() {
+        var index = LineLayoutIndex(heights: [10, 20])
+
+        XCTAssertEqual(index.removeLast(), 20)
+        XCTAssertEqual(index.removeLast(), 10)
+        XCTAssertNil(index.removeLast())
+        XCTAssertTrue(index.isEmpty)
+        XCTAssertEqual(index.count, 0)
+        XCTAssertEqual(index.totalHeight, 0)
+        XCTAssertEqual(index.yOffset(for: 0), 0)
+    }
+
     func testInvalidHeightsAndOverRemovalAreSafe() {
         var index = LineLayoutIndex(heights: [0, -.infinity, .nan, 5])
         XCTAssertEqual(index.totalHeight, 8)

@@ -32,7 +32,8 @@ final class SessionRecoveryReplayTests: XCTestCase {
         let character = try XCTUnwrap(server.characters.first)
         let store = try SessionRecoveryStore(
             url: directory.appendingPathComponent("Recovery.dat"),
-            capacity: 16_384
+            capacity: 64 * 1_024,
+            perSessionCapacity: 64 * 1_024
         )
         let id = try store.beginSession(
             serverID: server.profile.id,
@@ -46,6 +47,18 @@ final class SessionRecoveryReplayTests: XCTestCase {
             .spawnOutput(title: "Channel", tabGroup: nil, line: .init(text: "spawned")),
             to: id
         )
+        for index in 0..<20 {
+            try store.append(
+                .spawnOutput(title: "Channel", tabGroup: nil, line: .init(text: "replayed \(index)")),
+                to: id
+            )
+        }
+        for index in 0..<20 {
+            try store.append(
+                .spawnOutput(title: "Feed", tabGroup: "Channels", line: .init(text: "tab replayed \(index)")),
+                to: id
+            )
+        }
         try store.append(.inputHistory(["look", "inventory"]), to: id)
         try store.append(
             .gmcp(.init(
@@ -67,14 +80,35 @@ final class SessionRecoveryReplayTests: XCTestCase {
         XCTAssertTrue(controller.testingOutputLines().contains("room output"))
         XCTAssertTrue(controller.testingOutputLines().contains("prompt>"))
         XCTAssertFalse(controller.testingOutputLines().contains { $0.localizedCaseInsensitiveContains("crash") })
-        XCTAssertEqual(controller.testingSpawnLines(named: "Channel"), ["spawned"])
+        XCTAssertEqual(
+            controller.testingSpawnLines(named: "Channel"),
+            ["spawned"] + (0..<20).map { "replayed \($0)" }
+        )
+        XCTAssertEqual(controller.testingSpawnPresentationCounts().standalone["Channel"], 1)
+        XCTAssertEqual(controller.testingSpawnViewTransitionCounts().standalone["Channel"], 2)
+        XCTAssertEqual(controller.testingSpawnKeyPromotionCounts().standalone["Channel"], 1)
+        XCTAssertEqual(
+            controller.testingSpawnTabOutput(named: "Channels", title: "Feed")?.retainedLines.map(\.text),
+            (0..<20).map { "tab replayed \($0)" }
+        )
+        XCTAssertEqual(controller.testingSpawnPresentationCounts().tabGroups["Channels"], 1)
+        XCTAssertEqual(controller.testingSpawnViewTransitionCounts().tabGroups["Channels"], 2)
+        XCTAssertEqual(controller.testingSpawnKeyPromotionCounts().tabGroups["Channels"], 1)
         XCTAssertEqual(controller.testingInputHistory(), ["look", "inventory"])
         XCTAssertEqual(controller.testingGMCPRoom()?.name, "Square")
 
         controller.reconnect()
         XCTAssertTrue(controller.testingOutputLines().contains("room output"))
         XCTAssertTrue(controller.testingOutputLines().contains("prompt>"))
-        XCTAssertEqual(controller.testingSpawnLines(named: "Channel"), ["spawned"])
+        XCTAssertEqual(
+            controller.testingSpawnLines(named: "Channel"),
+            ["spawned"] + (0..<20).map { "replayed \($0)" }
+        )
+        XCTAssertEqual(
+            controller.testingSpawnTabOutput(named: "Channels", title: "Feed")?.retainedLines.map(\.text),
+            (0..<20).map { "tab replayed \($0)" }
+        )
+        XCTAssertEqual(controller.testingSpawnPresentationCounts().tabGroups["Channels"], 1)
         XCTAssertEqual(store.sessionCount, 1)
         XCTAssertEqual(store.sessions.first?.id, id)
         XCTAssertTrue(store.session(id: id)?.records.contains {

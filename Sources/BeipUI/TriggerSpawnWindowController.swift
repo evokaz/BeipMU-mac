@@ -18,6 +18,9 @@ final class TriggerSpawnWindowController: NSWindowController, NSWindowDelegate {
     private let dockingAccessory = DockSurfaceAccessoryViewController()
     private var themePalette = WorkspaceThemeSettings().palette
     private(set) var isDocked = false
+    private(set) var presentationCountForTesting = 0
+    private(set) var viewTransitionCountForTesting = 0
+    private(set) var keyPromotionCountForTesting = 0
     var onClose: (() -> Void)?
     var onCloseRequest: (() -> Void)?
     var onWindowDragEnded: ((NSPoint) -> Bool)?
@@ -75,6 +78,7 @@ final class TriggerSpawnWindowController: NSWindowController, NSWindowDelegate {
         window?.contentView?.needsDisplay = true
     }
     func contentViewForDocking() -> NSView {
+        viewTransitionCountForTesting += 1
         cancelFloatingDrag()
         window?.orderOut(nil)
         if window?.contentView === output.containerView { window?.contentView = nil }
@@ -88,6 +92,7 @@ final class TriggerSpawnWindowController: NSWindowController, NSWindowDelegate {
 
     func showFloating(_ sender: Any?, near point: NSPoint?) {
         if isDocked {
+            viewTransitionCountForTesting += 1
             output.containerView.removeFromSuperview()
             window?.contentView = output.containerView
             isDocked = false
@@ -96,8 +101,10 @@ final class TriggerSpawnWindowController: NSWindowController, NSWindowDelegate {
             Self.position(window, near: point)
         }
         showWindow(sender)
+        keyPromotionCountForTesting += 1
         window?.makeKeyAndOrderFront(sender)
     }
+    func notePresentationForTesting() { presentationCountForTesting += 1 }
     func closeSurface() {
         cancelFloatingDrag()
         if isDocked {
@@ -116,6 +123,7 @@ final class TriggerSpawnWindowController: NSWindowController, NSWindowDelegate {
     }
     func windowWillClose(_ notification: Notification) {
         cancelFloatingDrag()
+        output.prepareForTeardown()
         output.unregisterFromUnreadBoundaryCoordinator()
         onClose?()
     }
@@ -238,6 +246,9 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
     private var themePalette = WorkspaceThemeSettings().palette
     private var selectedID: UUID?
     private(set) var isDocked = false
+    private(set) var presentationCountForTesting = 0
+    private(set) var viewTransitionCountForTesting = 0
+    private(set) var keyPromotionCountForTesting = 0
     var onClose: (() -> Void)?
     var onCloseRequest: (() -> Void)?
     var onWindowDragEnded: ((NSPoint) -> Bool)?
@@ -306,6 +317,7 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
     }
 
     func contentViewForDocking() -> NSView {
+        viewTransitionCountForTesting += 1
         cancelFloatingDrag()
         window?.orderOut(nil)
         if window?.contentView === root { window?.contentView = nil }
@@ -320,6 +332,7 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
 
     func showFloating(_ sender: Any?, near point: NSPoint?) {
         if isDocked {
+            viewTransitionCountForTesting += 1
             root.removeFromSuperview()
             window?.contentView = root
             isDocked = false
@@ -328,8 +341,10 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
             TriggerSpawnWindowController.position(window, near: point)
         }
         showWindow(sender)
+        keyPromotionCountForTesting += 1
         window?.makeKeyAndOrderFront(sender)
     }
+    func notePresentationForTesting() { presentationCountForTesting += 1 }
 
     func closeSurface() {
         cancelFloatingDrag()
@@ -368,16 +383,22 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
         highlight: Bool = true
     ) {
         let id: UUID
+        var createdTab = false
+        var highlightedTab = false
         if let index = index(ofTitle: title) {
             id = tabs[index].id
             if clear { tabs[index].output.clear() }
             tabs[index].output.append(line)
-            if selectedID != id, highlight { tabs[index].highlighted = true }
+            if selectedID != id, highlight, !tabs[index].highlighted {
+                tabs[index].highlighted = true
+                highlightedTab = true
+            }
         } else {
             let output = makeOutput()
             output.setWindowFocused(surfaceIsFocused && (selectedID == nil || showTab))
             output.append(line)
             id = UUID()
+            createdTab = true
             tabs.append(.init(
                 id: id,
                 title: title,
@@ -386,12 +407,9 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
             ))
             rebuildTabStrip()
         }
-        if selectedID == nil || showTab { select(id: id) }
-        else {
-            updateTabStripState()
-            updateOutputFocus()
-            onStructureChange?()
-        }
+        if selectedID == nil || (showTab && selectedID != id) { select(id: id) }
+        else if highlightedTab { updateTabStripState() }
+        if createdTab, selectedID != id { onStructureChange?() }
     }
 
     @discardableResult
@@ -448,6 +466,7 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
 
     func windowWillClose(_ notification: Notification) {
         cancelFloatingDrag()
+        tabs.forEach { $0.output.prepareForTeardown() }
         tabs.forEach { $0.output.unregisterFromUnreadBoundaryCoordinator() }
         onClose?()
     }
@@ -500,6 +519,7 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
         let id = tabs[index].id
         let wasSelected = selectedID == id
         let removed = tabs.remove(at: index)
+        removed.output.prepareForTeardown()
         removed.output.unregisterFromUnreadBoundaryCoordinator()
         removed.output.containerView.removeFromSuperview()
         if tabs.isEmpty {

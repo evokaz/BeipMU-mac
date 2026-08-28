@@ -298,6 +298,7 @@ final class TextWindowSettingsTests: XCTestCase {
         inheritedOutput.applySettings(.init(foregroundHex: "", backgroundHex: ""))
         inheritedOutput.applyTheme(firstTheme.palette)
         inheritedOutput.append(.init(text: "Inherited"))
+        inheritedOutput.flushPendingOutput()
         XCTAssertEqual(inheritedOutput.primaryScrollViewForTesting.backgroundColor.hexString, "#405060")
         XCTAssertEqual(inheritedOutput.primaryOutputViewForTesting.canvasBackgroundColor.hexString, "#405060")
         XCTAssertEqual(

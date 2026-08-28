@@ -234,6 +234,11 @@ final class SharedUnreadBoundaryCoordinator {
 /// intersecting its clip view, keeping history size independent of paint cost.
 @MainActor
 final class OutputTextView: NSObject {
+    private static let outputBatchLineLimit = 256
+    private static let outputBatchFrameInterval: Duration = .milliseconds(16)
+    private static let outputBatchTimeBudgetNanoseconds: UInt64 = 6_000_000
+    private static let smoothScrollInterval: Duration = .milliseconds(120)
+
     let containerView: NSSplitView
     private let scrollView: NSScrollView
     var onAction: ((LinkAction) -> Void)?
@@ -257,19 +262,50 @@ final class OutputTextView: NSObject {
     private var defaultForeground = NSColor(calibratedWhite: 0.9, alpha: 1)
     private var defaultBackground = NSColor(calibratedWhite: 0.05, alpha: 1)
     private var themePalette = WorkspaceThemeSettings().palette
+    private var defaultFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+    private var timestampFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+    private var cellWidth: CGFloat = 1
+    private var cellHeight: CGFloat = 1
     private let timestampFormatter: DateFormatter
+    private let tooltipDateFormatter: DateFormatter
     private var history = OutputHistory(limit: 10_000)
     private var lineContentRanges: [UUID: NSRange] = [:]
     private var currentMatchIndex: Int?
     private var currentSearchSignature: SearchSignature?
     private var settings = TextWindowSettings()
     private var automaticMarkerID: UUID?
+    private var unterminatedLineID: UUID?
     private var newContentBoundaryPosition: Int?
     private var windowIsFocused = true
     private var unreadBoundaryCoordinator = SharedUnreadBoundaryCoordinator()
     private var programmaticScrollGeneration = 0
     private var isPerformingProgrammaticScroll = false
     private var rebuildGeneration = 0
+    private struct PendingOutputDescriptor {
+        var line: RenderedLine
+        var terminator: String
+        var lineIndex: Int
+        var evictionEpoch: Int
+    }
+
+    private var pendingOutputDescriptors: [PendingOutputDescriptor] = []
+    private var pendingOutputHead = 0
+    private var pendingPrefixEvictionCount = 0
+    private var pendingMarkerChanges: [UUID: Bool] = [:]
+    private var pendingBoundaryUpdate = false
+    private var pendingFlushTask: Task<Void, Never>?
+    private var isQueueingOutputMutation = false
+    private var pendingEvictionEpoch = 0
+    private var isDrainingOutputSynchronously = false
+    private var tailAnimationTask: Task<Void, Never>?
+    private var tailQuietTask: Task<Void, Never>?
+    private var tailAnimationGeneration = 0
+    private var tailQuietGeneration = 0
+    private var tailAnimationInFlight = false
+    private var tailCatchUpMode = false
+    private(set) var outputSliceCountForTesting = 0
+    private(set) var maximumOutputLinesPerSliceForTesting = 0
+    private(set) var catchUpScrollCountForTesting = 0
     private weak var observedWindow: NSWindow?
     private lazy var webURLDetector: NSDataDetector = {
         try! NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
@@ -286,6 +322,7 @@ final class OutputTextView: NSObject {
     var showsInlineImagePreviews = false {
         didSet {
             guard showsInlineImagePreviews != oldValue else { return }
+            flushPendingOutput()
             outputView.showsInlineImagePreviews = showsInlineImagePreviews
             secondaryOutputView?.showsInlineImagePreviews = showsInlineImagePreviews
             rebuild(preservingScrollPosition: true)
@@ -301,6 +338,7 @@ final class OutputTextView: NSObject {
     }
     var retainedLines: [RenderedLine] { history.lines }
     var visibleWindowLines: [RenderedLine] {
+        flushPendingOutput()
         let lines = history.lines
         guard let id = outputView.firstVisibleItemID,
               let index = lines.firstIndex(where: { $0.id == id }) else { return lines }
@@ -309,6 +347,7 @@ final class OutputTextView: NSObject {
     var historyLimit: Int {
         get { history.limit }
         set {
+            flushPendingOutput()
             let previousLines = history.lines
             history.limit = newValue
             rebuild(preservingScrollPosition: true, previousLines: previousLines)
@@ -321,10 +360,21 @@ final class OutputTextView: NSObject {
     var primaryScrollViewForTesting: NSScrollView { scrollView }
     var secondaryScrollViewForTesting: NSScrollView? { secondaryScrollView }
     var newContentBoundaryIDForTesting: UUID? {
-        newContentBoundaryPosition.flatMap(outputView.itemID(at:))
+        guard let position = newContentBoundaryPosition,
+              history.lines.indices.contains(position) else { return nil }
+        return history.lines[position].id
     }
     var newContentBoundaryPositionForTesting: Int? { newContentBoundaryPosition }
     var rebuildGenerationForTesting: Int { rebuildGeneration }
+    var pendingOutputLineCountForTesting: Int { pendingOutputDescriptorCount }
+    var pendingOutputItemCountForTesting: Int { pendingOutputDescriptorCount }
+    var batchMutationCountForTesting: Int { outputView.batchMutationCountForTesting }
+    var sliceCountForTesting: Int { outputSliceCountForTesting }
+    var renderSliceCountForTesting: Int { outputSliceCountForTesting }
+    var maxLinesPerSliceForTesting: Int { maximumOutputLinesPerSliceForTesting }
+    var maxOutputLinesPerSliceForTesting: Int { maximumOutputLinesPerSliceForTesting }
+    var maximumLinesPerSliceForTesting: Int { maximumOutputLinesPerSliceForTesting }
+    var catchUpScrollsForTesting: Int { catchUpScrollCountForTesting }
 
     func reportUserScrollForTesting(from previousY: CGFloat, to currentY: CGFloat) {
         acknowledgeUserScroll(in: scrollView, from: previousY, to: currentY)
@@ -334,13 +384,20 @@ final class OutputTextView: NSObject {
     var showsNewContentMarkers: Bool { settings.showsNewContentMarkers }
     var isFocusedForUnreadBoundary: Bool { windowIsFocused }
 
+    private var pendingOutputDescriptorCount: Int {
+        max(0, pendingOutputDescriptors.count - pendingOutputHead)
+    }
+
     func applySettings(_ suppliedSettings: TextWindowSettings) {
+        flushPendingOutput()
+        resetTailScrollTracking()
         settings = suppliedSettings.normalized
         unreadBoundaryCoordinator.settingsChanged(for: self, showsMarkers: settings.showsNewContentMarkers)
         let foreground = NSColor(hexString: settings.foregroundHex) ?? themePalette.foreground
         let background = NSColor(hexString: settings.backgroundHex) ?? themePalette.background
         defaultForeground = settings.invertBrightness ? foreground.invertingBrightness : foreground
         defaultBackground = settings.invertBrightness ? background.invertingBrightness : background
+        refreshFontCaches()
         let previousLines = history.lines
         history.limit = settings.historyLimit
         showsTimestamps = settings.showsTime || settings.showsDate
@@ -354,6 +411,8 @@ final class OutputTextView: NSObject {
     }
 
     func applyTheme(_ palette: WorkspaceThemePalette) {
+        flushPendingOutput()
+        resetTailScrollTracking()
         // Text-window colors are independently configurable. The workspace theme
         // still owns surrounding window chrome and supplies legacy defaults.
         themePalette = palette
@@ -380,6 +439,10 @@ final class OutputTextView: NSObject {
     override init() {
         timestampFormatter = DateFormatter()
         timestampFormatter.dateFormat = "HH:mm:ss"
+        tooltipDateFormatter = DateFormatter()
+        tooltipDateFormatter.locale = .autoupdatingCurrent
+        tooltipDateFormatter.dateStyle = .medium
+        tooltipDateFormatter.timeStyle = .medium
         outputView = VirtualizedOutputView(frame: NSRect(x: 0, y: 0, width: 900, height: 1))
         scrollView = OutputScrollView()
         scrollView.contentView = OutputClipView()
@@ -412,10 +475,12 @@ final class OutputTextView: NSObject {
         scrollView.contentView.postsBoundsChangedNotifications = true
         addScrollObserver(for: scrollView)
         observeWindow(container.window)
+        refreshFontCaches()
         outputView.onLink = { [weak self] url in self?.perform(url: url) }
         outputView.onPageUp = { [weak self] in self?.performPageUp() ?? false }
         outputView.onPageDown = { [weak self] in self?.performPageDown() ?? false }
         outputView.onSelectionCompleted = { [weak self] in self?.copySelectionAsPlainText() }
+        outputView.onInteractionWillBegin = { [weak self] in self?.flushPendingOutput() }
         outputView.onUserScrollToEnd = { [weak self] in
             self?.clearNewContentBoundaryIfAtBottom(in: self?.scrollView)
         }
@@ -435,13 +500,20 @@ final class OutputTextView: NSObject {
 
     func applyUnreadBoundaryPositionFromCoordinator(_ position: Int?) {
         newContentBoundaryPosition = position.map { min(max(0, $0), history.count) }
+        guard pendingOutputDescriptorCount == 0, !isQueueingOutputMutation else {
+            pendingBoundaryUpdate = true
+            return
+        }
+        pendingBoundaryUpdate = false
         outputView.setNewContentBoundary(position: newContentBoundaryPosition)
         secondaryOutputView?.setNewContentBoundary(position: newContentBoundaryPosition)
     }
 
     func clear() {
+        discardPendingOutput()
         history.clear()
         lineContentRanges.removeAll(keepingCapacity: true)
+        unterminatedLineID = nil
         performProgrammaticScroll {
             outputView.removeAll()
             secondaryOutputView?.removeAll()
@@ -457,8 +529,11 @@ final class OutputTextView: NSObject {
     }
 
     func removeLastLine() {
+        flushPendingOutput()
         guard let line = history.removeLast() else { return }
         lineContentRanges.removeValue(forKey: line.id)
+        if unterminatedLineID == line.id { unterminatedLineID = nil }
+        if automaticMarkerID == line.id { automaticMarkerID = nil }
         performProgrammaticScroll {
             outputView.removeLast()
             secondaryOutputView?.removeLast()
@@ -469,6 +544,7 @@ final class OutputTextView: NSObject {
     }
 
     func removeSelectedLine() {
+        flushPendingOutput()
         guard let id = outputView.selectedItemID,
               let removedIndex = history.lines.firstIndex(where: { $0.id == id }),
               history.remove(id: id) != nil else {
@@ -476,6 +552,7 @@ final class OutputTextView: NSObject {
             return
         }
         lineContentRanges.removeValue(forKey: id)
+        if unterminatedLineID == id { unterminatedLineID = nil }
         if automaticMarkerID == id { automaticMarkerID = nil }
         // A selected line at/after the boundary does not move it; lines before
         // the insertion point shift that point back by one.
@@ -484,6 +561,7 @@ final class OutputTextView: NSObject {
     }
 
     func setPaused(_ paused: Bool) {
+        flushPendingOutput()
         guard paused != history.isPaused else { return }
         if paused {
             history.pause()
@@ -501,9 +579,6 @@ final class OutputTextView: NSObject {
     func togglePaused() { setPaused(!history.isPaused) }
 
     var terminalSize: (columns: UInt16, rows: UInt16) {
-        let font = defaultFont
-        let cellWidth = max(1, ("M" as NSString).size(withAttributes: [.font: font]).width)
-        let cellHeight = max(1, NSLayoutManager().defaultLineHeight(for: font))
         let contentSize = scrollView.contentSize
         let columns = max(1, min(Int(UInt16.max), Int((contentSize.width - 18) / cellWidth)))
         let rows = max(1, min(Int(UInt16.max), Int((contentSize.height - 14) / cellHeight)))
@@ -511,39 +586,58 @@ final class OutputTextView: NSObject {
     }
 
     func append(_ line: RenderedLine, terminator: String = "\n") {
-        let previousLines = history.lines
+        isQueueingOutputMutation = true
+        defer { isQueueingOutputMutation = false }
         if !history.isPaused { unreadBoundaryCoordinator.willAppend(to: self) }
         let expectedRemovalCount = max(0, history.count + 1 - history.limit)
         let removedIDs = history.oldestLineIDs(expectedRemovalCount)
         let removedCount = history.append(line)
+        if terminator.isEmpty {
+            unterminatedLineID = line.id
+        } else if unterminatedLineID == line.id {
+            unterminatedLineID = nil
+        }
         guard !history.isPaused else { notifyPauseChange(); return }
-        if terminator != "\n" {
-            rebuild(scrollToEnd: true, finalTerminator: terminator, previousLines: previousLines)
-        } else {
-            if removedCount > 0 {
-                removedIDs.forEach { lineContentRanges.removeValue(forKey: $0) }
-                performProgrammaticScroll {
-                    outputView.removeFirst(removedCount)
-                    secondaryOutputView?.removeFirst(removedCount)
-                }
-                unreadBoundaryCoordinator.outputDidRemoveFirst(self, count: removedCount)
+
+        var evictedAutomaticMarkerID: UUID?
+        if removedCount > 0 {
+            removedIDs.forEach { lineContentRanges.removeValue(forKey: $0) }
+            if let unterminatedLineID, removedIDs.contains(unterminatedLineID) {
+                self.unterminatedLineID = nil
             }
-            let item = makeItem(for: line, terminator: terminator, lineIndex: history.count - 1)
-            performProgrammaticScroll {
-                outputView.append(item)
-                secondaryOutputView?.append(item)
-            }
-            if settings.scrollsToBottomOnNewText {
-                clearAutomaticMarker()
-                scrollLiveOutputToEnd(animated: settings.smoothScrolling)
-            } else if settings.showsNewContentMarkers, automaticMarkerID == nil {
-                automaticMarkerID = line.id
-                outputView.setMarker(itemID: line.id, marked: true)
-                secondaryOutputView?.setMarker(itemID: line.id, marked: true)
+            unreadBoundaryCoordinator.outputDidRemoveFirst(self, count: removedCount)
+            if let automaticMarkerID, removedIDs.contains(automaticMarkerID) {
+                self.automaticMarkerID = nil
+                evictedAutomaticMarkerID = automaticMarkerID
             }
         }
+        // Keep only value-type source data in the pending queue. Attributed
+        // strings, link detection, preview discovery, and Core Text sizing are
+        // intentionally deferred to the frame-budgeted drain.
+        enqueue(
+            .init(
+                line: line,
+                terminator: terminator,
+                lineIndex: history.count - 1,
+                evictionEpoch: pendingEvictionEpoch
+            ),
+            removingFirst: removedCount,
+            removedIDs: removedIDs
+        )
+        if let evictedAutomaticMarkerID {
+            pendingMarkerChanges[evictedAutomaticMarkerID] = false
+        }
+        if settings.scrollsToBottomOnNewText {
+            clearAutomaticMarker()
+        } else if settings.showsNewContentMarkers, automaticMarkerID == nil {
+            automaticMarkerID = line.id
+            queueMarkerChange(itemID: line.id, marked: true)
+        }
         currentMatchIndex = nil
-        NSAccessibility.post(element: outputView, notification: .valueChanged)
+        if settings.scrollsToBottomOnNewText {
+            noteLiveOutputArrived()
+        }
+        schedulePendingOutputFlushIfNeeded()
     }
 
     @discardableResult
@@ -552,6 +646,7 @@ final class OutputTextView: NSObject {
         options: OutputSearchOptions = .init(),
         backwards: Bool = false
     ) throws -> Bool {
+        flushPendingOutput()
         let matches = try history.search(query, options: options).compactMap { match -> (UUID, NSRange)? in
             guard let content = lineContentRanges[match.lineID] else { return nil }
             return (
@@ -582,10 +677,12 @@ final class OutputTextView: NSObject {
     }
 
     func copySelectionAsPlainText() {
+        flushPendingOutput()
         copySelectionAsPlainText(from: outputView)
     }
 
     private func copySelectionAsPlainText(from view: VirtualizedOutputView) {
+        flushPendingOutput()
         guard let selected = view.selectedString(), !selected.isEmpty else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(selected, forType: .string)
@@ -593,6 +690,7 @@ final class OutputTextView: NSObject {
     }
 
     func copySelectionAsHTML() {
+        flushPendingOutput()
         guard let selected = outputView.selectedAttributedString(), selected.length > 0,
               let data = try? selected.data(
                 from: NSRange(location: 0, length: selected.length),
@@ -605,6 +703,7 @@ final class OutputTextView: NSObject {
     }
 
     func copyScreenToClipboard() {
+        flushPendingOutput()
         let text = visibleWindowLines.map(\.text).joined(separator: "\n")
         guard !text.isEmpty else { return }
         NSPasteboard.general.clearContents()
@@ -612,9 +711,13 @@ final class OutputTextView: NSObject {
         showSelectionCopiedPopupIfNeeded()
     }
 
-    func selectAll() { outputView.selectAllContent() }
+    func selectAll() {
+        flushPendingOutput()
+        outputView.selectAllContent()
+    }
 
     func toggleSplit() {
+        flushPendingOutput()
         if let secondaryScrollView {
             NotificationCenter.default.removeObserver(
                 self,
@@ -633,6 +736,7 @@ final class OutputTextView: NSObject {
 
     @discardableResult
     func performPageUp() -> Bool {
+        flushPendingOutput()
         guard settings.splitsOnPageUp else { return false }
         let scrollbackOrigin = scrollView.contentView.bounds.origin
         if !isSplit {
@@ -648,6 +752,7 @@ final class OutputTextView: NSObject {
 
     @discardableResult
     func performPageDown() -> Bool {
+        flushPendingOutput()
         guard settings.splitsOnPageUp else { return false }
         let scrollbackOrigin = scrollView.contentView.bounds.origin
         if !isSplit {
@@ -681,6 +786,7 @@ final class OutputTextView: NSObject {
             guard let view else { return }
             self?.copySelectionAsPlainText(from: view)
         }
+        view.onInteractionWillBegin = { [weak self] in self?.flushPendingOutput() }
         configure(view: view)
         let secondary = Self.makeScrollView(documentView: view, backgroundColor: defaultBackground)
         view.onUserScrollToEnd = { [weak self, weak secondary] in
@@ -696,16 +802,22 @@ final class OutputTextView: NSObject {
         containerView.insertArrangedSubview(secondary, at: 0)
         containerView.setHoldingPriority(.defaultLow, forSubviewAt: 0)
         secondary.heightAnchor.constraint(greaterThanOrEqualToConstant: 80).isActive = true
+        let initialItems = outputView.itemsForCurrentContent()
+        let primaryPreparation = outputView.preparedHeightsForCurrentItems()
         performProgrammaticScroll {
-            view.setItems(currentItems())
+            view.setItems(
+                initialItems,
+                preparedHeights: primaryPreparation.heights,
+                measuredAtWidth: primaryPreparation.width
+            )
             view.setNewContentBoundary(position: newContentBoundaryPosition)
+            if let automaticMarkerID {
+                view.setMarker(itemID: automaticMarkerID, marked: true)
+            }
         }
         performProgrammaticScroll {
             restoreScrollPosition(in: secondary, to: scrollbackOrigin)
             scrollAdjustment?(secondary)
-        }
-        if settings.scrollsToBottomOnNewText {
-            scrollLiveOutputToEnd()
         }
         DispatchQueue.main.async { [weak self] in
             guard let self, self.secondaryOutputView != nil else { return }
@@ -722,14 +834,10 @@ final class OutputTextView: NSObject {
     }
 
     func toggleMarkerForSelectedLine() {
+        flushPendingOutput()
         guard let id = outputView.selectedItemID else { NSSound.beep(); return }
         outputView.toggleMarker(itemID: id)
         secondaryOutputView?.toggleMarker(itemID: id)
-    }
-
-    private var defaultFont: NSFont {
-        NSFont(name: settings.fontName, size: settings.fontSize)
-            ?? NSFont.monospacedSystemFont(ofSize: settings.fontSize, weight: .regular)
     }
 
     private var timestampFormat: String {
@@ -753,17 +861,217 @@ final class OutputTextView: NSObject {
             bottom: CGFloat(settings.marginBottom + 7),
             right: CGFloat(settings.marginRight + 9)
         )
-        let cellWidth = max(1, ("M" as NSString).size(withAttributes: [.font: defaultFont]).width)
         view.fixedContentWidth = settings.usesFixedWidth
             ? CGFloat(settings.fixedWidthCharacters) * cellWidth
             : nil
     }
 
+    private func refreshFontCaches() {
+        defaultFont = NSFont(name: settings.fontName, size: settings.fontSize)
+            ?? NSFont.monospacedSystemFont(ofSize: settings.fontSize, weight: .regular)
+        timestampFont = NSFont(name: settings.fontName, size: max(6, settings.fontSize - 1))
+            ?? NSFont.monospacedSystemFont(ofSize: max(6, settings.fontSize - 1), weight: .regular)
+        cellWidth = max(1, ("M" as NSString).size(withAttributes: [.font: defaultFont]).width)
+        cellHeight = max(1, NSLayoutManager().defaultLineHeight(for: defaultFont))
+    }
+
+    private func enqueue(
+        _ descriptor: PendingOutputDescriptor,
+        removingFirst removedCount: Int,
+        removedIDs: [UUID]
+    ) {
+        // Pending descriptors are always the newest suffix of history. Any
+        // evicted pending IDs therefore form a prefix of this queue; older IDs
+        // belong to the already-rendered prefix and are coalesced into one
+        // prefix removal for the next visual mutation.
+        for removedID in removedIDs.prefix(removedCount) {
+            if pendingOutputHead < pendingOutputDescriptors.count,
+               pendingOutputDescriptors[pendingOutputHead].line.id == removedID {
+                pendingOutputHead += 1
+            } else {
+                pendingPrefixEvictionCount += 1
+            }
+        }
+        pendingEvictionEpoch += removedCount
+        var descriptor = descriptor
+        descriptor.evictionEpoch = pendingEvictionEpoch
+        pendingOutputDescriptors.append(descriptor)
+        compactPendingOutputDescriptorsIfNeeded()
+    }
+
+    private func compactPendingOutputDescriptorsIfNeeded() {
+        guard pendingOutputHead >= 1_024,
+              pendingOutputHead * 2 >= pendingOutputDescriptors.count else { return }
+        pendingOutputDescriptors = Array(pendingOutputDescriptors[pendingOutputHead...])
+        pendingOutputHead = 0
+    }
+
+    private func queueMarkerChange(itemID: UUID, marked: Bool) {
+        if pendingOutputDescriptorCount > 0 {
+            pendingMarkerChanges[itemID] = marked
+        } else {
+            outputView.setMarker(itemID: itemID, marked: marked)
+            secondaryOutputView?.setMarker(itemID: itemID, marked: marked)
+        }
+    }
+
+    private func schedulePendingOutputFlushIfNeeded() {
+        guard pendingOutputDescriptorCount > 0 else { return }
+        guard pendingFlushTask == nil else { return }
+        pendingFlushTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: Self.outputBatchFrameInterval)
+            } catch {
+                return
+            }
+            guard let self, !Task.isCancelled else { return }
+            self.pendingFlushTask = nil
+            self.drainPendingOutputSlice(automatic: true)
+            if self.pendingOutputDescriptorCount > 0 {
+                self.schedulePendingOutputFlushIfNeeded()
+            }
+        }
+    }
+
+    /// Synchronously commits output that has been made visible to history but
+    /// not yet to AppKit. Callers use this as a visual-state barrier before
+    /// selection, copying, prompt replacement, and other structural changes.
+    func flushPendingOutput() {
+        pendingFlushTask?.cancel()
+        pendingFlushTask = nil
+        guard !isDrainingOutputSynchronously else { return }
+        isDrainingOutputSynchronously = true
+        defer { isDrainingOutputSynchronously = false }
+
+        while hasPendingOutputMutation {
+            guard drainPendingOutputSlice(automatic: false) else { break }
+        }
+    }
+
+    private func discardPendingOutput() {
+        pendingFlushTask?.cancel()
+        pendingFlushTask = nil
+        pendingOutputDescriptors.removeAll(keepingCapacity: true)
+        pendingOutputHead = 0
+        pendingPrefixEvictionCount = 0
+        pendingMarkerChanges.removeAll(keepingCapacity: true)
+        pendingBoundaryUpdate = false
+        pendingEvictionEpoch = 0
+    }
+
+    func prepareForTeardown() {
+        discardPendingOutput()
+        tailAnimationTask?.cancel()
+        tailAnimationTask = nil
+        tailQuietTask?.cancel()
+        tailQuietTask = nil
+    }
+
+    private var hasPendingOutputMutation: Bool {
+        pendingOutputDescriptorCount > 0
+            || pendingPrefixEvictionCount > 0
+            || !pendingMarkerChanges.isEmpty
+            || pendingBoundaryUpdate
+    }
+
+    /// Drains one bounded slice. All expensive work for the selected lines is
+    /// prepared before either document view is mutated, allowing the primary
+    /// view's measured heights to be reused by a same-width split view.
+    @discardableResult
+    private func drainPendingOutputSlice(automatic: Bool) -> Bool {
+        guard hasPendingOutputMutation else { return false }
+
+        let start = DispatchTime.now().uptimeNanoseconds
+        let deadline = start + Self.outputBatchTimeBudgetNanoseconds
+        var preparedItems: [VirtualizedOutputView.PreparedItem] = []
+        preparedItems.reserveCapacity(min(Self.outputBatchLineLimit, pendingOutputDescriptorCount))
+        let secondaryNeedsPreparation = secondaryOutputView.map {
+            abs(outputView.effectiveContentWidth - $0.effectiveContentWidth) > 0.5
+        } ?? false
+        var secondaryPreparedItems: [VirtualizedOutputView.PreparedItem] = []
+        if secondaryNeedsPreparation {
+            secondaryPreparedItems.reserveCapacity(min(Self.outputBatchLineLimit, pendingOutputDescriptorCount))
+        }
+
+        while pendingOutputHead < pendingOutputDescriptors.count {
+            let descriptor = pendingOutputDescriptors[pendingOutputHead]
+            pendingOutputHead += 1
+            let lineIndex = max(
+                0,
+                descriptor.lineIndex - (pendingEvictionEpoch - descriptor.evictionEpoch)
+            )
+            let item = makeItem(
+                for: descriptor.line,
+                terminator: descriptor.terminator,
+                lineIndex: lineIndex
+            )
+            preparedItems.append(outputView.prepareItem(item))
+            if secondaryNeedsPreparation, let secondaryOutputView {
+                secondaryPreparedItems.append(secondaryOutputView.prepareItem(item))
+            }
+
+            // The first item is unconditional: a pathological attributed line
+            // must make progress even when it consumes the complete budget.
+            if preparedItems.count >= Self.outputBatchLineLimit
+                || (automatic && DispatchTime.now().uptimeNanoseconds >= deadline) {
+                break
+            }
+        }
+
+        // A marker or logical-boundary update can be pending without a line;
+        // commit that update as its own small mutation.
+        guard !preparedItems.isEmpty || pendingPrefixEvictionCount > 0
+            || !pendingMarkerChanges.isEmpty || pendingBoundaryUpdate else {
+            return false
+        }
+
+        let removingFirst = pendingPrefixEvictionCount
+        let markerChanges = pendingMarkerChanges
+        let boundaryPosition = newContentBoundaryPosition
+        pendingPrefixEvictionCount = 0
+        pendingMarkerChanges.removeAll(keepingCapacity: true)
+        pendingBoundaryUpdate = false
+        compactPendingOutputDescriptorsIfNeeded()
+
+        let committedSecondaryItems = secondaryNeedsPreparation ? secondaryPreparedItems : preparedItems
+
+        performProgrammaticScroll {
+            outputView.applyPreparedBatch(
+                removingFirst: removingFirst,
+                appending: preparedItems,
+                boundaryPosition: boundaryPosition,
+                // Reapply the logical position on every slice. While rendering
+                // trails history, a boundary may be beyond the current item
+                // count and must move forward as later slices arrive.
+                boundaryPositionIsAuthoritative: true,
+                markerChanges: markerChanges,
+                postsAccessibilityNotification: true
+            )
+            secondaryOutputView?.applyPreparedBatch(
+                removingFirst: removingFirst,
+                appending: committedSecondaryItems,
+                boundaryPosition: boundaryPosition,
+                boundaryPositionIsAuthoritative: true,
+                markerChanges: markerChanges,
+                postsAccessibilityNotification: false
+            )
+            if !preparedItems.isEmpty, settings.scrollsToBottomOnNewText {
+                followLiveOutput(hasQueuedOutput: pendingOutputDescriptorCount > 0)
+            }
+        }
+
+        outputSliceCountForTesting += 1
+        maximumOutputLinesPerSliceForTesting = max(
+            maximumOutputLinesPerSliceForTesting,
+            preparedItems.count
+        )
+        return true
+    }
+
     private func clearAutomaticMarker() {
         guard let id = automaticMarkerID else { return }
-        outputView.setMarker(itemID: id, marked: false)
-        secondaryOutputView?.setMarker(itemID: id, marked: false)
         automaticMarkerID = nil
+        queueMarkerChange(itemID: id, marked: false)
     }
 
     func setWindowFocused(_ focused: Bool) {
@@ -776,10 +1084,82 @@ final class OutputTextView: NSObject {
     }
 
     private func clearNewContentBoundaryIfAtBottom(in scrollView: NSScrollView?) {
-        guard !isPerformingProgrammaticScroll,
+        guard !isPerformingProgrammaticScroll else { return }
+        flushPendingOutput()
+        guard
               let scrollView,
               isAtBottom(scrollView) else { return }
         unreadBoundaryCoordinator.userDidScrollToEnd(from: self)
+    }
+
+    private func noteLiveOutputArrived() {
+        tailQuietGeneration += 1
+        tailQuietTask?.cancel()
+        tailQuietTask = nil
+    }
+
+    private func followLiveOutput(hasQueuedOutput: Bool) {
+        let shouldCatchUp = settings.smoothScrolling
+            && (hasQueuedOutput || tailAnimationInFlight || tailCatchUpMode)
+
+        if shouldCatchUp {
+            tailAnimationTask?.cancel()
+            tailAnimationTask = nil
+            tailAnimationInFlight = false
+            catchUpScrollCountForTesting += 1
+            scrollLiveOutputToEnd(animated: false)
+            enterTailCatchUpMode()
+            return
+        }
+
+        scrollLiveOutputToEnd(animated: settings.smoothScrolling)
+        guard settings.smoothScrolling else { return }
+
+        tailAnimationInFlight = true
+        tailAnimationGeneration += 1
+        let generation = tailAnimationGeneration
+        tailAnimationTask?.cancel()
+        tailAnimationTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: Self.smoothScrollInterval)
+            } catch {
+                return
+            }
+            guard let self,
+                  self.tailAnimationGeneration == generation else { return }
+            self.tailAnimationTask = nil
+            self.tailAnimationInFlight = false
+        }
+    }
+
+    private func enterTailCatchUpMode() {
+        tailCatchUpMode = true
+        tailQuietGeneration += 1
+        let generation = tailQuietGeneration
+        tailQuietTask?.cancel()
+        tailQuietTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: Self.smoothScrollInterval)
+            } catch {
+                return
+            }
+            guard let self,
+                  self.tailQuietGeneration == generation,
+                  self.pendingOutputDescriptorCount == 0 else { return }
+            self.tailQuietTask = nil
+            self.tailCatchUpMode = false
+        }
+    }
+
+    private func resetTailScrollTracking() {
+        tailAnimationGeneration += 1
+        tailQuietGeneration += 1
+        tailAnimationTask?.cancel()
+        tailAnimationTask = nil
+        tailQuietTask?.cancel()
+        tailQuietTask = nil
+        tailAnimationInFlight = false
+        tailCatchUpMode = false
     }
 
     private func scrollLiveOutputToEnd(animated: Bool = false) {
@@ -824,7 +1204,9 @@ final class OutputTextView: NSObject {
         from previousY: CGFloat,
         to currentY: CGFloat
     ) {
-        guard !isPerformingProgrammaticScroll,
+        guard !isPerformingProgrammaticScroll else { return }
+        flushPendingOutput()
+        guard
               currentY > previousY,
               isAtBottom(scrollView) else { return }
         unreadBoundaryCoordinator.userDidScrollToEnd(from: self)
@@ -889,21 +1271,36 @@ final class OutputTextView: NSObject {
         preservingScrollPosition: Bool = false,
         previousLines: [RenderedLine]? = nil
     ) {
+        flushPendingOutput()
         rebuildGeneration += 1
         let oldOrigin = scrollView.contentView.bounds.origin
         let oldSecondaryOrigin = secondaryScrollView?.contentView.bounds.origin
         lineContentRanges.removeAll(keepingCapacity: true)
         let lines = history.lines
+        if let unterminatedLineID, !lines.contains(where: { $0.id == unterminatedLineID }) {
+            self.unterminatedLineID = nil
+        }
         let items = lines.enumerated().map { index, line in
             makeItem(
                 for: line,
-                terminator: index == lines.count - 1 ? finalTerminator : "\n",
+                terminator: line.id == unterminatedLineID
+                    ? ""
+                    : (index == lines.count - 1 ? finalTerminator : "\n"),
                 lineIndex: index
             )
         }
+        let primaryPreparation = outputView.prepareItems(items)
         performProgrammaticScroll {
-            outputView.setItems(items)
-            secondaryOutputView?.setItems(items)
+            outputView.setItems(
+                items,
+                preparedHeights: primaryPreparation.map(\.height),
+                measuredAtWidth: outputView.effectiveContentWidth
+            )
+            secondaryOutputView?.setItems(
+                items,
+                preparedHeights: primaryPreparation.map(\.height),
+                measuredAtWidth: outputView.effectiveContentWidth
+            )
         }
         if scrollToEnd {
             scrollLiveOutputToEnd()
@@ -965,7 +1362,7 @@ final class OutputTextView: NSObject {
     ) -> VirtualizedOutputView.Item {
         let timestamp = showsTimestamps ? "[\(timestampFormatter.string(from: line.timestamp))] " : ""
         let toolTip: String? = settings.showsDateTimeToolTip
-            ? DateFormatter.localizedString(from: line.timestamp, dateStyle: .medium, timeStyle: .medium)
+            ? tooltipDateFormatter.string(from: line.timestamp)
             : nil
         let value = NSMutableAttributedString(string: timestamp + line.text + terminator, attributes: [
             .font: defaultFont,
@@ -977,8 +1374,7 @@ final class OutputTextView: NSObject {
         if !timestamp.isEmpty {
             value.addAttributes([
                 .foregroundColor: NSColor.secondaryLabelColor,
-                .font: NSFont(name: settings.fontName, size: max(6, settings.fontSize - 1))
-                    ?? NSFont.monospacedSystemFont(ofSize: max(6, settings.fontSize - 1), weight: .regular),
+                .font: timestampFont,
             ], range: NSRange(location: 0, length: timestamp.utf16.count))
         }
         let textOffset = timestamp.utf16.count
@@ -1107,24 +1503,26 @@ final class OutputTextView: NSObject {
             order += 1
         }
 
-        let source = line.text as NSString
-        let sourceRange = NSRange(location: 0, length: source.length)
-        for match in webURLDetector.matches(in: line.text, options: [], range: sourceRange) {
-            guard match.resultType == .link,
-                  match.range.location >= 0,
-                  match.range.length > 0,
-                  NSMaxRange(match.range) <= source.length else { continue }
-            let raw = source.substring(with: match.range)
-            let candidateText = Self.trimmedImageURLText(raw)
-            guard let url = URL(string: candidateText),
-                  Self.isHTTPURL(url),
-                  Self.imageExtensions.contains(url.pathExtension.lowercased()) else { continue }
-            candidates.append(.init(
-                preview: .init(source: url, altText: "Image"),
-                location: match.range.location,
-                order: order
-            ))
-            order += 1
+        if Self.containsHTTPURLScheme(in: line.text) {
+            let source = line.text as NSString
+            let sourceRange = NSRange(location: 0, length: source.length)
+            for match in webURLDetector.matches(in: line.text, options: [], range: sourceRange) {
+                guard match.resultType == .link,
+                      match.range.location >= 0,
+                      match.range.length > 0,
+                      NSMaxRange(match.range) <= source.length else { continue }
+                let raw = source.substring(with: match.range)
+                let candidateText = Self.trimmedImageURLText(raw)
+                guard let url = URL(string: candidateText),
+                      Self.isHTTPURL(url),
+                      Self.imageExtensions.contains(url.pathExtension.lowercased()) else { continue }
+                candidates.append(.init(
+                    preview: .init(source: url, altText: "Image"),
+                    location: match.range.location,
+                    order: order
+                ))
+                order += 1
+            }
         }
 
         var seen = Set<String>()
@@ -1145,6 +1543,11 @@ final class OutputTextView: NSObject {
         return scheme == "http" || scheme == "https"
     }
 
+    private static func containsHTTPURLScheme(in text: String) -> Bool {
+        text.range(of: "http://", options: .caseInsensitive) != nil
+            || text.range(of: "https://", options: .caseInsensitive) != nil
+    }
+
     private static func trimmedImageURLText(_ value: String) -> String {
         var result = value
         while let last = result.last, ".,!?;:)]}".contains(last) {
@@ -1159,7 +1562,7 @@ final class OutputTextView: NSObject {
         textOffset: Int,
         excluding explicitLinkRanges: [NSRange]
     ) {
-        guard !lineText.isEmpty else { return }
+        guard !lineText.isEmpty, Self.containsHTTPURLScheme(in: lineText) else { return }
         let source = lineText as NSString
         let sourceRange = NSRange(location: 0, length: source.length)
         let linkColor = NSColor(hexString: settings.webLinkHex) ?? .linkColor
@@ -1217,12 +1620,6 @@ final class OutputTextView: NSObject {
             }
         }
         return remaining
-    }
-
-    private func currentItems() -> [VirtualizedOutputView.Item] {
-        history.lines.enumerated().map { index, line in
-            makeItem(for: line, terminator: "\n", lineIndex: index)
-        }
     }
 
     private func notifyPauseChange() { onPauseChange?(history.isPaused, history.pendingLines.count) }
