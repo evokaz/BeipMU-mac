@@ -247,6 +247,103 @@ final class TextWindowSettingsTests: XCTestCase {
     }
 
     @MainActor
+    func testCommandInputTraversesHistoryAndClampsAtOldestEntry() throws {
+        let input = CommandInputView()
+        input.addToHistory("oldest")
+        input.addToHistory("newest")
+        input.text = "unfinished draft"
+        input.setSelectedRange(NSRange(location: 5, length: 0))
+        let up = try XCTUnwrap(WorkspaceUITestSupport.pageKeyEvent(keyCode: 126))
+        let down = try XCTUnwrap(WorkspaceUITestSupport.pageKeyEvent(keyCode: 125))
+
+        input.keyDown(with: up)
+        XCTAssertEqual(input.text, "newest", "A single visual line navigates history at any caret column")
+        input.keyDown(with: up)
+        XCTAssertEqual(input.text, "oldest")
+        input.keyDown(with: up)
+        XCTAssertEqual(input.text, "oldest", "History navigation clamps instead of wrapping")
+
+        input.keyDown(with: down)
+        XCTAssertEqual(input.text, "newest")
+        input.keyDown(with: down)
+        XCTAssertEqual(input.text, "unfinished draft")
+    }
+
+    @MainActor
+    func testCommandInputNavigatesHistoryOnlyAtMultilineVisualEdges() throws {
+        let input = CommandInputView()
+        input.addToHistory("oldest")
+        input.addToHistory("first line\nsecond line")
+        input.text = "draft first\ndraft second"
+        let up = try XCTUnwrap(WorkspaceUITestSupport.pageKeyEvent(keyCode: 126))
+        let down = try XCTUnwrap(WorkspaceUITestSupport.pageKeyEvent(keyCode: 125))
+
+        input.setSelectedRange(NSRange(location: 14, length: 0))
+        input.keyDown(with: up)
+        XCTAssertEqual(input.text, "draft first\ndraft second")
+
+        input.setSelectedRange(NSRange(location: 0, length: 0))
+        input.keyDown(with: up)
+        XCTAssertEqual(input.text, "first line\nsecond line")
+
+        input.setSelectedRange(NSRange(location: 12, length: 0))
+        input.keyDown(with: up)
+        XCTAssertEqual(input.text, "first line\nsecond line")
+        input.setSelectedRange(NSRange(location: 0, length: 0))
+        input.keyDown(with: up)
+        XCTAssertEqual(input.text, "oldest", "Normal vertical movement preserves the active history cursor")
+
+        input.keyDown(with: down)
+        XCTAssertEqual(input.text, "first line\nsecond line")
+        input.setSelectedRange(NSRange(location: 0, length: 0))
+        input.keyDown(with: down)
+        XCTAssertEqual(input.text, "first line\nsecond line")
+        input.setSelectedRange(NSRange(location: input.string.utf16.count, length: 0))
+        input.keyDown(with: down)
+        XCTAssertEqual(input.text, "draft first\ndraft second")
+    }
+
+    @MainActor
+    func testCommandInputUsesSoftWrappedLinesForHistoryBoundaries() throws {
+        let input = CommandInputView()
+        input.setFrameSize(NSSize(width: 90, height: 80))
+        input.addToHistory("oldest")
+        let wrapped = String(repeating: "wrapped words ", count: 12)
+        input.addToHistory(wrapped)
+        input.text = "draft"
+        let up = try XCTUnwrap(WorkspaceUITestSupport.pageKeyEvent(keyCode: 126))
+
+        input.keyDown(with: up)
+        XCTAssertEqual(input.text, wrapped)
+        input.setSelectedRange(NSRange(location: wrapped.utf16.count, length: 0))
+        input.keyDown(with: up)
+        XCTAssertEqual(input.text, wrapped, "Up moves normally below the first soft-wrapped line")
+        input.setSelectedRange(NSRange(location: 0, length: 0))
+        input.keyDown(with: up)
+        XCTAssertEqual(input.text, "oldest")
+    }
+
+    @MainActor
+    func testCommandInputSelectionIsNotHistoryNavigationAndEditingResetsHistory() throws {
+        let input = CommandInputView()
+        input.addToHistory("oldest")
+        input.addToHistory("newest")
+        input.text = "draft"
+        let up = try XCTUnwrap(WorkspaceUITestSupport.pageKeyEvent(keyCode: 126))
+
+        input.keyDown(with: up)
+        XCTAssertEqual(input.text, "newest")
+        input.setSelectedRange(NSRange(location: 0, length: 2))
+        input.keyDown(with: up)
+        XCTAssertEqual(input.text, "newest")
+
+        input.insertText("edited ", replacementRange: NSRange(location: 0, length: 0))
+        input.setSelectedRange(NSRange(location: 0, length: 0))
+        input.keyDown(with: up)
+        XCTAssertEqual(input.text, "newest", "Editing starts a fresh history traversal")
+    }
+
+    @MainActor
     func testCommandInputAppliesInputWindowAppearanceMarginsAndAutoHeight() {
         let input = CommandInputView()
         var preferredHeight: CGFloat?

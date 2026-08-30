@@ -19,6 +19,7 @@ final class CommandInputView: NSTextView {
     var behavior = InputBehavior()
     var completionCandidates: [String] = []
     private var commandHistory = InputHistory()
+    private var preservesHistoryNavigationDuringTextChange = false
     private var settings = InputWindowSettings()
     private var themePalette = WorkspaceThemeSettings().palette
 
@@ -58,6 +59,7 @@ final class CommandInputView: NSTextView {
     var text: String {
         get { string }
         set {
+            commandHistory.resetNavigation()
             string = newValue
             setSelectedRange(NSRange(location: newValue.utf16.count, length: 0))
             onTextChange?(newValue)
@@ -108,10 +110,30 @@ final class CommandInputView: NSTextView {
         case 36 where !modifiers.contains(.shift) && !modifiers.contains(.option),
              76 where !modifiers.contains(.shift) && !modifiers.contains(.option):
             submit()
-        case 126 where shouldNavigateBackward:
-            if let previous = commandHistory.previous(currentText: string) { text = previous }
-        case 125 where shouldNavigateForward:
-            if let next = commandHistory.next() { text = next }
+        case 126:
+            if modifiers.isDisjoint(with: [.shift, .control, .command, .option]),
+               shouldNavigateBackward,
+               let previous = commandHistory.previous(currentText: string) {
+                replaceTextFromHistory(previous)
+            } else {
+                // Moving within a recalled multiline entry must not discard the
+                // history cursor. It will be used when the caret reaches an edge.
+                if !modifiers.isDisjoint(with: [.shift, .control, .command, .option]) {
+                    commandHistory.resetNavigation()
+                }
+                super.keyDown(with: event)
+            }
+        case 125:
+            if modifiers.isDisjoint(with: [.shift, .control, .command, .option]),
+               shouldNavigateForward,
+               let next = commandHistory.next() {
+                replaceTextFromHistory(next)
+            } else {
+                if !modifiers.isDisjoint(with: [.shift, .control, .command, .option]) {
+                    commandHistory.resetNavigation()
+                }
+                super.keyDown(with: event)
+            }
         case 48 where modifiers.isDisjoint(with: [.control, .command, .option]):
             completeCurrentWord()
         case 116 where modifiers.isDisjoint(with: [.control, .command, .option]) && onPageUp?() == true:
@@ -205,8 +227,19 @@ final class CommandInputView: NSTextView {
 
     override func didChangeText() {
         super.didChangeText()
+        if !preservesHistoryNavigationDuringTextChange {
+            commandHistory.resetNavigation()
+        }
         onTextChange?(string)
         notifyPreferredHeight()
+    }
+
+    private func replaceTextFromHistory(_ value: String) {
+        preservesHistoryNavigationDuringTextChange = true
+        string = value
+        setSelectedRange(NSRange(location: (value as NSString).length, length: 0))
+        preservesHistoryNavigationDuringTextChange = false
+        onTextChange?(value)
     }
 
     private func notifyPreferredHeight() {
@@ -223,12 +256,56 @@ final class CommandInputView: NSTextView {
 
     private var shouldNavigateBackward: Bool {
         let selection = selectedRange()
-        return !string.contains("\n") && selection.length == 0 && selection.location == 0
+        return selection.length == 0 && isCaretOnVisualLine(.first, at: selection.location)
     }
 
     private var shouldNavigateForward: Bool {
         let selection = selectedRange()
-        return !string.contains("\n") && selection.length == 0 && selection.location == string.utf16.count
+        return selection.length == 0 && isCaretOnVisualLine(.last, at: selection.location)
+    }
+
+    private enum VisualLineBoundary {
+        case first
+        case last
+    }
+
+    /// Returns whether an insertion point is on the first or last rendered line.
+    /// Line-fragment ranges account for both explicit newlines and soft wrapping.
+    private func isCaretOnVisualLine(_ boundary: VisualLineBoundary, at location: Int) -> Bool {
+        guard let layoutManager, let textContainer else { return false }
+        layoutManager.ensureLayout(for: textContainer)
+
+        let glyphCount = layoutManager.numberOfGlyphs
+        guard glyphCount > 0 else { return true }
+
+        var firstGlyphRange = NSRange()
+        layoutManager.lineFragmentRect(forGlyphAt: 0, effectiveRange: &firstGlyphRange)
+
+        var lastGlyphRange = NSRange()
+        layoutManager.lineFragmentRect(forGlyphAt: glyphCount - 1, effectiveRange: &lastGlyphRange)
+
+        let hasTrailingEmptyLine = layoutManager.extraLineFragmentTextContainer != nil
+        let hasSingleVisualLine = NSEqualRanges(firstGlyphRange, lastGlyphRange) && !hasTrailingEmptyLine
+        if hasSingleVisualLine { return true }
+
+        switch boundary {
+        case .first:
+            let characterRange = layoutManager.characterRange(
+                forGlyphRange: firstGlyphRange,
+                actualGlyphRange: nil
+            )
+            // The end of a wrapped fragment is the start of the next visual line.
+            return location < NSMaxRange(characterRange)
+        case .last:
+            if hasTrailingEmptyLine {
+                return location == (string as NSString).length
+            }
+            let characterRange = layoutManager.characterRange(
+                forGlyphRange: lastGlyphRange,
+                actualGlyphRange: nil
+            )
+            return location >= characterRange.location
+        }
     }
 
     private func submit() {
