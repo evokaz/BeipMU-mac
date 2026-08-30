@@ -1,5 +1,6 @@
 import AppKit
 import BeipCore
+import BeipPersistence
 @testable import BeipUI
 import XCTest
 
@@ -49,6 +50,38 @@ final class OutputRenderingScaleTests: XCTestCase {
 
         XCTAssertNil(releasedOutput)
         XCTAssertNil(releasedContainer)
+    }
+
+    func testGroupedBackgroundTabBurstRendersInOrderAndReachesBottom() throws {
+        let library = ProfileLibrary(workspace: try .empty(isDirty: false))
+        let selected = ClientWindowController(profileLibrary: library)
+        let background = ClientWindowController(profileLibrary: library)
+        defer {
+            selected.close()
+            background.close()
+        }
+        let group = ClientTabGroup(selected)
+        group.add(background)
+        group.select(selected, sender: nil)
+        background.clearOutput()
+        let output = background.outputForTesting
+        let selectedRebuilds = selected.sessionTabRebuildCountForTesting
+
+        for index in 0..<2_000 {
+            output.append(.init(text: "Grouped burst \(index)"))
+            background.markActivityForTesting()
+        }
+        background.presentPendingActivityForTesting()
+        output.flushPendingOutput()
+
+        XCTAssertEqual(
+            output.retainedLines.map(\.text),
+            (0..<2_000).map { "Grouped burst \($0)" }
+        )
+        XCTAssertEqual(background.unreadCountForTesting, 2_000)
+        XCTAssertEqual(background.activityPresentationCountForTesting, 1)
+        XCTAssertEqual(selected.sessionTabRebuildCountForTesting, selectedRebuilds + 1)
+        XCTAssertTrue(isAtBottom(output.primaryScrollViewForTesting))
     }
 
     private func isAtBottom(_ scrollView: NSScrollView) -> Bool {

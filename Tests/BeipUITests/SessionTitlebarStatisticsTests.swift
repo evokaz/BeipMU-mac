@@ -571,7 +571,7 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
     }
 
     @MainActor
-    func testInactiveConnectionStateRefreshesEveryCopyOfGroupedTabs() async throws {
+    func testInactiveConnectionStateRefreshesOnlyVisibleStripUntilSelection() async throws {
         let library = ProfileLibrary(workspace: try .empty(isDirty: false))
         let first = ClientWindowController(profileLibrary: library, initialPreferences: .init())
         let second = ClientWindowController(profileLibrary: library, initialPreferences: .init())
@@ -592,15 +592,23 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
         let group = ClientTabGroup(first)
         group.add(second)
         group.select(first, sender: nil)
+        let firstRebuilds = first.sessionTabRebuildCountForTesting
+        let secondRebuilds = second.sessionTabRebuildCountForTesting
 
         await second.applyConnectionStateForTesting(.failed("No route"))
 
         XCTAssertEqual(first.sessionTabIndicatorsForTesting, ["", "⚡️"])
-        XCTAssertEqual(second.sessionTabIndicatorsForTesting, ["", "⚡️"])
+        XCTAssertEqual(second.sessionTabIndicatorsForTesting, ["", ""])
+        XCTAssertEqual(first.sessionTabRebuildCountForTesting, firstRebuilds + 1)
+        XCTAssertEqual(second.sessionTabRebuildCountForTesting, secondRebuilds)
         XCTAssertEqual(
             first.sessionTabAccessibilityLabelsForTesting,
             ["First tab", "Second tab, disconnected"]
         )
+
+        group.select(second, sender: nil)
+
+        XCTAssertEqual(second.sessionTabIndicatorsForTesting, ["", "⚡️"])
         XCTAssertEqual(
             second.sessionTabAccessibilityLabelsForTesting,
             ["First tab", "Second tab, disconnected"]
@@ -645,10 +653,6 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
 
         XCTAssertEqual(first.window?.title, "New Character @ Old World")
         XCTAssertEqual(
-            first.sessionTabAccessibilityLabelsForTesting,
-            ["New Character @ Old World tab, disconnected", "Other World tab, disconnected"]
-        )
-        XCTAssertEqual(
             second.sessionTabAccessibilityLabelsForTesting,
             ["New Character @ Old World tab, disconnected", "Other World tab, disconnected"]
         )
@@ -659,11 +663,14 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
 
         XCTAssertEqual(first.window?.title, "New Character @ New World")
         XCTAssertEqual(
-            first.sessionTabAccessibilityLabelsForTesting,
+            second.sessionTabAccessibilityLabelsForTesting,
             ["New Character @ New World tab, disconnected", "Other World tab, disconnected"]
         )
+
+        group.select(first, sender: nil)
+
         XCTAssertEqual(
-            second.sessionTabAccessibilityLabelsForTesting,
+            first.sessionTabAccessibilityLabelsForTesting,
             ["New Character @ New World tab, disconnected", "Other World tab, disconnected"]
         )
         XCTAssertEqual(
@@ -675,6 +682,73 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
         XCTAssertEqual(finalTabs[0].characterName, "New Character")
         XCTAssertEqual(finalTabs[1].serverName, "Other World")
         XCTAssertNil(finalTabs[1].characterName)
+    }
+
+    @MainActor
+    func testGroupedActivityBurstKeepsUnreadExactAndStripRebuildsBounded() throws {
+        let library = ProfileLibrary(workspace: try .empty(isDirty: false))
+        let first = ClientWindowController(profileLibrary: library)
+        let second = ClientWindowController(profileLibrary: library)
+        let third = ClientWindowController(profileLibrary: library)
+        defer {
+            first.close()
+            second.close()
+            third.close()
+        }
+        first.restoreOpenTab(server: .init(name: "First", host: "first.invalid", port: 1), character: nil)
+        second.restoreOpenTab(server: .init(name: "Second", host: "second.invalid", port: 2), character: nil)
+        third.restoreOpenTab(server: .init(name: "Third", host: "third.invalid", port: 3), character: nil)
+        let group = ClientTabGroup(first)
+        group.add(second)
+        group.add(third)
+        group.select(first, sender: nil)
+        let rebuilds = group.controllers.map(\.sessionTabRebuildCountForTesting)
+
+        for index in 0..<120 {
+            second.markActivityForTesting(important: index == 119)
+            third.markActivityForTesting()
+        }
+
+        XCTAssertEqual(second.unreadCountForTesting, 120)
+        XCTAssertEqual(third.unreadCountForTesting, 120)
+        XCTAssertTrue(second.hasPendingActivityPresentationForTesting)
+        XCTAssertTrue(third.hasPendingActivityPresentationForTesting)
+        XCTAssertEqual(second.activityPresentationCountForTesting, 0)
+        XCTAssertEqual(third.activityPresentationCountForTesting, 0)
+
+        second.presentPendingActivityForTesting()
+        third.presentPendingActivityForTesting()
+
+        XCTAssertEqual(second.activityLabelForTesting, "Important — 120 unread")
+        XCTAssertEqual(third.activityLabelForTesting, "120 unread")
+        XCTAssertEqual(second.activityPresentationCountForTesting, 1)
+        XCTAssertEqual(third.activityPresentationCountForTesting, 1)
+        XCTAssertEqual(first.sessionTabRebuildCountForTesting, rebuilds[0] + 2)
+        XCTAssertEqual(second.sessionTabRebuildCountForTesting, rebuilds[1])
+        XCTAssertEqual(third.sessionTabRebuildCountForTesting, rebuilds[2])
+        XCTAssertEqual(first.sessionTabTooltipsForTesting, ["First", "● Second", "● Third"])
+        XCTAssertEqual(first.sessionTabIndicatorsForTesting, ["⚡️", "⚡️", "⚡️"])
+    }
+
+    @MainActor
+    func testBecomingKeyCancelsPendingActivityWithoutStalePresentation() throws {
+        let controller = ClientWindowController(
+            profileLibrary: ProfileLibrary(workspace: try .empty(isDirty: false))
+        )
+        defer { controller.close() }
+        let window = try XCTUnwrap(controller.window)
+
+        controller.markActivityForTesting(important: true)
+        XCTAssertEqual(controller.unreadCountForTesting, 1)
+        XCTAssertTrue(controller.hasPendingActivityPresentationForTesting)
+
+        controller.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: window))
+
+        XCTAssertEqual(controller.unreadCountForTesting, 0)
+        XCTAssertEqual(controller.activityLabelForTesting, "")
+        XCTAssertFalse(controller.hasPendingActivityPresentationForTesting)
+        XCTAssertEqual(controller.activityPresentationCountForTesting, 0)
+        XCTAssertFalse(controller.window?.title.hasPrefix("● ") ?? true)
     }
 
     @MainActor

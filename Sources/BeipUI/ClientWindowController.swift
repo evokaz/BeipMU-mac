@@ -638,6 +638,7 @@ final class ClientTabGroup {
         let sourceFrame = controller.window?.frame
         entries.remove(at: index)
         controller.sessionTabGroup = nil
+        controller.rebuildSessionTabs()
 
         let remaining = controllers
         guard !remaining.isEmpty else {
@@ -750,6 +751,10 @@ final class ClientTabGroup {
 
     func refreshTabs() {
         controllers.forEach { $0.rebuildSessionTabs() }
+    }
+
+    func refreshSelectedTabs() {
+        selectedController?.rebuildSessionTabs()
     }
 }
 
@@ -868,6 +873,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private var spawnCapture: SpawnCapture?
     private var statisticsTask: Task<Void, Never>?
     private var titlebarStatisticsTask: Task<Void, Never>?
+    private var activityPresentationTask: Task<Void, Never>?
+    private var pendingActivityImportant = false
     private var lastTypedAt = Date()
     private var isSessionConnected = false
     private var localEcho = true
@@ -876,6 +883,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private var tileMapsEnabled = true
     private var hasPendingPrompt = false
     private var unreadCount = 0
+    private(set) var activityPresentationCountForTesting = 0
+    private(set) var sessionTabRebuildCountForTesting = 0
     private var lastFindQuery = ""
     private var sessionTabColor: NSColor?
     let tabDragIdentifier = UUID()
@@ -1115,6 +1124,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
 
     override func showWindow(_ sender: Any?) {
         super.showWindow(sender)
+        refreshTitlebarStatistics()
         // Restored tabs can be laid out while hidden. Reapply the saved input
         // height after AppKit has completed the visible layout.
         DispatchQueue.main.async { [weak self] in
@@ -1162,6 +1172,9 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         editWindows.forEach { $0.close() }
         statisticsTask?.cancel()
         titlebarStatisticsTask?.cancel()
+        cancelActivityPresentation()
+        unreadCount = 0
+        Self.updateDockBadge()
         statisticsWindow?.close()
         loggingWindow?.close()
         triggerStatisticsWindows.values.forEach { $0.close() }
@@ -1385,11 +1398,13 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         if let window = notification.object as? NSWindow {
             Self.configureUnrestrictedSizing(for: window)
         }
+        cancelActivityPresentation()
         unreadCount = 0
         activityLabel.stringValue = ""
-        updateWindowTitle()
-        sessionTabGroup?.markSelected(self)
-        rebuildSessionTabs()
+        window?.title = sessionTabTitle
+        if let sessionTabGroup { sessionTabGroup.markSelected(self) }
+        else { rebuildSessionTabs() }
+        refreshTitlebarStatistics()
         Self.updateDockBadge()
         Task { [weak self, scriptService] in
             guard let self else { return }
@@ -1675,6 +1690,18 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     var sessionTabTooltipsForTesting: [String?] { sessionTabs.tabTooltips }
     var sessionTabIndicatorsForTesting: [String] { sessionTabs.tabIndicators }
     var sessionTabAccessibilityLabelsForTesting: [String?] { sessionTabs.tabAccessibilityLabels }
+    var unreadCountForTesting: Int { unreadCount }
+    var activityLabelForTesting: String { activityLabel.stringValue }
+    var hasPendingActivityPresentationForTesting: Bool { activityPresentationTask != nil }
+    func markActivityForTesting(important: Bool = false) {
+        markActivity(important: important)
+    }
+    func presentPendingActivityForTesting() {
+        guard activityPresentationTask != nil else { return }
+        activityPresentationTask?.cancel()
+        activityPresentationTask = nil
+        presentActivityState()
+    }
     var currentCharacterForTesting: CharacterProfile? { currentCharacter }
     var sessionTabContentWidthForTesting: CGFloat { sessionTabs.frame.width }
     var sessionBarFrameForTesting: NSRect { taskbarView?.frame ?? .zero }
@@ -3148,12 +3175,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         case let .activity(important):
             guard !suppressSessionData else { return }
             if suppressNextSessionActivity { suppressNextSessionActivity = false; break }
-            guard window?.isKeyWindow != true else { break }
-            unreadCount += 1
-            activityLabel.stringValue = important ? "Important — \(unreadCount) unread" : "\(unreadCount) unread"
-            updateWindowTitle()
-            if important { NSApplication.shared.requestUserAttention(.informationalRequest) }
-            Self.updateDockBadge()
+            markActivity(important: important)
         case let .received(data):
             networkDebugWindow?.append(data, received: true)
             let result = await scriptService.dispatchConnectionEvent(
@@ -4149,10 +4171,34 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private func markActivity(important: Bool) {
         guard window?.isKeyWindow != true else { return }
         unreadCount += 1
-        activityLabel.stringValue = important ? "Important — \(unreadCount) unread" : "\(unreadCount) unread"
-        updateWindowTitle()
+        pendingActivityImportant = important
         if important { NSApplication.shared.requestUserAttention(.informationalRequest) }
+        scheduleActivityPresentation()
+    }
+
+    private func scheduleActivityPresentation() {
+        guard activityPresentationTask == nil else { return }
+        activityPresentationTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(16))
+            guard !Task.isCancelled, let self else { return }
+            activityPresentationTask = nil
+            presentActivityState()
+        }
+    }
+
+    private func presentActivityState() {
+        activityPresentationCountForTesting &+= 1
+        activityLabel.stringValue = pendingActivityImportant
+            ? "Important — \(unreadCount) unread"
+            : "\(unreadCount) unread"
+        updateWindowTitle()
         Self.updateDockBadge()
+    }
+
+    private func cancelActivityPresentation() {
+        activityPresentationTask?.cancel()
+        activityPresentationTask = nil
+        pendingActivityImportant = false
     }
 
     private func deliverNotification(_ text: String) {
@@ -4510,13 +4556,14 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     func rebuildSessionTabs() {
+        sessionTabRebuildCountForTesting &+= 1
         let controllers = sessionTabGroup?.controllers ?? [self]
         let selectedController = sessionTabGroup?.selectedController ?? self
         sessionTabs.setTabs(controllers, selectedController: selectedController)
     }
 
     private func refreshSessionTabsAcrossGroup() {
-        if let sessionTabGroup { sessionTabGroup.refreshTabs() }
+        if let sessionTabGroup { sessionTabGroup.refreshSelectedTabs() }
         else { rebuildSessionTabs() }
     }
 
@@ -4577,20 +4624,20 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
 
     private func updateWindowTitle() {
         window?.title = sessionTabTitle
-        if let sessionTabGroup { sessionTabGroup.refreshTabs() }
+        if let sessionTabGroup { sessionTabGroup.refreshSelectedTabs() }
         else { rebuildSessionTabs() }
     }
 
     private func setTabColor(_ value: String?) {
         guard let value, let color = NSColor(htmlColor: value) else {
             sessionTabColor = nil
-            if let sessionTabGroup { sessionTabGroup.refreshTabs() }
+            if let sessionTabGroup { sessionTabGroup.refreshSelectedTabs() }
             else { rebuildSessionTabs() }
             appendClient("Tab color reset.")
             return
         }
         sessionTabColor = color
-        if let sessionTabGroup { sessionTabGroup.refreshTabs() }
+        if let sessionTabGroup { sessionTabGroup.refreshSelectedTabs() }
         else { rebuildSessionTabs() }
         appendClient("Tab color set to \(value).")
     }
@@ -5053,7 +5100,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         }
     }
 
-    private func refreshTitlebarStatistics() {
+    fileprivate func refreshTitlebarStatistics() {
+        guard shouldRefreshTitlebarStatistics else { return }
         let typedCount = UInt64(input.string.count)
         let idleSeconds = isSessionConnected ? Date().timeIntervalSince(lastTypedAt) : 0
         guard let session else {
@@ -5066,13 +5114,18 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         }
         Task { [weak self] in
             let statistics = await session.statistics()
-            guard let self else { return }
+            guard let self, shouldRefreshTitlebarStatistics else { return }
             titlebarStatistics.update(
                 typedCount: typedCount,
                 onlineSeconds: statistics.secondsConnected,
                 idleSeconds: idleSeconds
             )
         }
+    }
+
+    private var shouldRefreshTitlebarStatistics: Bool {
+        guard window?.isVisible == true else { return false }
+        return sessionTabGroup?.selectedController === self || sessionTabGroup == nil
     }
 
     private static func endpoint(_ address: String) -> (host: String, port: UInt16)? {
