@@ -716,6 +716,38 @@ final class VirtualizedOutputViewTests: XCTestCase {
         XCTAssertFalse(view.isAnimationTimerActive)
     }
 
+    func testBlinkIntervalCanBeUpdatedWhileBlinking() {
+        let view = VirtualizedOutputView(frame: NSRect(x: 0, y: 0, width: 500, height: 300))
+        let text = NSMutableAttributedString(string: "Blinking\n")
+        text.addAttribute(
+            VirtualizedOutputView.blinkAttribute,
+            value: TextStyle.Blink.slow.rawValue,
+            range: NSRange(location: 0, length: 8)
+        )
+        view.setItems([.init(id: UUID(), attributedText: text, contentRange: NSRange(location: 0, length: 8), assets: [])])
+        XCTAssertEqual(view.blinkIntervalForTesting, 0.55)
+        XCTAssertEqual(view.blinkTimerCreationCountForTesting, 1)
+
+        view.blinkInterval = 0.25
+
+        XCTAssertEqual(view.blinkIntervalForTesting, 0.25)
+        XCTAssertTrue(view.isBlinkTimerActive)
+        XCTAssertEqual(view.blinkTimerCreationCountForTesting, 2)
+
+        view.applyAccessibilityDisplayOptions(.init(reduceMotion: true))
+        XCTAssertFalse(view.isBlinkTimerActive)
+    }
+
+    func testOutputBlinkIntervalPropagatesToSplitView() throws {
+        let output = OutputTextView()
+        output.applyBlinkInterval(0.25)
+        output.toggleSplit()
+
+        XCTAssertEqual(output.primaryOutputViewForTesting.blinkIntervalForTesting, 0.25)
+        let secondary = try XCTUnwrap(output.secondaryScrollViewForTesting?.documentView as? VirtualizedOutputView)
+        XCTAssertEqual(secondary.blinkIntervalForTesting, 0.25)
+    }
+
     func testSelectionAndIdentityMapSurvivePrefixCompaction() {
         let view = VirtualizedOutputView(frame: NSRect(x: 0, y: 0, width: 500, height: 300))
         let items = (0..<2_200).map { index in

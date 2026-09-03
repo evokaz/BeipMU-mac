@@ -258,6 +258,7 @@ final class OutputTextView: NSObject {
 
     private let outputView: VirtualizedOutputView
     private var secondaryOutputView: VirtualizedOutputView?
+    private var blinkInterval: TimeInterval = 0.55
     private var secondaryScrollView: NSScrollView?
     private var defaultForeground = NSColor(calibratedWhite: 0.9, alpha: 1)
     private var defaultBackground = NSColor(calibratedWhite: 0.05, alpha: 1)
@@ -375,6 +376,13 @@ final class OutputTextView: NSObject {
     var maxOutputLinesPerSliceForTesting: Int { maximumOutputLinesPerSliceForTesting }
     var maximumLinesPerSliceForTesting: Int { maximumOutputLinesPerSliceForTesting }
     var catchUpScrollsForTesting: Int { catchUpScrollCountForTesting }
+    var blinkIntervalForTesting: TimeInterval { blinkInterval }
+
+    func applyBlinkInterval(_ interval: TimeInterval) {
+        blinkInterval = interval
+        outputView.blinkInterval = interval
+        secondaryOutputView?.blinkInterval = interval
+    }
 
     func reportUserScrollForTesting(from previousY: CGFloat, to currentY: CGFloat) {
         acknowledgeUserScroll(in: scrollView, from: previousY, to: currentY)
@@ -776,6 +784,7 @@ final class OutputTextView: NSObject {
         scrollAdjustment: (@MainActor (NSScrollView) -> Void)? = nil
     ) {
         let view = VirtualizedOutputView(frame: NSRect(x: 0, y: 0, width: max(1, outputView.bounds.width), height: 1))
+        view.blinkInterval = blinkInterval
         view.canvasBackgroundColor = defaultBackground
         view.showsInlineImagePreviews = showsInlineImagePreviews
         view.onLink = { [weak self] url in self?.perform(url: url) }

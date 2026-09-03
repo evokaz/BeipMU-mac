@@ -92,6 +92,16 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     private var blinkTimer: Timer?
     private var blinkVisible = true
     private var blinkingItemCount = 0
+    var blinkInterval: TimeInterval = 0.55 {
+        didSet {
+            guard blinkInterval != oldValue else { return }
+            blinkTimer?.invalidate()
+            blinkTimer = nil
+            blinkVisible = true
+            updateBlinkTimer()
+            needsDisplay = true
+        }
+    }
     private var imageCache: [URL: NSImage] = [:]
     private var imageTasks: [URL: Task<Void, Never>] = [:]
     private var previewTasks: [URL: Task<Void, Never>] = [:]
@@ -148,6 +158,8 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
 
     var itemCount: Int { storage.count - head }
     var isBlinkTimerActive: Bool { blinkTimer != nil }
+    var blinkIntervalForTesting: TimeInterval { blinkInterval }
+    private(set) var blinkTimerCreationCountForTesting = 0
     var isAnimationTimerActive: Bool { animationTimer != nil }
     var previewDownloadCountForTesting: Int { previewDownloadCount }
     var selectedRangeIsEmpty: Bool { anchor == nil || anchor == focus }
@@ -1536,14 +1548,15 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     }
 
     private func updateBlinkTimer() {
-        if displayOptions.reduceMotion {
+        if displayOptions.reduceMotion || blinkInterval <= 0 {
             blinkTimer?.invalidate()
             blinkTimer = nil
             blinkVisible = true
             return
         }
         if blinkingItemCount > 0, blinkTimer == nil {
-            blinkTimer = Timer.scheduledTimer(withTimeInterval: 0.55, repeats: true) { [weak self] _ in
+            blinkTimerCreationCountForTesting += 1
+            blinkTimer = Timer.scheduledTimer(withTimeInterval: blinkInterval, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated {
                     self?.blinkVisible.toggle()
                     self?.needsDisplay = true

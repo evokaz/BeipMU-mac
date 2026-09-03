@@ -5,6 +5,77 @@ import Foundation
 import XCTest
 
 final class LegacyProfileProjectionTests: XCTestCase {
+    func testANSIProjectionReadsLegacyColorsAndWritesCanonicalLosslessly() throws {
+        let source = """
+        Version=331
+        Ansi {
+          Colors {
+            Red="#010203"
+            BoldRed="RGB( 4, 5, 6)"
+          }
+          Flag FontBold=true
+          Flag PreventInvisible=false
+          Flag Parse=false
+          FlashSpeed=0
+          Flag Beep=false
+          Flag BeepSystem=false
+          BeepFileName="Sounds/bell.wav"
+          Flag ResetOnNewLine=true
+          FutureAnsiField="preserve"
+        }
+        Connections { Shortcuts { World { Host="example.test:1" } } }
+        UnknownRoot="preserve"
+        """
+        let document = try LegacyConfigurationDocument(source: source)
+        var workspace = try LegacyConfigurationWorkspace(document: document)
+        XCTAssertEqual(workspace.ansi.colors[.red], RGBColor(red: 1, green: 2, blue: 3))
+        XCTAssertEqual(workspace.ansi.colors[.boldRed], RGBColor(red: 4, green: 5, blue: 6))
+        XCTAssertTrue(workspace.ansi.fontBold)
+        XCTAssertFalse(workspace.ansi.preventInvisible)
+        XCTAssertFalse(workspace.ansi.parse)
+        XCTAssertFalse(workspace.ansi.parseBlinking)
+        XCTAssertFalse(workspace.ansi.beep)
+        XCTAssertFalse(workspace.ansi.beepSystem)
+        XCTAssertTrue(workspace.ansi.resetOnNewLine)
+
+        workspace.updateANSISettings { $0.colors[.red] = RGBColor(red: 7, green: 8, blue: 9, alpha: 0) }
+        let rendered = try workspace.renderedDocument()
+        XCTAssertEqual(rendered.value(at: ["Ansi", "Colors", "Red"]), "RGB(7,8,9)")
+        XCTAssertEqual(rendered.value(at: ["Ansi", "Colors", "BoldRed"]), "RGB(4,5,6)")
+        XCTAssertTrue(rendered.serialized().contains("FutureAnsiField=\"preserve\""))
+        XCTAssertTrue(rendered.serialized().contains("UnknownRoot=\"preserve\""))
+    }
+
+    func testANSIProjectionPreservesLegacyFlashIntervalDuringUnrelatedEdits() throws {
+        let source = """
+        Version=331
+        Ansi { FlashSpeed=250 Colors { Red="RGB(1,2,3)" } }
+        Connections { Shortcuts { } }
+        """
+        let document = try LegacyConfigurationDocument(source: source)
+        var workspace = try LegacyConfigurationWorkspace(document: document)
+        XCTAssertEqual(workspace.ansi.flashSpeed, 250)
+
+        workspace.updateANSISettings { $0.colors[.red] = RGBColor(red: 7, green: 8, blue: 9) }
+        let rendered = try workspace.renderedDocument()
+        XCTAssertEqual(rendered.value(at: ["Ansi", "FlashSpeed"]), "250")
+    }
+
+    func testANSIMissingFlashSpeedUsesLegacyDefault() throws {
+        let document = try LegacyConfigurationDocument(source: "Version=331\nAnsi { }\nConnections { Shortcuts { } }\n")
+        let projection = try LegacyConfigurationProjection(document: document)
+
+        XCTAssertEqual(projection.ansi.flashSpeed, 500)
+        XCTAssertTrue(projection.ansi.parseBlinking)
+    }
+
+    func testANSIDefaultsAreOmittedWhenMissing() throws {
+        let document = try LegacyConfigurationDocument(source: "Version=331\nConnections { Shortcuts { } }\n")
+        let projection = try LegacyConfigurationProjection(document: document)
+        let rendered = try projection.applying(to: document)
+        XCTAssertNil(rendered.value(at: ["Ansi"]))
+    }
+
     func testTaskbarOnTopUsesOnlyRootBooleanAndWritesLosslessly() throws {
         let cases: [(String?, Bool)] = [
             ("true", true),

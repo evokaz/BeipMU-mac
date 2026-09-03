@@ -43,8 +43,12 @@ struct ScriptOutputRouter {
         case secondaryInput(ScriptWindowOperation)
     }
 
-    static func route(_ result: ScriptEvaluation, showValue: Bool) -> [Action] {
-        var actions = result.outputs.compactMap(route)
+    static func route(
+        _ result: ScriptEvaluation,
+        showValue: Bool,
+        ansiSettings: ANSISettings = .default
+    ) -> [Action] {
+        var actions = result.outputs.compactMap { route($0, ansiSettings: ansiSettings) }
         // Evaluation errors and values are intentionally appended after all
         // host outputs.  This preserves the runtime's observable ordering.
         if let error = result.error {
@@ -56,13 +60,18 @@ struct ScriptOutputRouter {
         return actions
     }
 
-    private static func route(_ output: ScriptOutput) -> Action? {
+    private static func route(_ output: ScriptOutput, ansiSettings: ANSISettings) -> Action? {
         switch output.kind {
         case .debugText: return .debug(.text, output.value)
         case .debugHTML: return .debug(.html, output.value)
         case .display: return .display(output.value)
         case .displayHTML:
-            var parser = MUDProtocolPipeline(encoding: .utf8, pueblo: true, puebloActive: true)
+            var parser = MUDProtocolPipeline(
+                encoding: .utf8,
+                pueblo: true,
+                puebloActive: true,
+                ansi: ansiSettings
+            )
             let lines = parser.consume(Data((output.value + "\n").utf8)).compactMap { event -> RenderedLine? in
                 if case let .line(line) = event { return line }
                 return nil

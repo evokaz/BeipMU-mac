@@ -141,6 +141,7 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
     /// absent or invalid values intentionally use the Windows default.
     public var taskbarOnTop: Bool
     public var settings: ConnectionSettings
+    public var ansi: ANSISettings
     public var scripting: Scripting
     public var logging: SessionLogOptions
     public var loggingPath: String
@@ -163,6 +164,7 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
             tcpKeepAlive: document.rootBool("TCP_KeepAlive") ?? true,
             tcpNoDelay: document.rootBool("TCP_NoDelay") ?? true
         )
+        ansi = Self.ansiSettings(from: document)
         scripting = .init(
             startupPath: document.rootValue("ScriptStartup") ?? "",
             debugEnabled: document.rootBool("ScriptDebug") ?? false
@@ -394,6 +396,45 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
             Self.flag(settings.tcpNoDelay), default: "true",
             at: ["TCP_NoDelay"], quoted: false, in: &result
         )
+        try Self.upsert(
+            Self.flag(ansi.fontBold), default: "false",
+            at: ["Ansi", "FontBold"], quoted: false, in: &result
+        )
+        try Self.upsert(
+            Self.flag(ansi.preventInvisible), default: "true",
+            at: ["Ansi", "PreventInvisible"], quoted: false, in: &result
+        )
+        try Self.upsert(
+            Self.flag(ansi.parse), default: "true",
+            at: ["Ansi", "Parse"], quoted: false, in: &result
+        )
+        try Self.upsert(
+            String(ansi.flashSpeed), default: "500",
+            at: ["Ansi", "FlashSpeed"], quoted: false, in: &result
+        )
+        try Self.upsert(
+            Self.flag(ansi.beep), default: "true",
+            at: ["Ansi", "Beep"], quoted: false, in: &result
+        )
+        try Self.upsert(
+            Self.flag(ansi.beepSystem), default: "true",
+            at: ["Ansi", "BeepSystem"], quoted: false, in: &result
+        )
+        try Self.upsert(
+            ansi.beepFileName, default: "",
+            at: ["Ansi", "BeepFileName"], in: &result
+        )
+        try Self.upsert(
+            Self.flag(ansi.resetOnNewLine), default: "false",
+            at: ["Ansi", "ResetOnNewLine"], quoted: false, in: &result
+        )
+        for name in ANSIColorName.allCases {
+            try Self.upsert(
+                Self.canonicalColor(ansi.color(for: name)),
+                default: Self.canonicalColor(ANSISettings.default.color(for: name)),
+                at: ["Ansi", "Colors", name.rawValue], in: &result
+            )
+        }
         try Self.upsert(scripting.startupPath, default: "", at: ["ScriptStartup"], in: &result)
         try Self.upsert(
             Self.flag(scripting.debugEnabled), default: "false",
@@ -560,6 +601,45 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
     ) throws {
         guard document.value(at: path) != nil || value != defaultValue else { return }
         try document.upsertValue(value, at: path, quoted: quoted)
+    }
+
+    private static func canonicalColor(_ color: RGBColor) -> String {
+        "RGB(\(color.red),\(color.green),\(color.blue))"
+    }
+
+    private static func ansiSettings(from document: LegacyConfigurationDocument) -> ANSISettings {
+        let nodes = document.firstBlock(named: "Ansi")?.children ?? []
+        func value(_ name: String) -> String? {
+            nodes.value(name) ?? document.value(at: ["Ansi", name])
+        }
+        func bool(_ name: String) -> Bool? {
+            value(name).flatMap { raw in
+                switch raw.lowercased() {
+                case "true", "yes", "1": true
+                case "false", "no", "0": false
+                default: nil
+                }
+            }
+        }
+        var settings = ANSISettings()
+        settings.fontBold = bool("FontBold") ?? settings.fontBold
+        settings.preventInvisible = bool("PreventInvisible") ?? settings.preventInvisible
+        settings.parse = bool("Parse") ?? settings.parse
+        if let flashSpeed = value("FlashSpeed").flatMap(Int.init) {
+            settings.flashSpeed = flashSpeed
+        }
+        settings.beep = bool("Beep") ?? settings.beep
+        settings.beepSystem = bool("BeepSystem") ?? settings.beepSystem
+        settings.beepFileName = value("BeepFileName") ?? settings.beepFileName
+        settings.resetOnNewLine = bool("ResetOnNewLine") ?? settings.resetOnNewLine
+
+        let colors = nodes.firstBlock(named: "Colors")?.children ?? []
+        for name in ANSIColorName.allCases {
+            if let color = parseColor(colors.value(name.rawValue) ?? document.value(at: ["Ansi", "Colors", name.rawValue])) {
+                settings.setColor(color, for: name)
+            }
+        }
+        return settings
     }
 
     /// Reconciles deletions before portable fields are upserted. This is kept
@@ -1008,7 +1088,10 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
     private static func parseColor(_ source: String?) -> RGBColor? {
         guard let source else { return nil }
         let value = source.trimmingCharacters(in: .whitespacesAndNewlines)
-        let hex = value.hasPrefix("#") ? String(value.dropFirst()) : value
+        let hex: String
+        if value.hasPrefix("#") { hex = String(value.dropFirst()) }
+        else if value.lowercased().hasPrefix("0x") { hex = String(value.dropFirst(2)) }
+        else { hex = value }
         if hex.count == 6, let raw = UInt32(hex, radix: 16) {
             return .init(
                 red: UInt8((raw >> 16) & 0xFF),

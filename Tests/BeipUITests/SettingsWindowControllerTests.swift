@@ -1,4 +1,5 @@
 import AppKit
+import BeipCore
 import BeipPersistence
 import XCTest
 @testable import BeipUI
@@ -29,7 +30,7 @@ final class SettingsWindowControllerTests: XCTestCase {
     }
 
     @MainActor
-    func testRetainedWindowHasSixDestinationsAndExpectedSizing() throws {
+    func testRetainedWindowHasANSIColorsDestinationAndExpectedSizing() throws {
         let library = ProfileLibrary(workspace: try .empty(isDirty: false))
         let controller = SettingsWindowController(
             profileLibrary: library,
@@ -46,10 +47,44 @@ final class SettingsWindowControllerTests: XCTestCase {
 
         XCTAssertEqual(controller.window?.title, "Settings")
         XCTAssertEqual(controller.window?.minSize, NSSize(width: 760, height: 560))
-        XCTAssertEqual(controller.sidebarTitlesForTesting, ["Appearance", "Output", "Input", "Restore Logs", "Scripting", "Shortcuts", "Advanced"])
+        XCTAssertEqual(controller.sidebarTitlesForTesting, ["Appearance", "ANSI Colors", "Output", "Input", "Restore Logs", "Scripting", "Shortcuts", "Advanced"])
         XCTAssertEqual(controller.selectedSectionForTesting, .appearance)
         XCTAssertNotNil(findView(withIdentifier: "settingsSidebar", in: controller.window?.contentView))
         XCTAssertNotNil(findView(withIdentifier: "settingsContent", in: controller.window?.contentView))
+    }
+
+    @MainActor
+    func testANSIColorsControlsPersistPaletteAndAppearanceEditsImmediately() throws {
+        let library = ProfileLibrary(workspace: try .empty(isDirty: false))
+        let controller = SettingsWindowController(
+            profileLibrary: library,
+            shortcutsProvider: { KeyboardShortcutStore.load() },
+            context: .init(
+                section: .ansiColors,
+                initialScope: nil,
+                identity: .init(world: nil, character: nil, tab: nil)
+            ),
+            onPreferencesMutation: {},
+            onShortcutsMutation: { _ in }
+        )
+        defer { controller.close() }
+
+        let content = try XCTUnwrap(controller.window?.contentView)
+        XCTAssertNotNil(findView(withIdentifier: "ansiColorsSection", in: content))
+        XCTAssertEqual(library.workspace.ansi.colors.count, 16)
+        XCTAssertNotNil(findView(withIdentifier: "ansiColorRow.Red", in: content))
+        let prevent = try XCTUnwrap(findView(withIdentifier: "ansiPreventInvisible", in: content) as? NSButton)
+        prevent.performClick(nil)
+        XCTAssertFalse(library.workspace.ansi.preventInvisible)
+
+        let cmd = try XCTUnwrap(findView(withIdentifier: "ansiPreset.cmd", in: content) as? NSButton)
+        cmd.performClick(nil)
+        XCTAssertEqual(library.workspace.ansi.colors[.red], ANSIPalettePreset.cmd.colors[.red])
+        XCTAssertEqual(try library.workspace.renderedDocument().value(at: ["Ansi", "Colors", "Red"]), "RGB(128,0,0)")
+
+        let parse = try XCTUnwrap(findView(withIdentifier: "ansiParseCodes", in: content) as? NSButton)
+        parse.performClick(nil)
+        XCTAssertFalse(library.workspace.ansi.parse)
     }
 
     @MainActor

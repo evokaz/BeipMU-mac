@@ -2918,7 +2918,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             encoding: server.encoding,
             mcp: server.mcp,
             pueblo: server.pueblo,
-            limitTelnetCharset: server.limitTelnetCharset
+            limitTelnetCharset: server.limitTelnetCharset,
+            ansi: profileLibrary.workspace.projection.ansi
         )
         processor.setTerminalType(terminalType)
         let next = SessionActor(transport: NetworkTransport(), processor: processor, localEcho: localEcho)
@@ -3153,6 +3154,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             guard !suppressSessionData else { return }
             if routeMasterLineToPuppet(line, isPrompt: true) { return }
             await presentIncoming(line, isPrompt: true)
+        case .beep:
+            playANSIBeep()
         case let .gmcp(message):
             recordRecovery(.gmcp(message))
             guard !suppressSessionData else { return }
@@ -3620,7 +3623,12 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
               let changed = try? JSONDecoder().decode(ChangedLine.self, from: data) else { return line }
         if changed.handled == true { return nil }
         if changed.text == line.text, !changed.html.contains("<span") { return line }
-        var parser = MUDProtocolPipeline(encoding: .utf8, pueblo: true, puebloActive: true)
+        var parser = MUDProtocolPipeline(
+            encoding: .utf8,
+            pueblo: true,
+            puebloActive: true,
+            ansi: profileLibrary.workspace.projection.ansi
+        )
         for event in parser.consume(Data((changed.html + "\n").utf8)) {
             if case var .line(parsed) = event {
                 parsed.source = line.source
@@ -3788,11 +3796,28 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     private func profileLibraryDidChange() {
+        let ansiSettings = profileLibrary.workspace.projection.ansi
+        applyBlinkInterval(milliseconds: ansiSettings.flashSpeed)
+        if let session {
+            Task { await session.configureANSI(ansiSettings) }
+        }
         reloadCurrentAutomation(resetRuntimeState: true)
         applyMenuStripPosition()
         refreshDiagnostics()
         updateWindowTitle()
         tabStateDidChange()
+    }
+
+    private func playANSIBeep() {
+        let settings = profileLibrary.workspace.projection.ansi
+        guard settings.beep, !isMuted else { return }
+        if settings.beepSystem {
+            NSSound.beep()
+        } else {
+            let path = (settings.beepFileName as NSString).expandingTildeInPath
+            guard !path.isEmpty else { return }
+            NSSound(contentsOfFile: path, byReference: true)?.play()
+        }
     }
 
     @discardableResult
@@ -3998,7 +4023,12 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         if let session {
             Task { await session.receive(payload) }
         } else {
-            var processor = MUDProtocolPipeline(encoding: .utf8, pueblo: true, puebloActive: true)
+            var processor = MUDProtocolPipeline(
+                encoding: .utf8,
+                pueblo: true,
+                puebloActive: true,
+                ansi: profileLibrary.workspace.projection.ansi
+            )
             for event in processor.consume(Data(payload.utf8)) {
                 switch event {
                 case let .line(line), let .prompt(line): output.append(line)
@@ -4046,7 +4076,12 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
                     line.runs = []
                 case let .replaceHTML(range, replacement):
                     guard let swiftRange = Range(range, in: line.text) else { continue }
-                    var parser = MUDProtocolPipeline(encoding: .utf8, pueblo: true, puebloActive: true)
+                    var parser = MUDProtocolPipeline(
+                        encoding: .utf8,
+                        pueblo: true,
+                        puebloActive: true,
+                        ansi: profileLibrary.workspace.projection.ansi
+                    )
                     let fragment = parser.consume(Data((replacement + "\n").utf8)).compactMap { event -> RenderedLine? in
                         if case let .line(value) = event { return value }
                         return nil
@@ -4644,6 +4679,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
 
     private func applyPreferences() {
         applyTextWindowSettings()
+        applyBlinkInterval(milliseconds: profileLibrary.workspace.projection.ansi.flashSpeed)
         output.showsInlineImagePreviews = preferences.showsInlineImagePreviews
         triggerSpawnWindows.values.forEach { $0.showsInlineImagePreviews = preferences.showsInlineImagePreviews }
         triggerSpawnTabGroups.values.forEach { $0.showsInlineImagePreviews = preferences.showsInlineImagePreviews }
@@ -4821,6 +4857,13 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
 
     private func applyTextWindowSettings() {
         output.applySettings(activeTextWindowSettings)
+    }
+
+    private func applyBlinkInterval(milliseconds: Int) {
+        let interval = TimeInterval(max(0, milliseconds)) / 1_000
+        output.applyBlinkInterval(interval)
+        triggerSpawnWindows.values.forEach { $0.applyBlinkInterval(interval) }
+        triggerSpawnTabGroups.values.forEach { $0.applyBlinkInterval(interval) }
     }
 
     private func applyInputWindowSettings() {
@@ -5312,7 +5355,11 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     private func applyScriptEvaluation(_ result: ScriptEvaluation, showValue: Bool) {
-        for action in ScriptOutputRouter.route(result, showValue: showValue) {
+        for action in ScriptOutputRouter.route(
+            result,
+            showValue: showValue,
+            ansiSettings: profileLibrary.workspace.projection.ansi
+        ) {
             switch action {
             case let .debug(kind, text):
                 let entryKind: ScriptDebugWindowController.EntryKind = switch kind {
@@ -5554,6 +5601,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             unreadBoundaryCoordinator: unreadBoundaryCoordinator
         )
         controller.applyTheme(preferences.theme.palette)
+        controller.applyBlinkInterval(TimeInterval(max(0, profileLibrary.workspace.projection.ansi.flashSpeed)) / 1_000)
         controller.showsInlineImagePreviews = preferences.showsInlineImagePreviews
         controller.onAction = { [weak self] action in self?.perform(action) }
         controller.onWindowDragEnded = { [weak self, weak controller] point in
@@ -5589,6 +5637,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             unreadBoundaryCoordinator: unreadBoundaryCoordinator
         )
         controller.applyTheme(preferences.theme.palette)
+        controller.applyBlinkInterval(TimeInterval(max(0, profileLibrary.workspace.projection.ansi.flashSpeed)) / 1_000)
         controller.showsInlineImagePreviews = preferences.showsInlineImagePreviews
         controller.onAction = { [weak self] action in self?.perform(action) }
         controller.onStructureChange = { [weak self] in self?.saveSpawnSurfacePreferences() }

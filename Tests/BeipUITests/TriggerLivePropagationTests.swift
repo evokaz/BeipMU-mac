@@ -7,6 +7,55 @@ import XCTest
 
 @MainActor
 final class TriggerLivePropagationTests: XCTestCase {
+    func testPersistedFlashSpeedReachesMainSplitAndSpawnOutputs() async throws {
+        var workspace = try Self.workspace(
+            """
+            Version=331
+            Connections {
+              Shortcuts {
+                TestServer { Host="testserver.example:8888" }
+              }
+            }
+            """
+        )
+        try workspace.addTrigger(
+            in: .global,
+            trigger: Trigger(
+                description: "Standalone",
+                match: .init(text: "standalone"),
+                actions: [.spawn(.init(title: "Standalone", copy: true))]
+            )
+        )
+        try workspace.addTrigger(
+            in: .global,
+            trigger: Trigger(
+                description: "Grouped",
+                match: .init(text: "grouped"),
+                actions: [.spawn(.init(title: "Feed", tabGroup: "Group", copy: true))]
+            )
+        )
+        workspace.updateANSISettings { $0.flashSpeed = 250 }
+        let server = try XCTUnwrap(workspace.servers.first?.profile)
+        let controller = ClientWindowController(
+            profileLibrary: ProfileLibrary(workspace: workspace),
+            runsScriptServices: false
+        )
+        defer { controller.close() }
+        controller.restoreOpenTab(server: server, character: nil)
+        controller.outputForTesting.toggleSplit()
+
+        await controller.testingReceiveLine("standalone")
+        await controller.testingReceiveLine("grouped")
+
+        XCTAssertEqual(controller.outputForTesting.primaryOutputViewForTesting.blinkIntervalForTesting, 0.25)
+        let split = try XCTUnwrap(
+            controller.outputForTesting.secondaryScrollViewForTesting?.documentView as? VirtualizedOutputView
+        )
+        XCTAssertEqual(split.blinkIntervalForTesting, 0.25)
+        XCTAssertEqual(controller.testingSpawnOutput(named: "Standalone")?.blinkIntervalForTesting, 0.25)
+        XCTAssertEqual(controller.testingSpawnTabOutput(named: "Group", title: "Feed")?.blinkIntervalForTesting, 0.25)
+    }
+
     func testProfileLibraryNotifiesMultipleObservers() throws {
         let library = ProfileLibrary(workspace: try .empty(isDirty: false))
         var firstCount = 0

@@ -4,6 +4,12 @@ import Foundation
 import XCTest
 
 final class TelnetParserTests: XCTestCase {
+    func testBELIsAnExplicitEventAndNeverEntersText() {
+        var parser = TelnetParser()
+        XCTAssertEqual(parser.consume(Data([7, 7])), [.beep, .beep])
+        XCTAssertEqual(parser.consume(Data("before\u{07}after\n".utf8)), [.beep, .line(Data("beforeafter".utf8))])
+    }
+
     func testWindowsCompatibleTelnetDebugFormattingAndChunkState() {
         var formatter = TelnetDebugFormatter()
         XCTAssertEqual(
@@ -214,6 +220,55 @@ private extension Data {
 }
 
 final class ANSIParserTests: XCTestCase {
+    func testConfigurablePaletteAndLiveReconfigurationPreserveState() {
+        var settings = ANSISettings.default
+        settings.colors[.red] = RGBColor(red: 1, green: 2, blue: 3)
+        settings.colors[.boldRed] = RGBColor(red: 4, green: 5, blue: 6)
+        var parser = ANSIParser(settings: settings)
+        let first = parser.parse("\u{1b}[31mold")
+        XCTAssertEqual(first.runs[0].style.foreground, RGBColor(red: 1, green: 2, blue: 3))
+
+        settings.colors[.red] = RGBColor(red: 7, green: 8, blue: 9)
+        parser.configureANSI(settings)
+        let second = parser.parse("new")
+        XCTAssertEqual(second.runs[0].style.foreground, RGBColor(red: 7, green: 8, blue: 9))
+        XCTAssertEqual(first.runs[0].style.foreground, RGBColor(red: 1, green: 2, blue: 3))
+    }
+
+    func testParsingDisabledConsumesEscapeAndDisplaysTheRemainingSequence() {
+        var settings = ANSISettings.default
+        settings.parse = false
+        var parser = ANSIParser(settings: settings)
+        let line = parser.parse("a\u{1b}[31mb")
+        XCTAssertEqual(line.text, "a[31mb")
+        XCTAssertEqual(line.runs.count, 1)
+    }
+
+    func testDisablingParsingClearsPreviouslyActiveSGRState() {
+        var parser = ANSIParser()
+        let styled = parser.parse("\u{1b}[31;3;4mstyled")
+        XCTAssertEqual(styled.runs[0].style.foreground, RGBColor(red: 205, green: 0, blue: 0))
+        XCTAssertTrue(styled.runs[0].style.italic)
+        XCTAssertTrue(styled.runs[0].style.underline)
+
+        var settings = parser.ansiSettings
+        settings.parse = false
+        parser.configure(settings)
+
+        let plain = parser.parse("plain")
+        XCTAssertEqual(plain.runs.count, 1)
+        XCTAssertEqual(plain.runs[0].style, TextStyle())
+    }
+
+    func testBlinkingCanBeSuppressedWithoutChangingText() {
+        var settings = ANSISettings.default
+        settings.parseBlinking = false
+        var parser = ANSIParser(settings: settings)
+        let line = parser.parse("\u{1b}[5mblink")
+        XCTAssertEqual(line.text, "blink")
+        XCTAssertEqual(line.runs[0].style.blink, .none)
+    }
+
     func testSeededANSIPropertyMatrixPreservesUnicodeText() {
         let codes = [0, 1, 2, 3, 4, 5, 7, 8, 9, 22, 23, 24, 25, 27, 28, 29, 30, 37, 40, 47, 90, 97]
         let tokens = ["alpha", "βeta", "雪", "🙂", "<&>"]

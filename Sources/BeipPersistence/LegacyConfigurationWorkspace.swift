@@ -153,6 +153,7 @@ public struct LegacyConfigurationWorkspace: Sendable {
 
     public var servers: [LegacyConfigurationProjection.Server] { projection.servers }
     public var settings: LegacyConfigurationProjection.ConnectionSettings { projection.settings }
+    public var ansi: ANSISettings { projection.ansi }
     public var taskbarOnTop: Bool { projection.taskbarOnTop }
 
     /// Distinguishes an absent root assignment from an invalid one. This is
@@ -179,6 +180,22 @@ public struct LegacyConfigurationWorkspace: Sendable {
     public mutating func setRestoreLogSettings(enabled: Bool, perCharacterBytes: Int) {
         projection.logging.restoreLogs = enabled
         projection.logging.restoreBufferSize = SessionLogOptions.normalizedRestoreBufferSize(perCharacterBytes)
+        isDirty = true
+    }
+
+    /// Applies a workspace-global ANSI settings edit and keeps it in the
+    /// same immediate-save mutation path as the other Settings controls.
+    public mutating func updateANSISettings(_ update: (inout ANSISettings) -> Void) {
+        update(&projection.ansi)
+        isDirty = true
+    }
+
+    public mutating func updateANSI(_ update: (inout ANSISettings) -> Void) {
+        updateANSISettings(update)
+    }
+
+    public mutating func setANSISettings(_ settings: ANSISettings) {
+        projection.ansi = settings
         isDirty = true
     }
 

@@ -9,6 +9,7 @@ public struct TelnetParser: Sendable {
         case line(Data)
         case prompt(Data)
         case send(Data)
+        case beep
         case gmcp(GMCPMessage)
         case encoding(TextEncoding)
         case requestNAWS
@@ -74,6 +75,8 @@ public struct TelnetParser: Sendable {
                     if !discardingOversizedLine { events.append(.line(buffer)) }
                     buffer.removeAll(keepingCapacity: true)
                     discardingOversizedLine = false
+                case 7:
+                    events.append(.beep)
                 default:
                     if discardingOversizedLine {
                         continue

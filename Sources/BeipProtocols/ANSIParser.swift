@@ -6,31 +6,101 @@ public struct ANSIParser: Sendable {
         public var resetOnNewLine: Bool
         public var useFontBold: Bool
         public var preventInvisible: Bool
+        public var parseBlinking: Bool
+        public var parseANSICodes: Bool
 
-        public init(resetOnNewLine: Bool = false, useFontBold: Bool = false, preventInvisible: Bool = true) {
+        public init(
+            resetOnNewLine: Bool = false,
+            useFontBold: Bool = false,
+            preventInvisible: Bool = true,
+            parseBlinking: Bool = true,
+            parseANSICodes: Bool = true
+        ) {
             self.resetOnNewLine = resetOnNewLine
             self.useFontBold = useFontBold
             self.preventInvisible = preventInvisible
+            self.parseBlinking = parseBlinking
+            self.parseANSICodes = parseANSICodes
+        }
+
+        public init(
+            resetOnNewLine: Bool = false,
+            useFontBold: Bool = false,
+            preventInvisible: Bool = true,
+            parseBlinking: Bool = true,
+            parseANSI: Bool
+        ) {
+            self.init(
+                resetOnNewLine: resetOnNewLine,
+                useFontBold: useFontBold,
+                preventInvisible: preventInvisible,
+                parseBlinking: parseBlinking,
+                parseANSICodes: parseANSI
+            )
+        }
+
+        public var parseANSI: Bool {
+            get { parseANSICodes }
+            set { parseANSICodes = newValue }
         }
     }
 
     private var style = TextStyle()
     private var inverse = false
     private var foregroundPaletteIndex: Int?
-    private let options: Options
+    private var backgroundPaletteIndex: Int?
+    private var settings: ANSISettings
 
     public init(options: Options = .init()) {
-        self.options = options
+        settings = ANSISettings(
+            fontBold: options.useFontBold,
+            preventInvisible: options.preventInvisible,
+            parse: options.parseANSICodes,
+            parseBlinking: options.parseBlinking,
+            resetOnNewLine: options.resetOnNewLine
+        )
+    }
+
+    public init(settings: ANSISettings) {
+        self.settings = settings
+    }
+
+    public var ansiSettings: ANSISettings { settings }
+
+    public mutating func configure(_ settings: ANSISettings) {
+        let wasParsing = self.settings.parse
+        self.settings = settings
+        // Disabling ANSI is a hard boundary: any SGR state accumulated before
+        // the switch must not leak into subsequently literal text.
+        guard wasParsing && !settings.parse else { return reconfigureActiveStyle() }
+        reset()
+    }
+
+    private mutating func reconfigureActiveStyle() {
+        if let index = foregroundPaletteIndex, index < settings.colors.count {
+            if inverse { style.background = settings.colors[index] }
+            else { style.foreground = settings.colors[index] }
+        }
+        if let index = backgroundPaletteIndex, index < settings.colors.count {
+            if inverse { style.foreground = settings.colors[index] }
+            else { style.background = settings.colors[index] }
+        }
+        if !settings.parseBlinking { style.blink = .none }
+    }
+
+    public mutating func configureANSI(_ settings: ANSISettings) {
+        configure(settings)
     }
 
     public mutating func reset() {
         style = TextStyle()
         inverse = false
         foregroundPaletteIndex = nil
+        backgroundPaletteIndex = nil
     }
 
     public mutating func parse(_ input: String, source: RenderedLine.Source = .server) -> RenderedLine {
-        if options.resetOnNewLine { reset() }
+        if settings.resetOnNewLine { reset() }
         var result = ""
         var runs: [StyleRun] = []
         var scalarIndex = input.unicodeScalars.startIndex
@@ -56,6 +126,12 @@ public struct ANSIParser: Sendable {
             }
 
             let afterEscape = input.unicodeScalars.index(after: scalarIndex)
+            if !settings.parse {
+                // Match the original parser: consume ESC, then let the
+                // sequence's remaining bytes pass through as ordinary text.
+                scalarIndex = afterEscape
+                continue
+            }
             guard afterEscape < input.unicodeScalars.endIndex,
                   input.unicodeScalars[afterEscape] == "["
             else {
@@ -90,8 +166,8 @@ public struct ANSIParser: Sendable {
             case 2: style.faint = true
             case 3: style.italic = true
             case 4: style.underline = true
-            case 5: style.blink = .slow
-            case 6: style.blink = .fast
+            case 5: if settings.parseBlinking { style.blink = .slow }
+            case 6: if settings.parseBlinking { style.blink = .fast }
             case 7, 8:
                 if !inverse {
                     swap(&style.foreground, &style.background)
@@ -108,7 +184,7 @@ public struct ANSIParser: Sendable {
                     inverse = false
                 }
             case 29: style.strikeout = false
-            case 30...37: setColor(Self.palette[value - 30], foreground: true, paletteIndex: value - 30)
+            case 30...37: setColor(settings.colors[value - 30], foreground: true, paletteIndex: value - 30)
             case 38, 48:
                 if index + 2 < values.count, values[index + 1] == 5 {
                     setColor(translate256(values[index + 2]), foreground: value == 38)
@@ -123,10 +199,10 @@ public struct ANSIParser: Sendable {
                     index += 4
                 }
             case 39: clearColor(foreground: true)
-            case 40...47: setColor(Self.palette[value - 40], foreground: false)
+            case 40...47: setColor(settings.colors[value - 40], foreground: false, paletteIndex: value - 40)
             case 49: clearColor(foreground: false)
-            case 90...97: setColor(Self.palette[value - 90 + 8], foreground: true, paletteIndex: value - 90 + 8)
-            case 100...107: setColor(Self.palette[value - 100 + 8], foreground: false)
+            case 90...97: setColor(settings.colors[value - 90 + 8], foreground: true, paletteIndex: value - 90 + 8)
+            case 100...107: setColor(settings.colors[value - 100 + 8], foreground: false, paletteIndex: value - 100 + 8)
             default: break
             }
             index += 1
@@ -136,11 +212,13 @@ public struct ANSIParser: Sendable {
 
     private mutating func setColor(_ color: RGBColor, foreground: Bool, paletteIndex: Int? = nil) {
         if foreground { foregroundPaletteIndex = paletteIndex }
+        else { backgroundPaletteIndex = paletteIndex }
         if foreground != inverse { style.foreground = color } else { style.background = color }
     }
 
     private mutating func clearColor(foreground: Bool) {
         if foreground { foregroundPaletteIndex = nil }
+        else { backgroundPaletteIndex = nil }
         if foreground != inverse { style.foreground = nil } else { style.background = nil }
     }
 
@@ -148,12 +226,12 @@ public struct ANSIParser: Sendable {
         var rendered = style
         let logicalForegroundIsBackground = inverse
 
-        if rendered.bold, !options.useFontBold,
+        if rendered.bold, !settings.fontBold,
            let index = foregroundPaletteIndex, index < 8 {
             if logicalForegroundIsBackground {
-                rendered.background = Self.palette[index + 8]
+                rendered.background = settings.colors[index + 8]
             } else {
-                rendered.foreground = Self.palette[index + 8]
+                rendered.foreground = settings.colors[index + 8]
             }
         }
 
@@ -165,8 +243,8 @@ public struct ANSIParser: Sendable {
             }
         }
 
-        rendered.bold = options.useFontBold && rendered.bold
-        if options.preventInvisible,
+        rendered.bold = settings.fontBold && rendered.bold
+        if settings.preventInvisible,
            let foreground = rendered.foreground,
            foreground == rendered.background {
             rendered.foreground = RGBColor(
@@ -205,17 +283,6 @@ public struct ANSIParser: Sendable {
         }
         return RGBColor(red: 255, green: 0, blue: 0)
     }
-
-    private static let palette: [RGBColor] = [
-        .init(red: 0, green: 0, blue: 0), .init(red: 205, green: 0, blue: 0),
-        .init(red: 0, green: 205, blue: 0), .init(red: 205, green: 205, blue: 0),
-        .init(red: 0, green: 0, blue: 238), .init(red: 205, green: 0, blue: 205),
-        .init(red: 0, green: 205, blue: 205), .init(red: 229, green: 229, blue: 229),
-        .init(red: 127, green: 127, blue: 127), .init(red: 255, green: 0, blue: 0),
-        .init(red: 0, green: 255, blue: 0), .init(red: 255, green: 255, blue: 0),
-        .init(red: 92, green: 92, blue: 255), .init(red: 255, green: 0, blue: 255),
-        .init(red: 0, green: 255, blue: 255), .init(red: 255, green: 255, blue: 255),
-    ]
 
     // BeipMU's configurable ANSI palette is used for SGR 30...37/90...97,
     // while the first sixteen entries in the fixed 256-color table retain

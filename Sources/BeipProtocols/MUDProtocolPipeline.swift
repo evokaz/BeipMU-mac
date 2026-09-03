@@ -3,7 +3,7 @@ import Foundation
 
 public struct MUDProtocolPipeline: ByteStreamProcessor {
     private var telnet = TelnetParser()
-    private var ansi = ANSIParser()
+    private var ansi: ANSIParser
     private var mcp: MCPParser
     private var encoding: TextEncoding
     private let mcpConfigured: Bool
@@ -16,14 +16,36 @@ public struct MUDProtocolPipeline: ByteStreamProcessor {
         mcpAuthenticationKey: String? = nil,
         pueblo: Bool = false,
         puebloActive: Bool = false,
-        limitTelnetCharset: Bool = false
+        limitTelnetCharset: Bool = false,
+        ansi: ANSISettings = .default
     ) {
         self.encoding = encoding
         self.mcpConfigured = mcp
         self.mcp = MCPParser(authenticationKey: mcpAuthenticationKey)
         self.puebloConfigured = pueblo
         self.puebloActive = puebloActive
+        self.ansi = ANSIParser(settings: ansi)
         telnet.charsetLimit = limitTelnetCharset ? encoding : nil
+    }
+
+    public init(
+        encoding: TextEncoding = .cp1252,
+        mcp: Bool = false,
+        mcpAuthenticationKey: String? = nil,
+        pueblo: Bool = false,
+        puebloActive: Bool = false,
+        limitTelnetCharset: Bool = false,
+        ansiSettings: ANSISettings
+    ) {
+        self.init(
+            encoding: encoding,
+            mcp: mcp,
+            mcpAuthenticationKey: mcpAuthenticationKey,
+            pueblo: pueblo,
+            puebloActive: puebloActive,
+            limitTelnetCharset: limitTelnetCharset,
+            ansi: ansiSettings
+        )
     }
 
     public mutating func reset() {
@@ -35,6 +57,10 @@ public struct MUDProtocolPipeline: ByteStreamProcessor {
 
     public mutating func resetFormatting() {
         ansi.reset()
+    }
+
+    public mutating func configureANSI(_ settings: ANSISettings) {
+        ansi.configure(settings)
     }
 
     public mutating func setTerminalType(_ value: String) {
@@ -66,6 +92,7 @@ public struct MUDProtocolPipeline: ByteStreamProcessor {
             case let .prompt(bytes):
                 return [.prompt(ansi.parse(BeipTextDecoder.decode(bytes, encoding: encoding), source: .prompt))]
             case let .send(bytes): return [.transmit(bytes)]
+            case .beep: return [.beep]
             case let .gmcp(message): return [.gmcp(message)]
             case let .encoding(newEncoding):
                 encoding = newEncoding

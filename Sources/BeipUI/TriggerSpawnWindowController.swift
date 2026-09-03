@@ -33,6 +33,7 @@ final class TriggerSpawnWindowController: NSWindowController, NSWindowDelegate {
     var showsInlineImagePreviews = false {
         didSet { output.showsInlineImagePreviews = showsInlineImagePreviews }
     }
+    func applyBlinkInterval(_ interval: TimeInterval) { output.applyBlinkInterval(interval) }
     private var dragFeedbackGeneration = 0
     private var floatingDragTask: Task<Void, Never>?
     private var latestDragReleasePoint: NSPoint?
@@ -258,6 +259,11 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
     var onAction: ((LinkAction) -> Void)?
     var showsInlineImagePreviews = false {
         didSet { tabs.forEach { $0.output.showsInlineImagePreviews = showsInlineImagePreviews } }
+    }
+    private var blinkInterval: TimeInterval = 0.55
+    func applyBlinkInterval(_ interval: TimeInterval) {
+        blinkInterval = interval
+        tabs.forEach { $0.output.applyBlinkInterval(interval) }
     }
     var onStructureChange: (() -> Void)?
     var onTabActivate: ((String) -> Void)?
@@ -605,6 +611,7 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
         let output = OutputTextView()
         output.setUnreadBoundaryCoordinator(unreadBoundaryCoordinator)
         output.applyTheme(themePalette)
+        output.applyBlinkInterval(blinkInterval)
         output.showsInlineImagePreviews = showsInlineImagePreviews
         output.setWindowFocused(false)
         output.onAction = { [weak self] action in self?.onAction?(action) }

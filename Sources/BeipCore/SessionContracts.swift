@@ -47,6 +47,7 @@ public enum ProtocolOutput: Sendable, Hashable {
     case transmit(Data)
     case line(RenderedLine)
     case prompt(RenderedLine)
+    case beep
     case gmcp(GMCPMessage)
     case mcp(MCPMessage)
     case encoding(TextEncoding)
@@ -57,6 +58,7 @@ public enum ProtocolOutput: Sendable, Hashable {
 public protocol ByteStreamProcessor: Sendable {
     mutating func reset()
     mutating func resetFormatting()
+    mutating func configureANSI(_ settings: ANSISettings)
     mutating func setTerminalType(_ value: String)
     mutating func consume(_ data: Data) -> [ProtocolOutput]
     mutating func encode(_ text: String) throws -> Data
@@ -67,6 +69,7 @@ public protocol ByteStreamProcessor: Sendable {
 
 public extension ByteStreamProcessor {
     mutating func resetFormatting() {}
+    mutating func configureANSI(_ settings: ANSISettings) {}
     mutating func setTerminalType(_ value: String) {}
     mutating func encodeMCP(_ message: MCPMessage) -> [Data] { [] }
     mutating func windowSizeChanged(columns: UInt16, rows: UInt16) -> Data? { nil }
@@ -81,6 +84,7 @@ public enum SessionEvent: Sendable, Hashable {
     case sent(Data)
     case prompt(RenderedLine)
     case renderedLine(RenderedLine)
+    case beep
     case gmcp(GMCPMessage)
     case mcp(MCPMessage)
     case encoding(TextEncoding)
@@ -257,6 +261,10 @@ public actor SessionActor {
         processor.resetFormatting()
     }
 
+    public func configureANSI(_ settings: ANSISettings) {
+        processor.configureANSI(settings)
+    }
+
     public func setTerminalType(_ value: String) {
         processor.setTerminalType(value)
     }
@@ -325,6 +333,7 @@ public actor SessionActor {
             eventContinuation?.yield(.renderedLine(line))
             eventContinuation?.yield(.activity(important: false))
         case let .prompt(line): eventContinuation?.yield(.prompt(line))
+        case .beep: eventContinuation?.yield(.beep)
         case let .gmcp(message): eventContinuation?.yield(.gmcp(message))
         case let .mcp(message): eventContinuation?.yield(.mcp(message))
         case let .encoding(encoding): eventContinuation?.yield(.encoding(encoding))

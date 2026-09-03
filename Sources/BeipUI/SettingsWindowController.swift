@@ -9,6 +9,7 @@ import UniformTypeIdentifiers
 /// not own another settings surface.
 enum SettingsSection: String, CaseIterable, Hashable {
     case appearance
+    case ansiColors
     case output
     case input
     case restoreLogs
@@ -19,6 +20,7 @@ enum SettingsSection: String, CaseIterable, Hashable {
     var title: String {
         switch self {
         case .appearance: "Appearance"
+        case .ansiColors: "ANSI Colors"
         case .output: "Output"
         case .input: "Input"
         case .restoreLogs: "Restore Logs"
@@ -214,6 +216,21 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     private var appearanceForeground: NSColorWell!
     private var appearanceBackground: NSColorWell!
     private var appearanceAccent: NSColorWell!
+
+    private var ansiColorTable: NSTableView!
+    private var ansiSelectedColor: NSColorWell!
+    private var ansiSelectedColorIndex = 0
+    private var ansiPreventInvisible: NSButton!
+    private var ansiResetOnNewLine: NSButton!
+    private var ansiFontBold: NSButton!
+    private var ansiParseBlinking: NSButton!
+    private var ansiBeepEnabled: NSButton!
+    private var ansiSystemBeep: NSButton!
+    private var ansiCustomBeep: NSButton!
+    private var ansiBeepPath: NSTextField!
+    private var ansiBeepChange: NSButton!
+    private var ansiBeepPlay: NSButton!
+    private var ansiParseCodes: NSButton!
 
     private var outputScope: NSPopUpButton!
     private var outputInherit: NSButton!
@@ -488,6 +505,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         } else {
             switch selectedSection {
             case .appearance: buildAppearance()
+            case .ansiColors: buildANSIColors()
             case .output: buildOutput()
             case .input: buildInput()
             case .restoreLogs: buildRestoreLogs()
@@ -534,6 +552,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     private func refreshControls(for section: SettingsSection) {
         switch section {
         case .appearance: loadAppearanceControls()
+        case .ansiColors: loadANSIControls()
         case .output: loadOutputControls()
         case .input: loadInputControls()
         case .restoreLogs: loadRestoreLogsControls()
@@ -558,9 +577,41 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
 
     // MARK: - Sidebar
 
-    func numberOfRows(in tableView: NSTableView) -> Int { SettingsSection.allCases.count }
+    func numberOfRows(in tableView: NSTableView) -> Int {
+        if tableView === ansiColorTable { return ANSIColorName.allCases.count }
+        return SettingsSection.allCases.count
+    }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        if tableView === ansiColorTable {
+            let name = ANSIColorName.allCases[row]
+            let identifier = NSUserInterfaceItemIdentifier("ANSIColorRow")
+            let cell = tableView.makeView(withIdentifier: identifier, owner: self) as? NSTableCellView
+                ?? NSTableCellView()
+            cell.identifier = identifier
+            cell.setAccessibilityIdentifier("ansiColorRow.\(name.rawValue)")
+            cell.setAccessibilityLabel(name.displayName)
+            cell.textField = nil
+            cell.subviews.forEach { $0.removeFromSuperview() }
+            let label = NSTextField(labelWithString: name.displayName)
+            label.translatesAutoresizingMaskIntoConstraints = false
+            label.setAccessibilityIdentifier("ansiColorName.\(name.rawValue)")
+            let swatch = NSColorWell()
+            swatch.color = nsColor(for: profileLibrary.workspace.projection.ansi.color(for: name))
+            swatch.isEnabled = false
+            swatch.translatesAutoresizingMaskIntoConstraints = false
+            swatch.widthAnchor.constraint(equalToConstant: 44).isActive = true
+            swatch.setAccessibilityIdentifier("ansiColorSwatch.\(name.rawValue)")
+            cell.addSubview(label)
+            cell.addSubview(swatch)
+            NSLayoutConstraint.activate([
+                label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 8),
+                label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+                swatch.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -8),
+                swatch.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            ])
+            return cell
+        }
         let identifier = NSUserInterfaceItemIdentifier("SettingsSidebarCell")
         let cell = tableView.makeView(withIdentifier: identifier, owner: self) as? NSTableCellView
             ?? NSTableCellView()
@@ -583,6 +634,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
+        if let table = notification.object as? NSTableView, table === ansiColorTable {
+            guard table.selectedRow >= 0, ANSIColorName.allCases.indices.contains(table.selectedRow) else { return }
+            ansiSelectedColorIndex = table.selectedRow
+            ansiSelectedColor.color = nsColor(for: profileLibrary.workspace.projection.ansi.colors[ansiSelectedColorIndex])
+            return
+        }
         let row = sidebar.selectedRow
         guard SettingsSection.allCases.indices.contains(row), SettingsSection.allCases[row] != selectedSection else { return }
         guard commitCurrentFieldsIfNeeded() else {
@@ -750,6 +807,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         guard !applyingExternalChange else { return }
         switch selectedSection {
         case .appearance: appearanceChanged(sender)
+        case .ansiColors: ansiColorsChanged(sender)
         case .output: outputChanged(sender)
         case .input: inputChanged(sender)
         case .restoreLogs: restoreLogsChanged(sender)
@@ -780,6 +838,227 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         )
         mutatePreferences { $0.theme = theme }
         updateAppearanceEnabledState()
+    }
+
+    // MARK: - ANSI Colors
+
+    private func buildANSIColors() {
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("ansiColorColumn"))
+        column.title = "Color"
+        ansiColorTable = NSTableView()
+        ansiColorTable.headerView = nil
+        ansiColorTable.addTableColumn(column)
+        ansiColorTable.rowHeight = 28
+        ansiColorTable.intercellSpacing = NSSize(width: 0, height: 1)
+        ansiColorTable.usesAlternatingRowBackgroundColors = true
+        ansiColorTable.dataSource = self
+        ansiColorTable.delegate = self
+        ansiColorTable.setAccessibilityIdentifier("ansiColorTable")
+
+        let colorScroll = NSScrollView()
+        colorScroll.documentView = ansiColorTable
+        colorScroll.hasVerticalScroller = true
+        colorScroll.hasHorizontalScroller = false
+        colorScroll.drawsBackground = false
+        colorScroll.translatesAutoresizingMaskIntoConstraints = false
+        colorScroll.heightAnchor.constraint(equalToConstant: 250).isActive = true
+        colorScroll.widthAnchor.constraint(equalToConstant: 500).isActive = true
+        colorScroll.setAccessibilityIdentifier("ansiColorsTableScroll")
+
+        ansiSelectedColor = NSColorWell()
+        ansiSelectedColor.target = self
+        ansiSelectedColor.action = #selector(controlChanged(_:))
+        ansiSelectedColor.setAccessibilityIdentifier("ansiSelectedColor")
+        ansiSelectedColor.translatesAutoresizingMaskIntoConstraints = false
+        ansiSelectedColor.widthAnchor.constraint(equalToConstant: 90).isActive = true
+
+        let change = NSButton(title: "Change…", target: self, action: #selector(ansiChangeColor(_:)))
+        change.bezelStyle = .rounded
+        change.setAccessibilityIdentifier("ansiColorChange")
+        let `default` = NSButton(title: "Default", target: self, action: #selector(ansiDefaultColor(_:)))
+        `default`.bezelStyle = .rounded
+        `default`.setAccessibilityIdentifier("ansiColorDefault")
+        let selectedControls = NSStackView(views: [ansiSelectedColor, change, `default`])
+        selectedControls.orientation = .horizontal
+        selectedControls.alignment = .centerY
+        selectedControls.spacing = 8
+
+        let presetButtons = ANSIPalettePreset.allCases.map { preset -> NSButton in
+            let button = NSButton(title: preset.rawValue, target: self, action: #selector(ansiPresetChanged(_:)))
+            button.bezelStyle = .rounded
+            button.setAccessibilityIdentifier("ansiPreset.\(preset.rawValue.lowercased())")
+            return button
+        }
+        let presets = NSStackView(views: presetButtons)
+        presets.orientation = .horizontal
+        presets.alignment = .centerY
+        presets.spacing = 8
+        presets.setAccessibilityIdentifier("ansiPresets")
+
+        ansiPreventInvisible = makeCheckbox("Prevent invisible text", identifier: "ansiPreventInvisible")
+        ansiResetOnNewLine = makeCheckbox("Reset formatting on new line", identifier: "ansiResetOnNewLine")
+        ansiFontBold = makeCheckbox("Use font bold", identifier: "ansiFontBold")
+        ansiParseBlinking = makeCheckbox("Parse blinking", identifier: "ansiParseBlinking")
+
+        ansiBeepEnabled = makeCheckbox("Enable beep", identifier: "ansiBeepEnabled")
+        ansiSystemBeep = NSButton(radioButtonWithTitle: "Use system beep", target: self, action: #selector(controlChanged(_:)))
+        ansiSystemBeep.setAccessibilityIdentifier("ansiSystemBeep")
+        ansiCustomBeep = NSButton(radioButtonWithTitle: "Use custom sound", target: self, action: #selector(controlChanged(_:)))
+        ansiCustomBeep.setAccessibilityIdentifier("ansiCustomBeep")
+        ansiBeepPath = makeTextField("ansiBeepPath")
+        ansiBeepPath.placeholderString = "Path to a sound file"
+        ansiBeepChange = NSButton(title: "Change…", target: self, action: #selector(ansiChooseBeep(_:)))
+        ansiBeepChange.bezelStyle = .rounded
+        ansiBeepChange.setAccessibilityIdentifier("ansiBeepChange")
+        ansiBeepPlay = NSButton(title: "Play preview", target: self, action: #selector(ansiPlayBeep(_:)))
+        ansiBeepPlay.bezelStyle = .rounded
+        ansiBeepPlay.setAccessibilityIdentifier("ansiBeepPlay")
+        let beepPath = NSStackView(views: [ansiBeepPath, ansiBeepChange, ansiBeepPlay])
+        beepPath.orientation = .horizontal
+        beepPath.alignment = .centerY
+        beepPath.spacing = 8
+
+        ansiParseCodes = makeCheckbox("Parse ANSI Codes", identifier: "ansiParseCodes")
+
+        contentStack.addArrangedSubview(group("Text colors", [
+            colorScroll,
+            row("Selected color:", selectedControls),
+            row("Presets:", presets),
+        ], identifier: "ansiColorsSection"))
+        contentStack.addArrangedSubview(group("Appearance", [
+            checkboxRow(ansiPreventInvisible), checkboxRow(ansiResetOnNewLine),
+            checkboxRow(ansiFontBold), checkboxRow(ansiParseBlinking),
+        ], identifier: "settings.ansiColors.appearance"))
+        contentStack.addArrangedSubview(group("Beep", [
+            checkboxRow(ansiBeepEnabled), checkboxRow(ansiSystemBeep),
+            checkboxRow(ansiCustomBeep), row("Sound file:", beepPath),
+        ], identifier: "settings.ansiColors.beep"))
+        contentStack.addArrangedSubview(group("Miscellaneous", [
+            checkboxRow(ansiParseCodes),
+        ], identifier: "settings.ansiColors.misc"))
+        loadANSIControls()
+    }
+
+    private func loadANSIControls() {
+        guard ansiColorTable != nil else { return }
+        let settings = profileLibrary.workspace.projection.ansi
+        ansiColorTable.reloadData()
+        ansiColorTable.selectRowIndexes(IndexSet(integer: ansiSelectedColorIndex), byExtendingSelection: false)
+        ansiSelectedColor.color = nsColor(for: settings.colors[ansiSelectedColorIndex])
+        ansiPreventInvisible.state = settings.preventInvisible ? .on : .off
+        ansiResetOnNewLine.state = settings.resetOnNewLine ? .on : .off
+        ansiFontBold.state = settings.fontBold ? .on : .off
+        ansiParseBlinking.state = settings.parseBlinking ? .on : .off
+        ansiBeepEnabled.state = settings.beep ? .on : .off
+        ansiSystemBeep.state = settings.beepSystem ? .on : .off
+        ansiCustomBeep.state = settings.beepSystem ? .off : .on
+        ansiBeepPath.stringValue = settings.beepFileName
+        ansiParseCodes.state = settings.parse ? .on : .off
+        updateANSIEnabledState()
+    }
+
+    private func updateANSIEnabledState() {
+        guard ansiBeepEnabled != nil else { return }
+        let beepEnabled = ansiBeepEnabled.state == .on
+        let custom = ansiCustomBeep.state == .on
+        ansiSystemBeep.isEnabled = beepEnabled
+        ansiCustomBeep.isEnabled = beepEnabled
+        ansiBeepPath.isEnabled = beepEnabled && custom
+        ansiBeepChange.isEnabled = beepEnabled && custom
+        ansiBeepPlay.isEnabled = beepEnabled
+    }
+
+    private func mutateANSI(_ mutation: @escaping (inout ANSISettings) -> Void) {
+        do {
+            try profileLibrary.mutate { workspace in
+                workspace.updateANSISettings(mutation)
+            }
+            onPreferencesMutation()
+            loadANSIControls()
+        } catch {
+            showInlineError("Unable to save ANSI settings: \(error.localizedDescription)")
+        }
+    }
+
+    private func nsColor(for color: BeipCore.RGBColor) -> NSColor {
+        NSColor(calibratedRed: CGFloat(color.red) / 255,
+                green: CGFloat(color.green) / 255,
+                blue: CGFloat(color.blue) / 255,
+                alpha: 1)
+    }
+
+    private func rgbColor(from color: NSColor) -> BeipCore.RGBColor {
+        let converted = color.usingColorSpace(.sRGB) ?? color
+        return BeipCore.RGBColor(
+            red: UInt8(clamping: Int((converted.redComponent * 255).rounded())),
+            green: UInt8(clamping: Int((converted.greenComponent * 255).rounded())),
+            blue: UInt8(clamping: Int((converted.blueComponent * 255).rounded()))
+        )
+    }
+
+    private func ansiColorsChanged(_ sender: Any?) {
+        if let control = sender as? NSColorWell, control === ansiSelectedColor {
+            let index = ansiSelectedColorIndex
+            let color = rgbColor(from: ansiSelectedColor.color)
+            mutateANSI { $0.colors[index] = color }
+        } else if let control = sender as? NSButton {
+            if control === ansiPreventInvisible { mutateANSI { $0.preventInvisible = self.ansiPreventInvisible.state == .on } }
+            else if control === ansiResetOnNewLine { mutateANSI { $0.resetOnNewLine = self.ansiResetOnNewLine.state == .on } }
+            else if control === ansiFontBold { mutateANSI { $0.fontBold = self.ansiFontBold.state == .on } }
+            else if control === ansiParseBlinking { mutateANSI { $0.parseBlinking = self.ansiParseBlinking.state == .on } }
+            else if control === ansiBeepEnabled { mutateANSI { $0.beep = self.ansiBeepEnabled.state == .on } }
+            else if control === ansiSystemBeep { mutateANSI { $0.beepSystem = true } }
+            else if control === ansiCustomBeep { mutateANSI { $0.beepSystem = false } }
+            else if control === ansiParseCodes { mutateANSI { $0.parse = self.ansiParseCodes.state == .on } }
+        }
+        updateANSIEnabledState()
+    }
+
+    @objc private func ansiChangeColor(_ sender: Any?) {
+        let panel = NSColorPanel.shared
+        panel.color = ansiSelectedColor.color
+        panel.setTarget(self)
+        panel.setAction(#selector(ansiColorPanelChanged(_:)))
+        panel.orderFront(nil)
+    }
+
+    @objc private func ansiColorPanelChanged(_ sender: Any?) {
+        guard let panel = sender as? NSColorPanel else { return }
+        ansiSelectedColor.color = panel.color
+        ansiColorsChanged(ansiSelectedColor)
+    }
+
+    @objc private func ansiDefaultColor(_ sender: Any?) {
+        let index = ansiSelectedColorIndex
+        mutateANSI { $0.colors[index] = ANSIPalettePreset.xTerm.colors[index] }
+    }
+
+    @objc private func ansiPresetChanged(_ sender: Any?) {
+        guard let button = sender as? NSButton,
+              let preset = ANSIPalettePreset.allCases.first(where: { $0.rawValue == button.title }) else { return }
+        mutateANSI { $0.colors = preset.colors }
+    }
+
+    @objc private func ansiChooseBeep(_ sender: Any?) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.audio]
+        panel.beginSheetModal(for: window!) { [weak self] response in
+            guard response == .OK, let url = panel.url, let self else { return }
+            self.ansiBeepPath.stringValue = url.path
+            self.mutateANSI { $0.beepFileName = url.path }
+        }
+    }
+
+    @objc private func ansiPlayBeep(_ sender: Any?) {
+        if ansiSystemBeep.state == .on {
+            NSSound.beep()
+        } else if let path = ansiBeepPath?.stringValue, !path.isEmpty {
+            let expanded = (path as NSString).expandingTildeInPath
+            NSSound(contentsOfFile: expanded, byReference: true)?.play()
+        }
     }
 
     private func updateAppearanceEnabledState() {
@@ -1674,6 +1953,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         }
         guard let tag = FieldTag(rawValue: field.tag) else {
             if field === scriptStartupPath { saveScripting() }
+            else if field === ansiBeepPath { mutateANSI { $0.beepFileName = self.ansiBeepPath.stringValue } }
             return
         }
         let valid = commitNumericField(field, tag: tag)
