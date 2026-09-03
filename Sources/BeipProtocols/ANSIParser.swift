@@ -226,12 +226,21 @@ public struct ANSIParser: Sendable {
         var rendered = style
         let logicalForegroundIsBackground = inverse
 
-        if rendered.bold, !settings.fontBold,
-           let index = foregroundPaletteIndex, index < 8 {
-            if logicalForegroundIsBackground {
-                rendered.background = settings.colors[index + 8]
-            } else {
-                rendered.foreground = settings.colors[index + 8]
+        if rendered.bold, !settings.fontBold {
+            // With no active foreground, the original client treats bold as
+            // bold white rather than leaving the default foreground unchanged.
+            let logicalForeground = logicalForegroundIsBackground
+                ? rendered.background
+                : rendered.foreground
+            let index = foregroundPaletteIndex ?? (logicalForeground == nil
+                ? ANSIColorName.white.index
+                : nil)
+            if let index, index < 8 {
+                if logicalForegroundIsBackground {
+                    rendered.background = settings.colors[index + 8]
+                } else {
+                    rendered.foreground = settings.colors[index + 8]
+                }
             }
         }
 

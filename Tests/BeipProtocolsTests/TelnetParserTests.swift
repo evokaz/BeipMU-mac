@@ -367,6 +367,50 @@ final class ANSIParserTests: XCTestCase {
         XCTAssertTrue(fontBold.runs[0].style.bold)
     }
 
+    func testBareBoldUsesConfiguredBoldWhiteForeground() {
+        var parser = ANSIParser()
+        let line = parser.parse("\u{1b}[1mbold\u{1b}[22mplain")
+
+        XCTAssertEqual(line.runs[0].style.foreground, ANSISettings.default.color(for: .boldWhite))
+        XCTAssertFalse(line.runs[1].style.bold)
+        XCTAssertNil(line.runs[1].style.foreground)
+    }
+
+    func testBareBoldHonorsCustomizedBoldWhitePaletteEntry() {
+        var settings = ANSISettings.default
+        let customBoldWhite = BeipCore.RGBColor(red: 1, green: 2, blue: 3)
+        settings.colors[.boldWhite] = customBoldWhite
+        var parser = ANSIParser(settings: settings)
+
+        let line = parser.parse("\u{1b}[1mcustom")
+
+        XCTAssertEqual(line.runs[0].style.foreground, customBoldWhite)
+    }
+
+    func testBareBoldResetsToDefaultForegroundWithSGR0() {
+        var parser = ANSIParser()
+        let line = parser.parse("\u{1b}[1mbold\u{1b}[0mplain")
+
+        XCTAssertEqual(line.runs[0].style.foreground, ANSISettings.default.color(for: .boldWhite))
+        XCTAssertEqual(line.runs[1].style, TextStyle())
+    }
+
+    func testForegroundResetRestoresOrdinaryDefaultForeground() {
+        var parser = ANSIParser()
+        let line = parser.parse("\u{1b}[31mred\u{1b}[39mplain")
+
+        XCTAssertEqual(line.runs[0].style.foreground, ANSISettings.default.color(for: .red))
+        XCTAssertNil(line.runs[1].style.foreground)
+    }
+
+    func testFontBoldKeepsDefaultForeground() {
+        var parser = ANSIParser(options: .init(useFontBold: true))
+        let line = parser.parse("\u{1b}[1mheavy")
+
+        XCTAssertNil(line.runs[0].style.foreground)
+        XCTAssertTrue(line.runs[0].style.bold)
+    }
+
     func testFaintDarkensLogicalForegroundWhileInverseIsActive() {
         var parser = ANSIParser()
         let line = parser.parse("\u{1b}[31;44;7;2mfaint")
