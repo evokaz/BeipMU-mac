@@ -783,8 +783,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         contentStack.addArrangedSubview(group("Window and chrome appearance", [
             row("Mode:", appearanceMode),
             row("Menu strip position:", menuStripPosition),
-            row("Workspace text:", appearanceForeground),
-            row("Workspace background:", appearanceBackground),
+            row("Workspace contrast:", appearanceForeground),
+            row("Workspace base:", appearanceBackground),
             row("Accent:", appearanceAccent),
         ], identifier: "settings.appearance.group"))
         loadAppearanceControls()
