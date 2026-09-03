@@ -28,7 +28,7 @@ struct WorkspaceThemeSettings: Codable, Equatable {
 struct TextWindowSettings: Codable, Equatable {
     var fontName = "Menlo"
     var fontSize = 13.0
-    var foregroundHex = "#E6E6E6"
+    var foregroundHex = "#C0C0C0"
     var backgroundHex = "#0D0D0D"
     var webLinkHex = "#32A8FF"
     var invertBrightness = false
@@ -186,6 +186,9 @@ struct AtlasSurfacePreferences: Codable, Equatable {
 }
 
 struct WorkspacePreferences: Codable, Equatable {
+    static let currentSchemaVersion = 1
+
+    var schemaVersion = Self.currentSchemaVersion
     var outputHistoryLimit = 10_000
     var showsTimestamps = false
     var usesFanFoldBackgrounds = false
@@ -249,6 +252,7 @@ struct WorkspacePreferences: Codable, Equatable {
         webViewPanes: [String: [SavedWebViewPane]] = [:],
         tileMapEdits: [String: [String: GMCPTileMap]] = [:]
     ) {
+        self.schemaVersion = Self.currentSchemaVersion
         self.outputHistoryLimit = outputHistoryLimit
         self.showsTimestamps = showsTimestamps
         self.usesFanFoldBackgrounds = usesFanFoldBackgrounds
@@ -283,6 +287,7 @@ struct WorkspacePreferences: Codable, Equatable {
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try values.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 0
         outputHistoryLimit = try values.decodeIfPresent(Int.self, forKey: .outputHistoryLimit) ?? 10_000
         showsTimestamps = try values.decodeIfPresent(Bool.self, forKey: .showsTimestamps) ?? false
         usesFanFoldBackgrounds = try values.decodeIfPresent(Bool.self, forKey: .usesFanFoldBackgrounds) ?? false
@@ -402,6 +407,10 @@ enum WorkspacePreferencesStore {
             return .init()
         }
         var result = decoded
+        let needsMigration = result.schemaVersion < WorkspacePreferences.currentSchemaVersion
+        if needsMigration {
+            result.migrateLegacyTextWindowForeground()
+        }
         result.outputHistoryLimit = max(100, result.outputHistoryLimit)
         result.inputHeight = max(30, min(1_000, result.inputHeight))
         result.dockThickness = max(160, min(600, result.dockThickness))
@@ -429,6 +438,9 @@ enum WorkspacePreferencesStore {
         }
         result.tabInputWindowSettings = result.tabInputWindowSettings.mapValues {
             .init(usesGlobalSettings: $0.usesGlobalSettings, settings: $0.settings.normalized)
+        }
+        if needsMigration {
+            save(result, defaults: defaults)
         }
         return result
     }
@@ -493,6 +505,28 @@ enum WorkspacePreferencesStore {
 }
 
 extension WorkspacePreferences {
+    fileprivate mutating func migrateLegacyTextWindowForeground() {
+        func migrated(_ settings: TextWindowSettings) -> TextWindowSettings {
+            var result = settings
+            if result.foregroundHex == "#E6E6E6" {
+                result.foregroundHex = "#C0C0C0"
+            }
+            return result
+        }
+
+        globalTextWindowSettings = migrated(globalTextWindowSettings)
+        worldTextWindowSettings = worldTextWindowSettings.mapValues {
+            .init(usesGlobalSettings: $0.usesGlobalSettings, settings: migrated($0.settings))
+        }
+        characterTextWindowSettings = characterTextWindowSettings.mapValues {
+            .init(usesGlobalSettings: $0.usesGlobalSettings, settings: migrated($0.settings))
+        }
+        tabTextWindowSettings = tabTextWindowSettings.mapValues {
+            .init(usesGlobalSettings: $0.usesGlobalSettings, settings: migrated($0.settings))
+        }
+        schemaVersion = Self.currentSchemaVersion
+    }
+
     /// Normalization used after a live Settings edit. Compatibility mirrors
     /// are synchronized by the typed Output/Input mutations that own them;
     /// a theme or spelling edit must not rewrite unrelated legacy fields.

@@ -6,6 +6,14 @@ import Foundation
 import XCTest
 
 final class PreferencePersistenceTests: XCTestCase {
+    func testNewPreferencesUseClassicGrayOnlyForOrdinaryOutput() {
+        let preferences = WorkspacePreferences()
+
+        XCTAssertEqual(preferences.globalTextWindowSettings.foregroundHex, "#C0C0C0")
+        XCTAssertEqual(preferences.theme.foregroundHex, "#E6E6E6")
+        XCTAssertEqual(preferences.globalInputWindowSettings.foregroundHex, "#E6E6E6")
+    }
+
     func testWorkspacePreferencesRoundTrip() throws {
         let isolatedDefaults = try WorkspaceUITestSupport.makeIsolatedDefaults()
         let suiteName = isolatedDefaults.suiteName
@@ -145,6 +153,73 @@ final class PreferencePersistenceTests: XCTestCase {
         XCTAssertEqual(decoded.workspaceLayouts, [:])
         XCTAssertEqual(decoded.webViewPanes, [:])
         XCTAssertEqual(decoded.tileMapEdits, [:])
+    }
+
+    func testLegacyOutputForegroundMigratesAtEveryScopeAndPersistsTheSchemaMarker() throws {
+        let isolatedDefaults = try WorkspaceUITestSupport.makeIsolatedDefaults()
+        let suiteName = isolatedDefaults.suiteName
+        let defaults = isolatedDefaults.defaults
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let identity = TextWindowSettingsIdentity(world: "World", character: "Character", tab: "Main")
+        var legacy = WorkspacePreferences(
+            theme: .init(foregroundHex: "#E6E6E6"),
+            globalInputWindowSettings: .init(foregroundHex: "#E6E6E6")
+        )
+        legacy.globalTextWindowSettings.foregroundHex = "#E6E6E6"
+        legacy.worldTextWindowSettings[try XCTUnwrap(identity.worldKey)] = .init(
+            usesGlobalSettings: false,
+            settings: .init(foregroundHex: "#E6E6E6")
+        )
+        legacy.worldTextWindowSettings["custom-world"] = .init(
+            usesGlobalSettings: false,
+            settings: .init(foregroundHex: "#112233")
+        )
+        legacy.characterTextWindowSettings[try XCTUnwrap(identity.characterKey)] = .init(
+            usesGlobalSettings: true,
+            settings: .init(foregroundHex: "#E6E6E6")
+        )
+        legacy.characterTextWindowSettings["custom-character"] = .init(
+            usesGlobalSettings: false,
+            settings: .init(foregroundHex: "#223344")
+        )
+        legacy.tabTextWindowSettings[try XCTUnwrap(identity.tabKey)] = .init(
+            usesGlobalSettings: false,
+            settings: .init(foregroundHex: "#E6E6E6")
+        )
+        legacy.tabTextWindowSettings["custom-tab"] = .init(
+            usesGlobalSettings: false,
+            settings: .init(foregroundHex: "#334455")
+        )
+
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(legacy)) as? [String: Any]
+        )
+        object.removeValue(forKey: "schemaVersion")
+        defaults.set(try JSONSerialization.data(withJSONObject: object), forKey: "BeipMU.WorkspacePreferences.v1")
+
+        let migrated = WorkspacePreferencesStore.load(defaults: defaults)
+        XCTAssertEqual(migrated.schemaVersion, WorkspacePreferences.currentSchemaVersion)
+        XCTAssertEqual(migrated.globalTextWindowSettings.foregroundHex, "#C0C0C0")
+        XCTAssertEqual(migrated.worldTextWindowSettings[try XCTUnwrap(identity.worldKey)]?.settings.foregroundHex, "#C0C0C0")
+        XCTAssertEqual(migrated.characterTextWindowSettings[try XCTUnwrap(identity.characterKey)]?.settings.foregroundHex, "#C0C0C0")
+        XCTAssertEqual(migrated.tabTextWindowSettings[try XCTUnwrap(identity.tabKey)]?.settings.foregroundHex, "#C0C0C0")
+        XCTAssertEqual(migrated.worldTextWindowSettings["custom-world"]?.settings.foregroundHex, "#112233")
+        XCTAssertEqual(migrated.characterTextWindowSettings["custom-character"]?.settings.foregroundHex, "#223344")
+        XCTAssertEqual(migrated.tabTextWindowSettings["custom-tab"]?.settings.foregroundHex, "#334455")
+        XCTAssertTrue(migrated.characterTextWindowSettings[try XCTUnwrap(identity.characterKey)]?.usesGlobalSettings == true)
+        XCTAssertEqual(migrated.theme.foregroundHex, "#E6E6E6")
+        XCTAssertEqual(migrated.globalInputWindowSettings.foregroundHex, "#E6E6E6")
+
+        let saved = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: try XCTUnwrap(defaults.data(forKey: "BeipMU.WorkspacePreferences.v1"))) as? [String: Any]
+        )
+        XCTAssertEqual(saved["schemaVersion"] as? Int, WorkspacePreferences.currentSchemaVersion)
+
+        _ = WorkspacePreferencesStore.update(defaults: defaults) { preferences in
+            preferences.globalTextWindowSettings.foregroundHex = "#E6E6E6"
+        }
+        XCTAssertEqual(WorkspacePreferencesStore.load(defaults: defaults).globalTextWindowSettings.foregroundHex, "#E6E6E6")
     }
 
     func testRetiredMenuStripFieldCanBeReadAndConsumedWithoutASecondSourceOfTruth() throws {

@@ -914,6 +914,28 @@ final class VirtualizedOutputViewTests: XCTestCase {
         XCTAssertLessThan(view.effectiveContentWidthForTesting, 500)
     }
 
+    func testOrdinaryOutputIsDarkerThanXTermWhite() throws {
+        let output = OutputTextView()
+        output.applySettings(TextWindowSettings())
+        output.append(.init(text: "ordinary"))
+        output.append(.init(
+            text: "white",
+            runs: [.init(
+                range: 0..<5,
+                style: .init(foreground: ANSIPalettePreset.xTerm.colors[.white])
+            )]
+        ))
+        output.flushPendingOutput()
+
+        let ordinary = try XCTUnwrap(output.primaryOutputViewForTesting.renderedAttributedTextForTesting(at: 0))
+        let white = try XCTUnwrap(output.primaryOutputViewForTesting.renderedAttributedTextForTesting(at: 1))
+        let ordinaryColor = try XCTUnwrap(ordinary.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor)
+        let whiteColor = try XCTUnwrap(white.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor)
+        XCTAssertEqual(ordinaryColor.hexString, "#C0C0C0")
+        XCTAssertEqual(ANSIPalettePreset.xTerm.colors[.white], RGBColor(red: 229, green: 229, blue: 229))
+        XCTAssertGreaterThan(whiteColor.redComponent, ordinaryColor.redComponent)
+    }
+
     func testApplyingTimestampAndFanFoldSettingsRebuildsHistoryOnce() {
         let output = OutputTextView()
         output.append(.init(text: "Existing output", timestamp: Date(timeIntervalSince1970: 0)))
