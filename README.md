@@ -97,7 +97,7 @@ and baseline-recording workflows.
 
 BeipMU stores its live configuration in
 `~/Library/Application Support/BeipMU/`. The portable `Config.txt` format may
-contain character passwords and AI endpoint settings in plaintext, while the
+contain character passwords in plaintext, while the
 Restore Logs journal can contain session output and typed input. Treat the
 live data directory, automatic backup, and exported copies as sensitive.
 
@@ -128,6 +128,7 @@ the complete verification workflow.
 ## Documentation
 
 - [User guide](Documentation/USER_GUIDE.md)
+- [Atlas mapping guide](Documentation/MAPPING.md)
 - [Architecture](Documentation/ARCHITECTURE.md)
 - [Development and testing](Documentation/DEVELOPMENT.md)
 - [Distribution and installation](Documentation/DISTRIBUTION.md)
