@@ -93,7 +93,12 @@ final class ReconnectProfileRefreshTests: XCTestCase {
             profileLibrary: library,
             runsScriptServices: false,
             initialPreferences: WorkspacePreferences(
-                logging: .init(autoLogEnabled: true, defaultLogFilename: logURL.path)
+                logging: .init(
+                    autoLogEnabled: true,
+                    defaultLogFilename: logURL.path,
+                    logsSentText: true,
+                    logsTypedText: true
+                )
             )
         )
         defer { controller.close() }
@@ -105,10 +110,11 @@ final class ReconnectProfileRefreshTests: XCTestCase {
         let serverTask = Task {
             try await scriptedServer.run(.init(actions: [
                 .init(expect: "connect Hero password\r\n"),
+                .init(expect: "ordinary input\r\n"),
+                .init(disconnect: true),
             ]))
         }
         controller.reconnect()
-        try await serverTask.value
 
         try await eventuallyOnMainActor("automatic reconnect log starts") {
             controller.activeLogCount == 1
@@ -117,12 +123,16 @@ final class ReconnectProfileRefreshTests: XCTestCase {
             "Welcome to BeipMU for Mac. Choose Connection → Connect… to begin."
         ))
         let activeLogURL = try XCTUnwrap(controller.activeLogURLsForTesting.first)
-        let contents = try String(contentsOf: activeLogURL, encoding: .utf8)
-        XCTAssertFalse(contents.contains("Welcome to BeipMU for Mac. Choose Connection"))
-
-        controller.disconnect()
+        controller.testingSubmitInput("ordinary input")
+        try await serverTask.value
         try await eventuallyOnMainActor("automatic reconnect log stops") {
             controller.activeLogCount == 0
         }
+        let contents = try String(contentsOf: activeLogURL, encoding: .utf8)
+        XCTAssertFalse(contents.contains("Welcome to BeipMU for Mac. Choose Connection"))
+        XCTAssertFalse(contents.contains("connect Hero password"))
+        XCTAssertFalse(contents.contains("password"))
+        XCTAssertTrue(contents.contains("Typed>ordinary input"))
+        XCTAssertTrue(contents.contains("Sent>ordinary input"))
     }
 }

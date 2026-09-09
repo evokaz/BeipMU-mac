@@ -3227,6 +3227,10 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         processInput(text)
     }
 
+    func testingSubmitInput(_ text: String) {
+        submitInput(text)
+    }
+
     func restoreRecoverySession(_ snapshot: SessionRecoverySession) {
         recoveryCoordinator.prepareForReplay(snapshot.id)
         output.clear()

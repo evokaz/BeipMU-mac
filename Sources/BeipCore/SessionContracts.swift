@@ -102,6 +102,10 @@ public actor SessionActor {
     private var request: ConnectionRequest?
     private var windowColumns: UInt16 = 80
     private var windowRows: UInt16 = 24
+    /// Changes whenever the active connection attempt is replaced or stopped.
+    /// A Connect String send can suspend, so its later completion must not
+    /// announce a connection that is no longer current.
+    private var connectionGeneration: UInt64 = 0
     private var isConnected = false
     private var connectedAt: ContinuousClock.Instant?
     private var statisticsValue = ConnectionStatistics()
@@ -158,6 +162,7 @@ public actor SessionActor {
     }
 
     public func connect(_ request: ConnectionRequest) async {
+        connectionGeneration &+= 1
         self.request = request
         isConnected = false
         processor.reset()
@@ -179,6 +184,7 @@ public actor SessionActor {
     }
 
     public func disconnect() async {
+        connectionGeneration &+= 1
         recordConnectedDuration()
         isConnected = false
         idleTask?.cancel()
@@ -290,21 +296,25 @@ public actor SessionActor {
         case let .state(state):
             switch state {
             case .connected:
+                let generation = connectionGeneration
                 isConnected = true
                 connectedAt = .now
                 lastIdleActivityAt = idleNow()
                 statisticsValue.connectionCount += 1
                 startIdleActionIfNeeded()
+                if let character = request?.character, !character.connectText.isEmpty {
+                    await send(expandConnectText(character.connectText, character: character), echo: false)
+                }
+                guard generation == connectionGeneration, isConnected else { return }
+                eventContinuation?.yield(.state(state))
             case .disconnected, .failed:
                 recordConnectedDuration()
                 isConnected = false
                 idleTask?.cancel()
                 idleTask = nil
-            case .resolving, .connecting, .disconnecting: break
-            }
-            eventContinuation?.yield(.state(state))
-            if case .connected = state, let character = request?.character, !character.connectText.isEmpty {
-                await send(expandConnectText(character.connectText, character: character), echo: false)
+                eventContinuation?.yield(.state(state))
+            case .resolving, .connecting, .disconnecting:
+                eventContinuation?.yield(.state(state))
             }
         case let .sent(data):
             statisticsValue.bytesSent += UInt64(data.count)
