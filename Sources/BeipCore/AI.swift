@@ -10,8 +10,43 @@ public struct AIRequest: Sendable, Hashable, Codable {
     }
 }
 
+/// Effective AI settings for one world. Per-world provider-neutral endpoints
+/// override the global Windows Ollama server; a world model overrides the
+/// global model independently.
+public struct AIConfiguration: Sendable, Equatable {
+    public enum Backend: Sendable, Equatable {
+        case providerNeutral(endpoint: URL)
+        case ollama(server: String)
+    }
+
+    public var backend: Backend
+    public var model: String
+
+    public init(backend: Backend, model: String) {
+        self.backend = backend
+        self.model = model
+    }
+
+    public static func resolve(
+        worldEndpoint: URL?,
+        worldModel: String,
+        globalOllamaServer: String,
+        globalModel: String
+    ) -> Self {
+        let worldModel = worldModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let model = worldModel.isEmpty
+            ? globalModel.trimmingCharacters(in: .whitespacesAndNewlines)
+            : worldModel
+        if let worldEndpoint {
+            return .init(backend: .providerNeutral(endpoint: worldEndpoint), model: model)
+        }
+        return .init(backend: .ollama(server: globalOllamaServer), model: model)
+    }
+}
+
 public enum AIClientError: LocalizedError, Equatable {
     case missingEndpoint
+    case missingModel
     case invalidEndpoint
     case invalidResponse
     case server(status: Int, message: String)
@@ -19,6 +54,7 @@ public enum AIClientError: LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case .missingEndpoint: "No AI endpoint is configured for this world."
+        case .missingModel: "No AI model is configured."
         case .invalidEndpoint: "The AI endpoint must use HTTP or HTTPS."
         case .invalidResponse: "The AI endpoint returned an unreadable response."
         case let .server(status, message):
@@ -27,12 +63,26 @@ public enum AIClientError: LocalizedError, Equatable {
     }
 }
 
-/// Small, provider-neutral client for the v331 AI window.  The endpoint is
-/// intentionally configured per server.  It accepts the common `{response}`
-/// and `{choices:[{message:{content}}]}` shapes and otherwise displays a
-/// plain JSON/string response without binding the UI to one provider.
+/// AI client for the native window. Explicit per-world endpoints use the
+/// provider-neutral request shape; global Windows settings use Ollama's API.
+/// Responses accept the common `{response}` and
+/// `{choices:[{message:{content}}]}` shapes.
 public actor AIClient {
     public init() {}
+
+    public func request(
+        _ request: AIRequest,
+        configuration: AIConfiguration,
+        apiKey: String? = nil
+    ) async throws -> String {
+        let configuredRequest = AIRequest(prompt: request.prompt, model: configuration.model)
+        switch configuration.backend {
+        case let .providerNeutral(endpoint):
+            return try await self.request(configuredRequest, endpoint: endpoint, apiKey: apiKey)
+        case let .ollama(server):
+            return try await requestOllama(configuredRequest, server: server)
+        }
+    }
 
     public func request(_ request: AIRequest, endpoint: URL?, apiKey: String? = nil) async throws -> String {
         guard let endpoint else { throw AIClientError.missingEndpoint }
@@ -56,6 +106,55 @@ public actor AIClient {
         }
         guard let text = Self.decodeText(data), !text.isEmpty else { throw AIClientError.invalidResponse }
         return text
+    }
+
+    /// Sends a prompt to an Ollama server configured by its base address,
+    /// such as `localhost:11434` or `http://localhost:11434`.
+    public func requestOllama(_ request: AIRequest, server: String) async throws -> String {
+        guard !request.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw AIClientError.missingModel
+        }
+        let endpoint = try Self.ollamaGenerateEndpoint(for: server)
+        var urlRequest = URLRequest(url: endpoint)
+        urlRequest.httpMethod = "POST"
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.httpBody = try JSONSerialization.data(withJSONObject: [
+            "model": request.model,
+            "prompt": request.prompt,
+            "stream": false,
+        ])
+        let (data, response) = try await URLSession.shared.data(for: urlRequest)
+        guard let http = response as? HTTPURLResponse else { throw AIClientError.invalidResponse }
+        guard (200..<300).contains(http.statusCode) else {
+            let message = Self.decodeText(data) ?? String(decoding: data, as: UTF8.self)
+            throw AIClientError.server(status: http.statusCode, message: message)
+        }
+        guard let text = Self.decodeText(data), !text.isEmpty else { throw AIClientError.invalidResponse }
+        return text
+    }
+
+    /// Converts an Ollama base address to its generate endpoint. A missing
+    /// scheme defaults to HTTP, as is common for local Ollama installations.
+    public nonisolated static func ollamaGenerateEndpoint(for server: String) throws -> URL {
+        var address = server.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !address.isEmpty else { throw AIClientError.missingEndpoint }
+        if !address.contains("://") { address = "http://" + address }
+        guard var components = URLComponents(string: address),
+              let scheme = components.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              components.host?.isEmpty == false else {
+            throw AIClientError.invalidEndpoint
+        }
+        let basePath = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if basePath.hasSuffix("api/generate") {
+            components.path = "/" + basePath
+        } else if basePath.isEmpty {
+            components.path = "/api/generate"
+        } else {
+            components.path = "/\(basePath)/api/generate"
+        }
+        guard let endpoint = components.url else { throw AIClientError.invalidEndpoint }
+        return endpoint
     }
 
     public nonisolated static func decodeText(_ data: Data) -> String? {

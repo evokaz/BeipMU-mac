@@ -1,0 +1,36 @@
+// Windows v332 compatibility fixture with global AI settings and extensions.
+Version=332
+AI {
+  Server="localhost:11434"
+  Model="llama3.2"
+}
+CheckForUpdates=true
+DockedCaptionFontName="Segoe UI"
+DockedCaptionHeight=24
+FutureRoot="preserve root extension"
+Connections {
+  Aliases {
+    Active=true
+    { Description="North" FindString { MatchText="n" } Replace="north" }
+  }
+  Triggers {
+    Active=true
+    { Description="World trigger" FutureTrigger="preserve trigger extension"
+      FindString { MatchText="ready" }
+      Send { Active=true Send="look" }
+    }
+  }
+  Shortcuts {
+    LambdaMOO {
+      Host="lambda.moo.mud.org:8888"
+      FutureWorld="preserve world extension"
+      Characters {
+        Guest {
+          Connect="connect guest"
+          FutureCharacter="preserve character extension"
+        }
+      }
+    }
+  }
+  FutureConnections="preserve connection extension"
+}

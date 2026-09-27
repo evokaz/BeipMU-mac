@@ -419,7 +419,7 @@ final class LegacyProfileProjectionTests: XCTestCase {
         XCTAssertTrue(serialized.contains("Future=\"untouched\""))
         XCTAssertTrue(serialized.contains("UnknownCharacter=42"))
         XCTAssertTrue(serialized.contains("UnknownServer=\"keep\""))
-        XCTAssertEqual(updated.value(at: ["Version"]), "331")
+        XCTAssertEqual(updated.value(at: ["Version"]), "332")
         XCTAssertEqual(updated.value(at: ["Connections", "ConnectTimeout"]), "9000")
         XCTAssertEqual(updated.value(at: ["Connections", "Shortcuts", "Legacy", "Host"]), "new.example:9999")
         XCTAssertEqual(updated.value(at: ["Connections", "Shortcuts", "Legacy", "TLS"]), "true")

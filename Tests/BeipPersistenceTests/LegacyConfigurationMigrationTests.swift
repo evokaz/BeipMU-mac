@@ -10,7 +10,14 @@ final class LegacyConfigurationMigrationTests: XCTestCase {
         XCTAssertThrowsError(try LegacyConfigurationProjection(document: document)) { error in
             XCTAssertEqual(
                 error as? LegacyConfigurationProjection.ProjectionError,
-                .newerConfiguration(found: 999, supported: 331)
+                .newerConfiguration(found: 999, supported: 332)
+            )
+        }
+        let v333 = try LegacyConfigurationDocument(source: "Version=333\nConnections { Shortcuts {} }\n")
+        XCTAssertThrowsError(try LegacyConfigurationProjection(document: v333)) { error in
+            XCTAssertEqual(
+                error as? LegacyConfigurationProjection.ProjectionError,
+                .newerConfiguration(found: 333, supported: 332)
             )
         }
     }
@@ -44,7 +51,7 @@ final class LegacyConfigurationMigrationTests: XCTestCase {
         XCTAssertTrue(server.profile.usesTLS)
 
         let migrated = try projection.applying(to: document)
-        XCTAssertEqual(migrated.value(at: ["Version"]), "331")
+        XCTAssertEqual(migrated.value(at: ["Version"]), "332")
         XCTAssertEqual(migrated.value(at: ["Connections", "Shortcuts", "Legacy", "Host"]), "legacy.example:7777")
         XCTAssertEqual(migrated.value(at: ["Connections", "Shortcuts", "Legacy", "TLS"]), "true")
         XCTAssertEqual(migrated.value(at: ["Connections", "Shortcuts", "Legacy", "Info"]), "existing\r\nName:The Legacy World")

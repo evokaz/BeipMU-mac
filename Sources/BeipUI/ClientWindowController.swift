@@ -3935,14 +3935,20 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             }
             controller.onSubmit = { [weak self, weak controller] value in
                 guard let self else { return }
-                let endpoint = self.currentServer?.aiEndpoint
-                let model = self.currentServer?.aiModel ?? ""
+                let world = self.currentServer
+                let globalAI = self.profileLibrary.workspace.projection.globalAI
+                let configuration = AIConfiguration.resolve(
+                    worldEndpoint: world?.aiEndpoint,
+                    worldModel: world?.aiModel ?? "",
+                    globalOllamaServer: globalAI.server,
+                    globalModel: globalAI.model
+                )
                 self.aiRequestTask?.cancel()
                 self.aiRequestTask = Task {
                     do {
                         let result = try await self.aiClient.request(
-                            .init(prompt: value, model: model),
-                            endpoint: endpoint,
+                            .init(prompt: value),
+                            configuration: configuration,
                             apiKey: ProcessInfo.processInfo.environment["BEIPMU_AI_API_KEY"]
                         )
                         guard !Task.isCancelled else { return }
@@ -3957,7 +3963,19 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             }
             aiWindow = controller
         }
-        controller.updateEndpoint(currentServer?.aiEndpoint)
+        let globalAI = profileLibrary.workspace.projection.globalAI
+        let configuration = AIConfiguration.resolve(
+            worldEndpoint: currentServer?.aiEndpoint,
+            worldModel: currentServer?.aiModel ?? "",
+            globalOllamaServer: globalAI.server,
+            globalModel: globalAI.model
+        )
+        let endpoint: URL?
+        switch configuration.backend {
+        case let .providerNeutral(value): endpoint = value
+        case let .ollama(server): endpoint = try? AIClient.ollamaGenerateEndpoint(for: server)
+        }
+        controller.updateEndpoint(endpoint)
         controller.applyTheme(preferences.theme.palette)
         if isNew {
             presentAIWindow(controller)

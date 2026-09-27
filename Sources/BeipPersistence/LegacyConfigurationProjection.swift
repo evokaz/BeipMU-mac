@@ -2,11 +2,16 @@ import BeipAutomation
 import BeipCore
 import Foundation
 
+/// Windows Config.txt compatibility level used for newly written files.
+public enum LegacyConfigurationVersion {
+    public static let currentWindows = 332
+}
+
 /// Portable, typed view of the connection-related portion of Config.txt.
 /// The syntax tree remains the source of truth so projecting it never drops
 /// unknown or Windows-only properties.
 public struct LegacyConfigurationProjection: Sendable, Equatable {
-    public static let currentWindowsVersion = 331
+    public static let currentWindowsVersion = LegacyConfigurationVersion.currentWindows
 
     public enum ProjectionError: LocalizedError, Equatable {
         case newerConfiguration(found: Int, supported: Int)
@@ -50,6 +55,18 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
         public init(startupPath: String = "", debugEnabled: Bool = false) {
             self.startupPath = startupPath
             self.debugEnabled = debugEnabled
+        }
+    }
+
+    /// Global Windows AI settings. The document remains the source of truth;
+    /// this typed view supplies defaults to the Mac AI window.
+    public struct GlobalAISettings: Sendable, Equatable {
+        public var server: String
+        public var model: String
+
+        public init(server: String = "", model: String = "") {
+            self.server = server
+            self.model = model
         }
     }
 
@@ -143,6 +160,7 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
     public var settings: ConnectionSettings
     public var ansi: ANSISettings
     public var scripting: Scripting
+    public var globalAI: GlobalAISettings
     public var logging: SessionLogOptions
     public var loggingPath: String
     public var servers: [Server]
@@ -168,6 +186,11 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
         scripting = .init(
             startupPath: document.rootValue("ScriptStartup") ?? "",
             debugEnabled: document.rootBool("ScriptDebug") ?? false
+        )
+        let aiNodes = document.firstBlock(named: "AI")?.children
+        globalAI = .init(
+            server: aiNodes?.value("Server") ?? "",
+            model: aiNodes?.value("Model") ?? ""
         )
         let loggingNodes = connections.properties(named: "Logging")
         logging = Self.loggingOptions(from: loggingNodes)

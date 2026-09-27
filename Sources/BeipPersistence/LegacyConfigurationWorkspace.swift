@@ -139,7 +139,7 @@ public struct LegacyConfigurationWorkspace: Sendable {
     public static func empty(isDirty: Bool = true) throws -> Self {
         try .init(
             document: LegacyConfigurationDocument(source: """
-            Version=331
+            Version=\(LegacyConfigurationVersion.currentWindows)
             Connections
             {
               Shortcuts
@@ -2045,7 +2045,7 @@ public struct LegacyConfigurationWorkspace: Sendable {
 
     private static func profileWrapper() throws -> LegacyConfigurationDocument {
         try LegacyConfigurationDocument(source: """
-        Version=331
+        Version=\(LegacyConfigurationVersion.currentWindows)
         Connections
         {
           Shortcuts
@@ -2058,7 +2058,7 @@ public struct LegacyConfigurationWorkspace: Sendable {
     private static func automationWrapper(kind: AutomationKind) throws -> LegacyConfigurationDocument {
         let collection = collectionName(for: kind)
         return try LegacyConfigurationDocument(source: """
-        Version=331
+        Version=\(LegacyConfigurationVersion.currentWindows)
         Connections
         {
           \(collection)

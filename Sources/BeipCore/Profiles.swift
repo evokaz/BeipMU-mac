@@ -24,8 +24,8 @@ public struct ServerProfile: Identifiable, Sendable, Hashable, Codable {
     public var gmcpWebViewPolicy: ServerWebViewPolicy?
     public var sendNAWSOnResize: Bool
     public var limitTelnetCharset: Bool
-    /// Optional HTTP endpoint used by the native `/ai` window.  It is kept
-    /// profile-local so prompts never leak across worlds.
+    /// Optional provider-neutral HTTP endpoint used by the native `/ai`
+    /// window. It overrides the global Windows Ollama settings for this world.
     public var aiEndpoint: URL?
     public var aiModel: String
 

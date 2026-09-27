@@ -28,7 +28,7 @@ architecture; the Intel slice is currently untested.
   settings, themes, keyboard customization, and accessibility-aware behavior.
 - Telnet negotiation, GMCP, MCP, Pueblo, ANSI/256/true color, NAWS, TLS, and
   multiple text encodings.
-- Worlds, characters, and puppets backed by a lossless BeipMU v331-compatible
+- Worlds, characters, and puppets backed by a lossless BeipMU v332-compatible
   `Config.txt` workspace.
 - Scoped aliases, triggers, macros, variables, delayed commands, spawn windows,
   and automation diagnostics.

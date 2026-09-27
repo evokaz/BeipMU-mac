@@ -259,7 +259,7 @@ final class LegacyTriggerProjectionTests: XCTestCase {
         let puppet = try XCTUnwrap(character.puppets.first)
         let trigger = try XCTUnwrap(projection.automation.triggers.triggers.first)
 
-        XCTAssertEqual(projection.sourceVersion, LegacyConfigurationProjection.currentWindowsVersion)
+        XCTAssertEqual(projection.sourceVersion, 331)
         XCTAssertEqual(projection.automation.triggers.afterCount, 1)
         XCTAssertEqual(projection.automation.triggers.triggers.map(\.description), [
             "Global pre corpus",
