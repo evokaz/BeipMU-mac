@@ -95,7 +95,10 @@ final class ScriptRuntimeTests: XCTestCase {
             host: host
         )
 
-        XCTAssertEqual(result.value, "332|332|/tmp/Config.txt|1|Guest|1|1|look|true|Ada")
+        XCTAssertEqual(
+            result.value,
+            "\(WindowsCompatibilityVersion.current)|\(WindowsCompatibilityVersion.current)|/tmp/Config.txt|1|Guest|1|1|look|true|Ada"
+        )
         XCTAssertNil(result.error)
     }
 

@@ -6,18 +6,15 @@ import XCTest
 
 final class LegacyConfigurationMigrationTests: XCTestCase {
     func testTypedProjectionRefusesNewerWindowsConfigurationVersions() throws {
-        let document = try LegacyConfigurationDocument(source: "Version=999\nConnections { Shortcuts {} }\n")
+        let supportedVersion = WindowsCompatibilityVersion.current
+        let newerVersion = supportedVersion + 1
+        let document = try LegacyConfigurationDocument(
+            source: "Version=\(newerVersion)\nConnections { Shortcuts {} }\n"
+        )
         XCTAssertThrowsError(try LegacyConfigurationProjection(document: document)) { error in
             XCTAssertEqual(
                 error as? LegacyConfigurationProjection.ProjectionError,
-                .newerConfiguration(found: 999, supported: 332)
-            )
-        }
-        let v333 = try LegacyConfigurationDocument(source: "Version=333\nConnections { Shortcuts {} }\n")
-        XCTAssertThrowsError(try LegacyConfigurationProjection(document: v333)) { error in
-            XCTAssertEqual(
-                error as? LegacyConfigurationProjection.ProjectionError,
-                .newerConfiguration(found: 333, supported: 332)
+                .newerConfiguration(found: newerVersion, supported: supportedVersion)
             )
         }
     }
@@ -51,7 +48,7 @@ final class LegacyConfigurationMigrationTests: XCTestCase {
         XCTAssertTrue(server.profile.usesTLS)
 
         let migrated = try projection.applying(to: document)
-        XCTAssertEqual(migrated.value(at: ["Version"]), "332")
+        XCTAssertEqual(migrated.value(at: ["Version"]), String(WindowsCompatibilityVersion.current))
         XCTAssertEqual(migrated.value(at: ["Connections", "Shortcuts", "Legacy", "Host"]), "legacy.example:7777")
         XCTAssertEqual(migrated.value(at: ["Connections", "Shortcuts", "Legacy", "TLS"]), "true")
         XCTAssertEqual(migrated.value(at: ["Connections", "Shortcuts", "Legacy", "Info"]), "existing\r\nName:The Legacy World")

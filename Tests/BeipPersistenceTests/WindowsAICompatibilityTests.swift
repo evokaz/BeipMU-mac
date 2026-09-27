@@ -26,7 +26,7 @@ final class WindowsAICompatibilityTests: XCTestCase {
         try workspace.updateTrigger(at: 0, in: .global, trigger: trigger)
 
         let saved = try workspace.renderedDocument()
-        XCTAssertEqual(saved.value(at: ["Version"]), "332")
+        XCTAssertEqual(saved.value(at: ["Version"]), String(WindowsCompatibilityVersion.current))
         XCTAssertEqual(saved.value(at: ["AI", "Server"]), "localhost:11434")
         XCTAssertEqual(saved.value(at: ["AI", "Model"]), "llama3.2")
         XCTAssertEqual(saved.value(at: ["CheckForUpdates"]), "true")
@@ -48,9 +48,12 @@ final class WindowsAICompatibilityTests: XCTestCase {
         XCTAssertNil(saved.value(at: ["Connections", "Shortcuts", "LambdaMOO", "AIModel"]))
     }
 
-    func testNewConfigurationsAndExportsUseV332() throws {
+    func testNewConfigurationsAndExportsUseCurrentWindowsVersion() throws {
         let empty = try LegacyConfigurationWorkspace.empty()
-        XCTAssertEqual(try empty.renderedDocument().value(at: ["Version"]), "332")
+        XCTAssertEqual(
+            try empty.renderedDocument().value(at: ["Version"]),
+            String(WindowsCompatibilityVersion.current)
+        )
 
         let source = try String(
             contentsOf: LegacyConfigurationTestSupport.fixtureURL("v332-ai-config.txt"),
@@ -59,13 +62,13 @@ final class WindowsAICompatibilityTests: XCTestCase {
         let workspace = try LegacyConfigurationWorkspace(document: .init(source: source))
         let world = try XCTUnwrap(workspace.servers.first)
         let profileExport = try workspace.exportProfileHierarchy(.world(world.profile.id))
-        XCTAssertEqual(profileExport.value(at: ["Version"]), "332")
+        XCTAssertEqual(profileExport.value(at: ["Version"]), String(WindowsCompatibilityVersion.current))
 
         let automationExport = try workspace.exportAutomation(
             kind: .triggers,
             selection: .item(.init(scope: .global, path: [0]))
         )
-        XCTAssertEqual(automationExport.value(at: ["Version"]), "332")
+        XCTAssertEqual(automationExport.value(at: ["Version"]), String(WindowsCompatibilityVersion.current))
     }
 
     func testV332WorldHierarchyImportsWithoutDroppingWindowsFields() throws {
@@ -77,7 +80,7 @@ final class WindowsAICompatibilityTests: XCTestCase {
         _ = try destination.mergeProfileHierarchy(from: .init(source: source))
 
         let imported = try destination.renderedDocument()
-        XCTAssertEqual(imported.value(at: ["Version"]), "332")
+        XCTAssertEqual(imported.value(at: ["Version"]), String(WindowsCompatibilityVersion.current))
         XCTAssertEqual(
             imported.value(at: ["Connections", "Shortcuts", "LambdaMOO", "FutureWorld"]),
             "preserve world extension"
