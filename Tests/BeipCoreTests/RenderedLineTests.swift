@@ -12,6 +12,21 @@ final class RenderedLineTests: XCTestCase {
         XCTAssertEqual(decoded, line)
     }
 
+    func testLinkActionsIncludingPromptRoundTripThroughRestoreLogLineCodable() throws {
+        let line = RenderedLine(
+            text: "web send prompt",
+            runs: [
+                .init(range: 0..<3, style: TextStyle(link: .url("https://example.com"))),
+                .init(range: 4..<8, style: TextStyle(link: .send("look", hints: []))),
+                .init(range: 9..<15, style: TextStyle(link: .prompt("look north"))),
+            ],
+            source: .server
+        )
+
+        let restored = try JSONDecoder().decode(RenderedLine.self, from: JSONEncoder().encode(line))
+        XCTAssertEqual(restored, line)
+    }
+
     func testOlderParagraphStyleDecodesWithZeroWrappedIndent() throws {
         let data = Data(#"{"alignment":"left","leftIndent":4,"rightIndent":2,"topPadding":0,"bottomPadding":0}"#.utf8)
         let style = try JSONDecoder().decode(ParagraphStyle.self, from: data)

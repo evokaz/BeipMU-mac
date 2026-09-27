@@ -234,7 +234,7 @@ public struct CommandRegistry: Sendable {
         case "rolltest": return .rollTest
         case "test":
             guard let kind = arguments.first, CommandTestFixtures.payload(for: kind) != nil else {
-                return .display("What do you want to test? (ansi/html/emoji/international/utf8)")
+                return .display("What do you want to test? (ansi/html/emoji/international/utf8/osc8)")
             }
             return .compatibilityTest(kind.lowercased())
         case "webview":
@@ -679,7 +679,7 @@ public struct CommandRegistry: Sendable {
     /set $=$ - Set environment variable
     /setinput $ - Sets any text after the "/setinput " into the active input window
     /silence - Stop all playing sounds
-    /test $ - Run the ANSI, HTML, emoji, international, or UTF-8 compatibility test
+    /test $ - Run the ANSI, HTML, emoji, international, UTF-8, or OSC 8 compatibility test
     /slist - List all worlds
     /stats - List connection statistics
     /switchtab <tab group> <tab name> - Brings 'tab name' to top in the 'tab group' spawn window

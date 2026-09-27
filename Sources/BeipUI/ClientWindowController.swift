@@ -3297,6 +3297,9 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     func testingOutputLines() -> [String] { output.retainedLines.map(\.text) }
+    func testingSetInputText(_ value: String) { input.text = value }
+    func testingInputText() -> String { input.text }
+    func testingInputSelection() -> NSRange { input.selectedRange() }
     func testingInputHistory() -> [String] { input.historyEntriesForDisplay }
     func testingGMCPRoom() -> GMCPRoomInfo? { gmcpState.currentRoom }
 
@@ -3761,8 +3764,14 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             guard let url = URL(string: value) else { appendError("Invalid link: \(value)"); return }
             NSWorkspace.shared.open(url)
         case let .send(value, _):
-            sendToSession(value)
+            for line in Self.logicalLines(in: value) where !line.isEmpty {
+                processInput(line)
+            }
         case let .command(value): processInput(value)
+        case let .prompt(value):
+            let target = secondaryInputWindows.first(where: { $0.window?.isKeyWindow == true })?.input ?? input
+            target.text = value
+            target.setSelectedRange(NSRange(location: 0, length: value.utf16.count))
         }
     }
 

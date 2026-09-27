@@ -1668,6 +1668,12 @@ final class OutputTextView: NSObject {
             components.host = "command"
             components.queryItems = [URLQueryItem(name: "value", value: value)]
             return components.url!
+        case let .prompt(value):
+            var components = URLComponents()
+            components.scheme = "beipmu-action"
+            components.host = "prompt"
+            components.queryItems = [URLQueryItem(name: "value", value: value)]
+            return components.url!
         }
     }
 
@@ -1681,6 +1687,7 @@ final class OutputTextView: NSObject {
                 hints: components.queryItems?.filter { $0.name == "hint" }.compactMap(\.value) ?? []
             )
         case "command": return .command(value)
+        case "prompt": return .prompt(value)
         default: return nil
         }
     }

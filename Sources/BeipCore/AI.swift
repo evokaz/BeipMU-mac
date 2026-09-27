@@ -191,6 +191,8 @@ public enum CommandTestFixtures {
             return "English: I can eat glass and it doesn't hurt me.\r\nChinese: 我能吞下玻璃而不伤身体。\r\nGreek: Μπορώ να φάω σπασμένα γυαλιά χωρίς να πάθω τίποτα.\r\n"
         case "utf8":
             return "Valid 2 Octet Sequence \u{00F1}\r\nInvalid 2 Octet Sequence \u{FFFD}(\r\nValid 3 Octet Sequence ₡\r\nValid 4 Octet Sequence 𐌼\r\n"
+        case "osc8":
+            return "\r\nOSC 8 links: \u{1B}]8;;https://example.com\u{07}web (BEL)\u{1B}]8;;\u{07} | \u{1B}]8;;ftp://ftp.example.com\u{1B}\\ftp (ST)\u{1B}]8;;\u{1B}\\ | \u{1B}]8;;send:look\u{07}send look\u{1B}]8;;\u{07} | \u{1B}]8;;prompt:look%20north\u{1B}\\prompt input\u{1B}]8;;\u{1B}\\\r\n"
         default: return nil
         }
     }

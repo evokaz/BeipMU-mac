@@ -50,6 +50,11 @@ public struct ANSIParser: Sendable {
     private var foregroundPaletteIndex: Int?
     private var backgroundPaletteIndex: Int?
     private var settings: ANSISettings
+    private var escapePending = false
+    private var csiParameters: String?
+    private var oscContents: String?
+    private var oscEscapePending = false
+    private var activeLink: LinkAction?
 
     public init(options: Options = .init()) {
         settings = ANSISettings(
@@ -93,17 +98,18 @@ public struct ANSIParser: Sendable {
     }
 
     public mutating func reset() {
-        style = TextStyle()
-        inverse = false
-        foregroundPaletteIndex = nil
-        backgroundPaletteIndex = nil
+        resetStyle()
+        escapePending = false
+        csiParameters = nil
+        oscContents = nil
+        oscEscapePending = false
+        activeLink = nil
     }
 
     public mutating func parse(_ input: String, source: RenderedLine.Source = .server) -> RenderedLine {
-        if settings.resetOnNewLine { reset() }
+        if settings.resetOnNewLine { resetStyle() }
         var result = ""
         var runs: [StyleRun] = []
-        var scalarIndex = input.unicodeScalars.startIndex
 
         func append(_ text: String, style: TextStyle, result: inout String, runs: inout [StyleRun]) {
             guard !text.isEmpty else { return }
@@ -117,40 +123,107 @@ public struct ANSIParser: Sendable {
             }
         }
 
-        while scalarIndex < input.unicodeScalars.endIndex {
-            let scalar = input.unicodeScalars[scalarIndex]
-            guard scalar.value == 0x1b else {
+        for scalar in input.unicodeScalars {
+            if var contents = oscContents {
+                if oscEscapePending {
+                    if scalar == "\\" {
+                        oscContents = nil
+                        oscEscapePending = false
+                        handleOSC(contents)
+                        continue
+                    }
+                    contents.unicodeScalars.append("\u{1b}")
+                    oscEscapePending = false
+                }
+                if scalar.value == 0x1b {
+                    oscContents = contents
+                    oscEscapePending = true
+                } else if scalar.value == 0x07 {
+                    oscContents = nil
+                    handleOSC(contents)
+                } else {
+                    contents.unicodeScalars.append(scalar)
+                    oscContents = contents
+                }
+                continue
+            }
+
+            if var parameters = csiParameters {
+                if scalar == "m" {
+                    csiParameters = nil
+                    apply(parameters)
+                } else {
+                    parameters.unicodeScalars.append(scalar)
+                    csiParameters = parameters
+                }
+                continue
+            }
+
+            if escapePending {
+                escapePending = false
+                if settings.parse, scalar == "[" {
+                    csiParameters = ""
+                    continue
+                }
+                if scalar == "]" {
+                    oscContents = ""
+                    continue
+                }
+                // The old parser consumed ESC but left an unsupported
+                // sequence's following character visible. Keep that behavior.
+            }
+
+            if scalar.value == 0x1b {
+                escapePending = true
+            } else {
                 append(String(scalar), style: renderedStyle(), result: &result, runs: &runs)
-                scalarIndex = input.unicodeScalars.index(after: scalarIndex)
-                continue
             }
-
-            let afterEscape = input.unicodeScalars.index(after: scalarIndex)
-            if !settings.parse {
-                // Match the original parser: consume ESC, then let the
-                // sequence's remaining bytes pass through as ordinary text.
-                scalarIndex = afterEscape
-                continue
-            }
-            guard afterEscape < input.unicodeScalars.endIndex,
-                  input.unicodeScalars[afterEscape] == "["
-            else {
-                scalarIndex = afterEscape
-                continue
-            }
-
-            var end = input.unicodeScalars.index(after: afterEscape)
-            while end < input.unicodeScalars.endIndex, input.unicodeScalars[end] != "m" {
-                end = input.unicodeScalars.index(after: end)
-            }
-            guard end < input.unicodeScalars.endIndex else { break }
-            let parameterStart = input.unicodeScalars.index(after: afterEscape)
-            let parameters = String(input.unicodeScalars[parameterStart..<end])
-            apply(parameters)
-            scalarIndex = input.unicodeScalars.index(after: end)
         }
 
         return RenderedLine(text: result, runs: runs, source: source)
+    }
+
+    private mutating func resetStyle() {
+        style = TextStyle()
+        inverse = false
+        foregroundPaletteIndex = nil
+        backgroundPaletteIndex = nil
+    }
+
+    private mutating func handleOSC(_ contents: String) {
+        guard let firstSeparator = contents.firstIndex(of: ";"),
+              contents[..<firstSeparator] == "8",
+              let uriSeparator = contents[contents.index(after: firstSeparator)...].firstIndex(of: ";")
+        else { return }
+
+        let uriStart = contents.index(after: uriSeparator)
+        let uri = String(contents[uriStart...])
+
+        // Every well-formed OSC 8 opener first ends the previous link. An
+        // empty or unsupported URI therefore leaves following text unlinked.
+        activeLink = nil
+        guard !uri.isEmpty else { return }
+
+        let lowercasedURI = uri.lowercased()
+        if lowercasedURI.hasPrefix("http:") || lowercasedURI.hasPrefix("https:") || lowercasedURI.hasPrefix("ftp:") {
+            let invalidURICharacters = CharacterSet.whitespacesAndNewlines.union(.controlCharacters)
+            guard let components = URLComponents(string: uri),
+                  let scheme = components.scheme?.lowercased(),
+                  ["http", "https", "ftp"].contains(scheme),
+                  let host = components.host, !host.isEmpty,
+                  uri.unicodeScalars.allSatisfy({ !invalidURICharacters.contains($0) }),
+                  components.url != nil
+            else { return }
+            activeLink = .url(uri)
+        } else if lowercasedURI.hasPrefix("send:") {
+            activeLink = Self.decodedAction(uri, prefixLength: 5).map { .send($0, hints: []) }
+        } else if lowercasedURI.hasPrefix("prompt:") {
+            activeLink = Self.decodedAction(uri, prefixLength: 7).map(LinkAction.prompt)
+        }
+    }
+
+    private static func decodedAction(_ uri: String, prefixLength: Int) -> String? {
+        String(uri.dropFirst(prefixLength)).removingPercentEncoding
     }
 
     private mutating func apply(_ parameterString: String) {
@@ -161,7 +234,7 @@ public struct ANSIParser: Sendable {
         while index < values.count {
             let value = values[index]
             switch value {
-            case 0: reset()
+            case 0: resetStyle()
             case 1: style.bold = true
             case 2: style.faint = true
             case 3: style.italic = true
@@ -224,6 +297,7 @@ public struct ANSIParser: Sendable {
 
     private func renderedStyle() -> TextStyle {
         var rendered = style
+        rendered.link = activeLink
         let logicalForegroundIsBackground = inverse
 
         if rendered.bold, !settings.fontBold {

@@ -20,9 +20,10 @@ final class CommandRegistryTests: XCTestCase {
         XCTAssertEqual(registry.parse("/recall 12 warning", variables: [:]), .recall(lineCount: 12, search: "warning"))
         XCTAssertEqual(registry.parse("/rolltest", variables: [:]), .rollTest)
         XCTAssertEqual(registry.parse("/test utf8", variables: [:]), .compatibilityTest("utf8"))
+        XCTAssertEqual(registry.parse("/test osc8", variables: [:]), .compatibilityTest("osc8"))
         XCTAssertEqual(
             registry.parse("/test", variables: [:]),
-            .display("What do you want to test? (ansi/html/emoji/international/utf8)")
+            .display("What do you want to test? (ansi/html/emoji/international/utf8/osc8)")
         )
     }
 

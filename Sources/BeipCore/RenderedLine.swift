@@ -79,6 +79,7 @@ public enum LinkAction: Sendable, Hashable, Codable {
     case url(String)
     case send(String, hints: [String])
     case command(String)
+    case prompt(String)
 }
 
 public struct StyleRun: Sendable, Hashable, Codable {

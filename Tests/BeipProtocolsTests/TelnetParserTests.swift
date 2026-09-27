@@ -10,6 +10,20 @@ final class TelnetParserTests: XCTestCase {
         XCTAssertEqual(parser.consume(Data("before\u{07}after\n".utf8)), [.beep, .line(Data("beforeafter".utf8))])
     }
 
+    func testBELInsideOSCIsPreservedAsAStringTerminator() {
+        let input = Data("before\u{1B}]8;;https://example.com\u{07}linked\u{1B}]8;;\u{07}after\n".utf8)
+        let expected: [TelnetParser.Event] = [.line(Data(input.dropLast()))]
+
+        for split in 0...input.count {
+            var parser = TelnetParser()
+            let events = parser.consume(Data(input.prefix(split))) + parser.consume(Data(input.dropFirst(split)))
+            XCTAssertEqual(events, expected, "split \(split)")
+        }
+
+        var parser = TelnetParser()
+        XCTAssertEqual(parser.consume(Data([7])), [.beep])
+    }
+
     func testWindowsCompatibleTelnetDebugFormattingAndChunkState() {
         var formatter = TelnetDebugFormatter()
         XCTAssertEqual(
@@ -220,6 +234,75 @@ private extension Data {
 }
 
 final class ANSIParserTests: XCTestCase {
+    func testOSC8BELAndSTOpenCloseAndConsecutiveLinks() {
+        var parser = ANSIParser()
+        let line = parser.parse(
+            "plain \u{1B}]8;;https://example.com\u{07}web\u{1B}]8;;ftp://ftp.example.com\u{1B}\\ftp\u{1B}]8;;\u{1B}\\ plain"
+        )
+
+        XCTAssertEqual(line.text, "plain webftp plain")
+        XCTAssertEqual(line.runs.map(\.style.link), [nil, .url("https://example.com"), .url("ftp://ftp.example.com"), nil])
+        XCTAssertEqual(line.runs.map(\.range), [0..<6, 6..<9, 9..<12, 12..<18])
+    }
+
+    func testOSC8PayloadsArePercentDecodedAndLinksOnlyActivateThroughTheirActions() {
+        var parser = ANSIParser()
+        let line = parser.parse(
+            "\u{1B}]8;;send:say%20hello%2F%E9%9B%AA\u{07}send\u{1B}]8;;prompt:look%20north%3F\u{07}prompt\u{1B}]8;;\u{07}plain"
+        )
+
+        XCTAssertEqual(line.text, "sendpromptplain")
+        XCTAssertEqual(line.runs.map(\.style.link), [
+            .send("say hello/雪", hints: []),
+            .prompt("look north?"),
+            nil,
+        ])
+    }
+
+    func testOSC8StatePersistsAcrossParseCallsAndSGRChanges() {
+        var parser = ANSIParser()
+        XCTAssertEqual(parser.parse("start \u{1B}]8;;https://example.com\u{1B}").text, "start ")
+
+        let middle = parser.parse("\\linked\u{1B}[31mred")
+        XCTAssertEqual(middle.text, "linkedred")
+        XCTAssertTrue(middle.runs.allSatisfy { $0.style.link == .url("https://example.com") })
+        XCTAssertEqual(middle.runs.count, 2)
+        XCTAssertNil(middle.runs.first?.style.foreground)
+        XCTAssertEqual(middle.runs.last?.style.foreground, RGBColor(red: 205, green: 0, blue: 0))
+
+        let colored = parser.parse("\u{1B}[32mgreen\u{1B}[0mreset")
+        XCTAssertEqual(colored.text, "greenreset")
+        XCTAssertTrue(colored.runs.allSatisfy { $0.style.link == .url("https://example.com") })
+        XCTAssertNotEqual(colored.runs[0].style.foreground, colored.runs[1].style.foreground)
+
+        let closed = parser.parse("\u{1B}]8;;\u{1B}\\plain")
+        XCTAssertEqual(closed.text, "plain")
+        XCTAssertNil(closed.runs.first?.style.link)
+    }
+
+    func testMalformedUnterminatedAndUnsupportedOSC8AreHiddenAndNonActionable() {
+        var parser = ANSIParser()
+        let unsupported = parser.parse(
+            "\u{1B}]8;;tel:+15551234567\u{07}phone \u{1B}]8;;mailto:user@example.com\u{1B}\\mail \u{1B}]8;;https://\u{07}bad \u{1B}]8;;https://example.com/bad path\u{07}url"
+        )
+        XCTAssertEqual(unsupported.text, "phone mail bad url")
+        XCTAssertTrue(unsupported.runs.allSatisfy { $0.style.link == nil })
+
+        XCTAssertEqual(parser.parse("before\u{1B}]8;;send:bad%ZZ").text, "before")
+        XCTAssertEqual(parser.parse("still inside an unterminated OSC").text, "")
+        XCTAssertEqual(parser.parse("\u{07}after").text, "after")
+    }
+
+    func testMalformedOSCHeaderDoesNotChangeActiveLinkAndSGRZeroKeepsLink() {
+        var parser = ANSIParser()
+        let line = parser.parse(
+            "\u{1B}]8;;https://example.com\u{07}linked\u{1B}[0m still linked \u{1B}]9;ignored\u{07}"
+        )
+        XCTAssertEqual(line.text, "linked still linked ")
+        XCTAssertTrue(line.runs.allSatisfy { $0.style.link == .url("https://example.com") })
+        XCTAssertEqual(line.runs.last?.style, TextStyle(link: .url("https://example.com")))
+    }
+
     func testConfigurablePaletteAndLiveReconfigurationPreserveState() {
         var settings = ANSISettings.default
         settings.colors[.red] = RGBColor(red: 1, green: 2, blue: 3)
@@ -442,6 +525,27 @@ private struct SeededRandom {
 }
 
 final class MUDProtocolPipelineTests: XCTestCase {
+    func testOSC8CommandFixtureRunsThroughTelnetAndANSIParsing() throws {
+        var pipeline = MUDProtocolPipeline(encoding: .utf8)
+        let payload = try XCTUnwrap(CommandTestFixtures.payload(for: "osc8"))
+        let outputs = pipeline.consume(Data(payload.utf8))
+        let lines = outputs.compactMap { output -> RenderedLine? in
+            switch output {
+            case let .line(line), let .prompt(line): return line
+            default: return nil
+            }
+        }
+
+        XCTAssertFalse(outputs.contains { if case .beep = $0 { true } else { false } })
+        XCTAssertTrue(lines.contains { $0.text.contains("web (BEL)") })
+        XCTAssertTrue(lines.contains { $0.text.contains("ftp (ST)") })
+        let links = lines.flatMap(\.runs).compactMap(\.style.link)
+        XCTAssertTrue(links.contains(.url("https://example.com")))
+        XCTAssertTrue(links.contains(.url("ftp://ftp.example.com")))
+        XCTAssertTrue(links.contains(.send("look", hints: [])))
+        XCTAssertTrue(links.contains(.prompt("look north")))
+    }
+
     func testPuebloNegotiationEntitiesLinksSendTagsAndImages() {
         var pipeline = MUDProtocolPipeline(encoding: .utf8, pueblo: true)
         let handshake = pipeline.consume(Data("This world is Pueblo 2.50 Enhanced</xch_mudtext>\n".utf8))

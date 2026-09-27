@@ -1237,6 +1237,50 @@ final class VirtualizedOutputViewTests: XCTestCase {
         XCTAssertEqual(components.queryItems?.first(where: { $0.name == "hint" })?.value, "urgent")
     }
 
+    func testSendAndPromptActionsActivateOnlyAfterClick() throws {
+        let output = OutputTextView()
+        let text = "send prompt"
+        output.append(.init(text: text, runs: [
+            .init(range: 0..<4, style: TextStyle(link: .send("look", hints: []))),
+            .init(range: 5..<11, style: TextStyle(link: .prompt("look north"))),
+        ]))
+        output.flushPendingOutput()
+
+        let view = output.primaryOutputViewForTesting
+        view.selectAllContent()
+        let lineID = try XCTUnwrap(output.retainedLines.first?.id)
+        var actions: [LinkAction] = []
+        output.onAction = { actions.append($0) }
+
+        XCTAssertTrue(actions.isEmpty)
+        view.activateLinkForTesting(itemID: lineID, at: 0, modifierFlags: [])
+        XCTAssertEqual(actions, [.send("look", hints: [])])
+
+        view.activateLinkForTesting(itemID: lineID, at: 5, modifierFlags: [])
+        XCTAssertEqual(actions, [.send("look", hints: []), .prompt("look north")])
+    }
+
+    func testExplicitFTPHyperlinkRendersAndActivatesAsURL() throws {
+        let output = OutputTextView()
+        output.append(.init(
+            text: "ftp",
+            runs: [.init(range: 0..<3, style: TextStyle(link: .url("ftp://ftp.example.com/files")))]
+        ))
+        output.flushPendingOutput()
+
+        let view = output.primaryOutputViewForTesting
+        view.selectAllContent()
+        let selected = try XCTUnwrap(view.selectedAttributedString())
+        let url = try XCTUnwrap(selected.attribute(.link, at: 0, effectiveRange: nil) as? URL)
+        XCTAssertEqual(url.absoluteString, "ftp://ftp.example.com/files")
+
+        let lineID = try XCTUnwrap(output.retainedLines.first?.id)
+        var action: LinkAction?
+        output.onAction = { action = $0 }
+        view.activateLinkForTesting(itemID: lineID, at: 0, modifierFlags: [.command])
+        XCTAssertEqual(action, .url("ftp://ftp.example.com/files"))
+    }
+
     func testTextWindowSettingsNormalizeUnsafeNumericValues() {
         let normalized = TextWindowSettings(
             fontSize: -20,

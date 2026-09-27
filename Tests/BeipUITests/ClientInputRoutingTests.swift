@@ -55,6 +55,34 @@ final class ClientInputRoutingTests: XCTestCase {
         XCTAssertEqual(controller.testingOutputLines().last, "Not connected.")
     }
 
+    func testOSC8SendRunsOnActivationAndPromptReplacesSelectedInputWithoutSending() throws {
+        let controller = try makeController()
+        defer { controller.close() }
+        let output = controller.outputForTesting
+        let text = "send prompt"
+        output.append(.init(text: text, runs: [
+            .init(range: 0..<4, style: TextStyle(link: .send("/set linked=yes", hints: []))),
+            .init(range: 5..<11, style: TextStyle(link: .prompt("look north"))),
+        ]))
+        output.flushPendingOutput()
+        controller.testingSetInputText("old draft")
+        let linesBeforeActivation = controller.testingOutputLines()
+        let lineID = try XCTUnwrap(output.retainedLines.last?.id)
+        let view = output.primaryOutputViewForTesting
+        view.selectAllContent()
+
+        XCTAssertNil(controller.testingAutomationSnapshot().variables["linked"])
+        view.activateLinkForTesting(itemID: lineID, at: 0, modifierFlags: [])
+        XCTAssertEqual(controller.testingAutomationSnapshot().variables["linked"], "yes")
+        let linesAfterSendActivation = controller.testingOutputLines()
+
+        view.activateLinkForTesting(itemID: lineID, at: 5, modifierFlags: [])
+        XCTAssertEqual(controller.testingInputText(), "look north")
+        XCTAssertEqual(controller.testingInputSelection(), NSRange(location: 0, length: 10))
+        XCTAssertNotEqual(linesAfterSendActivation, linesBeforeActivation)
+        XCTAssertEqual(controller.testingOutputLines(), linesAfterSendActivation)
+    }
+
     private func makeController() throws -> ClientWindowController {
         let workspace = try LegacyConfigurationWorkspace(document: .init(source: """
         Version=331

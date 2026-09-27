@@ -47,6 +47,8 @@ public struct TelnetParser: Sendable {
     private var sideBuffer = Data()
     private var discardingOversizedLine = false
     private var terminalTypeSequence = 0
+    private var insideOSC = false
+    private var escapePending = false
     public private(set) var negotiatedNAWS = false
     public var terminalType = "Beip"
     public var charsetLimit: TextEncoding?
@@ -59,6 +61,8 @@ public struct TelnetParser: Sendable {
         sideBuffer.removeAll(keepingCapacity: true)
         discardingOversizedLine = false
         terminalTypeSequence = 0
+        insideOSC = false
+        escapePending = false
         negotiatedNAWS = false
     }
 
@@ -70,18 +74,38 @@ public struct TelnetParser: Sendable {
                 switch byte {
                 case 0: continue
                 case Code.iac: state = .iac
-                case 13: continue
+                case 13:
+                    escapePending = false
+                    continue
                 case 10:
                     if !discardingOversizedLine { events.append(.line(buffer)) }
                     buffer.removeAll(keepingCapacity: true)
                     discardingOversizedLine = false
+                    escapePending = false
                 case 7:
-                    events.append(.beep)
+                    if insideOSC {
+                        if !discardingOversizedLine, buffer.count < Self.maximumLineBytes {
+                            buffer.append(byte)
+                        }
+                        insideOSC = false
+                    } else {
+                        events.append(.beep)
+                    }
+                    escapePending = false
                 default:
+                    if escapePending {
+                        if insideOSC {
+                            if byte == 92 { insideOSC = false } // ESC \
+                        } else if byte == 93 {
+                            insideOSC = true // ESC ]
+                        }
+                        escapePending = false
+                    }
                     if discardingOversizedLine {
                         continue
                     } else if buffer.count < Self.maximumLineBytes {
                         buffer.append(byte)
+                        if byte == 27 { escapePending = true }
                     } else {
                         buffer.removeAll(keepingCapacity: true)
                         discardingOversizedLine = true
