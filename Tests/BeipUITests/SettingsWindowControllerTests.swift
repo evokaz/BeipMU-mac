@@ -54,6 +54,38 @@ final class SettingsWindowControllerTests: XCTestCase {
     }
 
     @MainActor
+    func testAdvancedSettingsPersistsCheckForUpdates() throws {
+        let library = ProfileLibrary(workspace: try .empty(isDirty: false))
+        var manualChecks = 0
+        let controller = SettingsWindowController(
+            profileLibrary: library,
+            shortcutsProvider: { KeyboardShortcutStore.load() },
+            context: .init(
+                section: .advanced,
+                initialScope: nil,
+                identity: .init(world: nil, character: nil, tab: nil)
+            ),
+            onPreferencesMutation: {},
+            onShortcutsMutation: { _ in }
+        )
+        defer { controller.close() }
+        controller.onCheckForUpdatesRequest = { manualChecks += 1 }
+
+        let checkbox = try XCTUnwrap(
+            findView(withIdentifier: "checkForUpdates", in: controller.window?.contentView) as? NSButton
+        )
+        XCTAssertEqual(checkbox.state, .off)
+        checkbox.performClick(nil)
+        XCTAssertTrue(library.workspace.checkForUpdates)
+        XCTAssertEqual(try library.workspace.renderedDocument().value(at: ["CheckForUpdates"]), "true")
+        let checkNow = try XCTUnwrap(
+            findView(withIdentifier: "checkForUpdatesNowButton", in: controller.window?.contentView) as? NSButton
+        )
+        checkNow.performClick(nil)
+        XCTAssertEqual(manualChecks, 1)
+    }
+
+    @MainActor
     func testANSIColorsControlsPersistPaletteAndAppearanceEditsImmediately() throws {
         let library = ProfileLibrary(workspace: try .empty(isDirty: false))
         let controller = SettingsWindowController(

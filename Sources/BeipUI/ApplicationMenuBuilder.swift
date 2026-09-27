@@ -28,6 +28,29 @@ enum ApplicationMenuBuilder {
         return menu
     }
 
+    static func makeHelpMenu(includeAbout: Bool = true) -> NSMenu {
+        let menu = NSMenu(title: "Help")
+        menu.autoenablesItems = false
+        menu.addItem(applicationMenuItem(
+            title: "BeipMU Help",
+            action: #selector(ApplicationDelegate.showHelp(_:)),
+            shortcut: FixedShortcut.help
+        ))
+        menu.addItem(.separator())
+        menu.addItem(applicationMenuItem(
+            title: "Check for Updates…",
+            action: #selector(ApplicationDelegate.checkForUpdatesManually(_:))
+        ))
+        if includeAbout {
+            menu.addItem(.separator())
+            menu.addItem(applicationMenuItem(
+                title: "About…",
+                action: #selector(ApplicationDelegate.showAbout(_:))
+            ))
+        }
+        return menu
+    }
+
     static func addWindowItems(
         to menu: NSMenu,
         includeCreationItems: Bool = true,
@@ -205,18 +228,7 @@ enum ApplicationMenuBuilder {
     }
 
     private static func addHelpSubmenu(to menu: NSMenu) {
-        let helpMenu = NSMenu(title: "Help")
-        helpMenu.addItem(applicationMenuItem(
-            title: "BeipMU Help",
-            action: #selector(ApplicationDelegate.showHelp(_:)),
-            shortcut: FixedShortcut.help
-        ))
-        helpMenu.addItem(.separator())
-        helpMenu.addItem(applicationMenuItem(
-            title: "About…",
-            action: #selector(ApplicationDelegate.showAbout(_:))
-        ))
-        menu.addItem(submenuItem(title: "Help", menu: helpMenu))
+        menu.addItem(submenuItem(title: "Help", menu: makeHelpMenu()))
     }
 
     private static func addQuitItem(to menu: NSMenu) {

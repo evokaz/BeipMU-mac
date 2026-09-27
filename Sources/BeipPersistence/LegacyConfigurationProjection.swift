@@ -157,6 +157,9 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
     /// Config.txt stores this as the root-level `TaskbarOnTop` assignment;
     /// absent or invalid values intentionally use the Windows default.
     public var taskbarOnTop: Bool
+    /// Whether BeipMU for Mac checks the latest stable GitHub release on launch.
+    /// The legacy root-level field defaults off when absent or invalid.
+    public var checkForUpdates: Bool
     public var settings: ConnectionSettings
     public var ansi: ANSISettings
     public var scripting: Scripting
@@ -172,6 +175,7 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
         }
         sourceVersion = version
         taskbarOnTop = document.rootBool("TaskbarOnTop") ?? true
+        checkForUpdates = document.rootBool("CheckForUpdates") ?? false
         let connections = document.firstBlock(named: "Connections")?.children ?? []
         let globalAutomation = Self.automation(from: connections)
         automation = globalAutomation
@@ -398,6 +402,10 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
         try Self.upsert(
             Self.flag(taskbarOnTop), default: "true",
             at: ["TaskbarOnTop"], quoted: false, in: &result
+        )
+        try Self.upsert(
+            Self.flag(checkForUpdates), default: "false",
+            at: ["CheckForUpdates"], quoted: false, in: &result
         )
         try Self.upsert(
             String(settings.connectTimeoutMilliseconds), default: "30000",

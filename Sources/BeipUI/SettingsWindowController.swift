@@ -177,6 +177,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     var onFactoryResetRequest: (() -> Void)?
     var onImportConfigurationRequest: (() -> Void)?
     var onExportConfigurationRequest: (() -> Void)?
+    var onCheckForUpdatesRequest: (() -> Void)?
 
     private var context: SettingsPresentationContext
     private(set) var selectedSection: SettingsSection = .appearance
@@ -285,6 +286,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
 
     private var scriptStartupPath: NSTextField!
     private var scriptDebug: NSButton!
+    private var checkForUpdates: NSButton!
+    private var checkForUpdatesNowButton: NSButton!
     private var restoreLogsEnabled: NSButton!
     private var restoreBufferSize: NSTextField!
     private var restoreLogsStatus: NSTextField!
@@ -558,7 +561,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
         case .restoreLogs: loadRestoreLogsControls()
         case .scripting: loadScriptingControls()
         case .shortcuts: loadShortcutControls()
-        case .advanced: break
+        case .advanced: loadAdvancedControls()
         }
     }
 
@@ -1683,6 +1686,37 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
     }
 
     private func buildAdvanced() {
+        checkForUpdates = NSButton(
+            checkboxWithTitle: "Check for updates at startup",
+            target: self,
+            action: #selector(checkForUpdatesChanged(_:))
+        )
+        checkForUpdates.setAccessibilityIdentifier("checkForUpdates")
+        checkForUpdates.setAccessibilityHelp("Check GitHub once at launch for a newer stable BeipMU for Mac release.")
+        checkForUpdatesNowButton = NSButton(
+            title: "Check for Updates…",
+            target: self,
+            action: #selector(checkForUpdatesNowRequested(_:))
+        )
+        checkForUpdatesNowButton.bezelStyle = .rounded
+        checkForUpdatesNowButton.setAccessibilityIdentifier("checkForUpdatesNowButton")
+        checkForUpdatesNowButton.setAccessibilityHelp("Check GitHub now for a newer stable BeipMU for Mac release.")
+        let updateActions = NSStackView(views: [checkForUpdates, checkForUpdatesNowButton])
+        updateActions.orientation = .horizontal
+        updateActions.alignment = .centerY
+        updateActions.spacing = 12
+        let updatesExplanation = NSTextField(wrappingLabelWithString:
+            "When a newer release is available, BeipMU offers to open its GitHub release page."
+        )
+        updatesExplanation.widthAnchor.constraint(equalToConstant: 476).isActive = true
+        let updatesArea = NSStackView(views: [updateActions, updatesExplanation])
+        updatesArea.orientation = .vertical
+        updatesArea.alignment = .leading
+        updatesArea.spacing = 8
+        updatesArea.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
+        updatesArea.widthAnchor.constraint(equalToConstant: 500).isActive = true
+        updatesArea.setAccessibilityIdentifier("settings.advanced.updates")
+
         let importButton = NSButton(
             title: "Import Config.txt…",
             target: self,
@@ -1764,9 +1798,30 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTa
 
         contentStack.addArrangedSubview(group(
             "Advanced",
-            [configurationArea, separator, destructiveArea],
+            [updatesArea, configurationArea, separator, destructiveArea],
             identifier: "settings.advanced.group"
         ))
+        loadAdvancedControls()
+    }
+
+    private func loadAdvancedControls() {
+        guard checkForUpdates != nil else { return }
+        checkForUpdates.state = profileLibrary.workspace.checkForUpdates ? .on : .off
+    }
+
+    @objc private func checkForUpdatesChanged(_ sender: Any?) {
+        do {
+            try profileLibrary.mutate {
+                $0.setCheckForUpdates(self.checkForUpdates.state == .on)
+            }
+            onPreferencesMutation()
+        } catch {
+            showInlineError("Unable to save update settings: \(error.localizedDescription)")
+        }
+    }
+
+    @objc private func checkForUpdatesNowRequested(_ sender: Any?) {
+        onCheckForUpdatesRequest?()
     }
 
     @objc private func importConfigurationRequested(_ sender: Any?) {

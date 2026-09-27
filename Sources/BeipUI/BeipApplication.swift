@@ -57,6 +57,10 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
     private var isFactoryResetConfirmationPending = false
     private var tabDragState: TabDragState?
     private var tabDragEventMonitor: Any?
+    private let releaseUpdateChecker = GitHubReleaseUpdateChecker()
+    private lazy var updateCheckCoordinator = UpdateCheckCoordinator(fetch: { [releaseUpdateChecker] version in
+        try await releaseUpdateChecker.newerRelease(currentVersion: version)
+    })
 
     override init() {
         let context = RuntimeStateContext.current
@@ -130,6 +134,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         NSApplication.shared.activate(ignoringOtherApps: true)
         activeController?.startPerformanceSoakIfRequested()
         activeController?.startScaleTestIfRequested()
+        checkForUpdatesAtStartup()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -145,6 +150,137 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         windows.forEach { $0.prepareForApplicationTermination() }
         try? recoveryStore.flush()
         return .terminateNow
+    }
+
+    private func installedMacVersion() -> String? {
+        let bundle = Bundle.main
+        guard let marketingVersion = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String else {
+            return nil
+        }
+        return GitHubReleaseUpdateChecker.installedMacVersion(
+            marketingVersion: marketingVersion,
+            buildVersion: bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+        )
+    }
+
+    private func checkForUpdatesAtStartup() {
+        guard !stateContext.isUITesting,
+              profileLibrary.workspace.checkForUpdates,
+              let currentVersion = installedMacVersion() else { return }
+        runUpdateCheck(currentVersion: currentVersion, manually: false, presentingWindow: nil)
+    }
+
+    @objc func checkForUpdatesManually(_ sender: Any?) {
+        requestManualUpdateCheck(from: activeController?.window)
+    }
+
+    private func requestManualUpdateCheck(from presentingWindow: NSWindow?) {
+        guard !stateContext.isUITesting,
+              !isTerminating,
+              !isResetting else { return }
+        guard let currentVersion = installedMacVersion() else {
+            presentManualUpdateResult(.failed, currentVersion: "", presentingWindow: presentingWindow)
+            return
+        }
+        requestManualUpdateCheck(currentVersion: currentVersion, presentingWindow: presentingWindow)
+    }
+
+    private func requestManualUpdateCheck(currentVersion: String, presentingWindow: NSWindow?) {
+        runUpdateCheck(currentVersion: currentVersion, manually: true, presentingWindow: presentingWindow)
+    }
+
+    private func runUpdateCheck(currentVersion: String, manually: Bool, presentingWindow: NSWindow?) {
+        updateCheckCoordinator.check(currentVersion: currentVersion, manually: manually) { [weak self] outcome in
+            guard let self, !self.isTerminating, !self.isResetting else { return }
+            if manually {
+                self.presentManualUpdateResult(
+                    outcome,
+                    currentVersion: currentVersion,
+                    presentingWindow: presentingWindow
+                )
+            } else if case let .updateAvailable(release) = outcome {
+                self.presentUpdateAvailable(
+                    release,
+                    currentVersion: currentVersion,
+                    presentingWindow: nil
+                )
+            }
+        }
+    }
+
+    private func presentManualUpdateResult(
+        _ outcome: UpdateCheckOutcome,
+        currentVersion: String,
+        presentingWindow: NSWindow?
+    ) {
+        if case let .updateAvailable(release) = outcome {
+            presentUpdateAvailable(release, currentVersion: currentVersion, presentingWindow: presentingWindow)
+            return
+        }
+        guard let alert = Self.manualUpdateCheckAlert(for: outcome, currentVersion: currentVersion) else { return }
+        presentAlert(alert, from: presentingWindow)
+    }
+
+    private func presentUpdateAvailable(
+        _ release: AvailableGitHubRelease,
+        currentVersion: String,
+        presentingWindow: NSWindow?
+    ) {
+        let alert = Self.updateAvailableAlert(for: release, currentVersion: currentVersion)
+        presentAlert(alert, from: presentingWindow) { response in
+            if response == .alertFirstButtonReturn {
+                NSWorkspace.shared.open(release.url)
+            }
+        }
+    }
+
+    private func presentAlert(
+        _ alert: NSAlert,
+        from requestedWindow: NSWindow?,
+        completion: @escaping (NSApplication.ModalResponse) -> Void = { _ in }
+    ) {
+        let window = requestedWindow.flatMap { $0.isVisible ? $0 : nil }
+            ?? activeController?.window
+            ?? windows.first?.window
+        guard let window else {
+            completion(alert.runModal())
+            return
+        }
+        alert.beginSheetModal(for: window, completionHandler: completion)
+    }
+
+    static func updateAvailableAlert(
+        for release: AvailableGitHubRelease,
+        currentVersion: String
+    ) -> NSAlert {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "A BeipMU update is available"
+        alert.informativeText = "Version \(release.version) is available. You are running version \(currentVersion)."
+        alert.addButton(withTitle: "Open Release Page")
+        alert.addButton(withTitle: "Later")
+        return alert
+    }
+
+    static func manualUpdateCheckAlert(
+        for outcome: UpdateCheckOutcome,
+        currentVersion: String
+    ) -> NSAlert? {
+        let alert = NSAlert()
+        switch outcome {
+        case .updateAvailable:
+            return nil
+        case .upToDate:
+            alert.alertStyle = .informational
+            alert.messageText = "BeipMU Is Up to Date"
+            alert.informativeText = "You are running the latest version of BeipMU (\(currentVersion))."
+        case .failed:
+            alert.alertStyle = .warning
+            alert.messageText = "Unable to Check for Updates"
+            alert.informativeText = "BeipMU could not reach GitHub or read the latest release. Try again later."
+        }
+        alert.addButton(withTitle: "OK")
+        return alert
     }
 
     @objc func newWindow(_ sender: Any?) {
@@ -842,6 +978,10 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
                     self?.exportConfiguration(nil)
                 }
             )
+            settings.onCheckForUpdatesRequest = { [weak self] in
+                guard let self else { return }
+                self.requestManualUpdateCheck(from: self.settingsWindowController?.window)
+            }
             settingsWindowController = settings
             settings.applyTheme(currentTheme.palette)
             settings.showWindow(nil)
@@ -1145,14 +1285,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
 
         let helpItem = NSMenuItem()
         main.addItem(helpItem)
-        let helpMenu = NSMenu(title: "Help")
-        helpItem.submenu = helpMenu
-        let helpMenuItem = helpMenu.addItem(
-            withTitle: "BeipMU Help",
-            action: #selector(showHelp(_:)),
-            keyEquivalent: FixedShortcut.help.keyEquivalent
-        )
-        helpMenuItem.keyEquivalentModifierMask = FixedShortcut.help.modifiers
+        helpItem.submenu = ApplicationMenuBuilder.makeHelpMenu(includeAbout: false)
         applyKeyboardShortcuts()
     }
 

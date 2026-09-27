@@ -15,6 +15,7 @@ final class WindowsAICompatibilityTests: XCTestCase {
         XCTAssertEqual(workspace.projection.sourceVersion, 332)
         XCTAssertEqual(workspace.projection.globalAI.server, "localhost:11434")
         XCTAssertEqual(workspace.projection.globalAI.model, "llama3.2")
+        XCTAssertTrue(workspace.checkForUpdates)
 
         let world = try XCTUnwrap(workspace.servers.first)
         try workspace.updateServer(id: world.profile.id) {

@@ -155,6 +155,7 @@ public struct LegacyConfigurationWorkspace: Sendable {
     public var settings: LegacyConfigurationProjection.ConnectionSettings { projection.settings }
     public var ansi: ANSISettings { projection.ansi }
     public var taskbarOnTop: Bool { projection.taskbarOnTop }
+    public var checkForUpdates: Bool { projection.checkForUpdates }
 
     /// Distinguishes an absent root assignment from an invalid one. This is
     /// needed only by the one-time Mac preference migration; projection
@@ -171,6 +172,12 @@ public struct LegacyConfigurationWorkspace: Sendable {
     /// the workspace dirty just like the other projection-backed settings.
     public mutating func setTaskbarOnTop(_ value: Bool) {
         projection.taskbarOnTop = value
+        isDirty = true
+    }
+
+    /// Updates the portable startup update-check preference in Config.txt.
+    public mutating func setCheckForUpdates(_ value: Bool) {
+        projection.checkForUpdates = value
         isDirty = true
     }
 

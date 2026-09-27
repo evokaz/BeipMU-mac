@@ -10,7 +10,8 @@ This project is a native macOS reimplementation of
 Bennet. It aims to preserve compatibility with BeipMU's configuration format
 and core functionality while providing a native AppKit interface. Windows
 v332 compatibility refers to portable configuration and client metadata; the
-Mac app release version is tracked independently.
+Mac app release version is tracked independently in `MARKETING_VERSION`. GitHub
+release tags use `v` followed by that version, such as `v0.4` or `v0.4.1`.
 
 This macOS reimplementation is maintained independently. Please report issues
 with BeipMU for Mac to this project rather than seeking support from the

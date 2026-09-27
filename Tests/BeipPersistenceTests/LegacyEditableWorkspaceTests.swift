@@ -24,6 +24,27 @@ final class LegacyEditableWorkspaceTests: XCTestCase {
         XCTAssertFalse(try LegacyConfigurationWorkspace(document: rendered).taskbarOnTop)
     }
 
+    func testWorkspaceCheckForUpdatesDefaultsOffAndRoundTrips() throws {
+        let source = """
+        Version=332
+        FutureRoot="preserve"
+        Connections { Shortcuts { } }
+        """
+        var workspace = try LegacyConfigurationWorkspace(document: .init(source: source), isDirty: false)
+        XCTAssertFalse(workspace.checkForUpdates)
+
+        workspace.setCheckForUpdates(true)
+        XCTAssertTrue(workspace.isDirty)
+        let enabled = try workspace.renderedDocument()
+        XCTAssertEqual(enabled.value(at: ["CheckForUpdates"]), "true")
+        XCTAssertEqual(enabled.value(at: ["FutureRoot"]), "preserve")
+        XCTAssertTrue(try LegacyConfigurationWorkspace(document: enabled).checkForUpdates)
+
+        var reloaded = try LegacyConfigurationWorkspace(document: enabled)
+        reloaded.setCheckForUpdates(false)
+        XCTAssertEqual(try reloaded.renderedDocument().value(at: ["CheckForUpdates"]), "false")
+    }
+
     func testWorkspaceEditsNestedTriggersByPathAndPreservesUnknownChildFields() throws {
         let source = """
         Version=331

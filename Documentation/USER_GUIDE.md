@@ -63,7 +63,11 @@ global default or to the active world, character, or tab. A non-global scope
 can inherit the default or keep its own font, colors, sizing, spacing, and
 behavior. Changes apply to open windows as they are committed.
 
-The **Advanced** section contains **Reset Configuration…**, which uses the same
+The **Advanced** section contains **Check for updates at startup**, which checks
+GitHub for a newer stable release and offers to open its release page. This is
+off by default. Select **Check for Updates…** there or in either Help menu to
+check manually; manual checks report when BeipMU is current or when GitHub is
+unavailable. The section also contains **Reset Configuration…**, which uses the same
 confirmation and factory-reset workflow as `/resetconfig`. It erases profiles,
 automation, preferences, shortcuts, saved tabs and layouts, Restore Logs data, and
 the automatic `Config.backup.txt`. Logs, maps, scripts, and exported files are
@@ -183,10 +187,10 @@ The app-owned data directory is:
 
 - `Config.txt` uses Windows v332 compatibility. The editor preserves comments,
   ordering, and unknown platform-specific fields while updating supported
-  values. Windows-only v332 fields such as `CheckForUpdates`,
-  `DockedCaptionFontName`, and `DockedCaptionHeight` remain in the file when
-  edited, even though Mac does not expose those settings or apply their
-  Windows behavior.
+  values. The root-level `CheckForUpdates` field controls the Mac startup update
+  check. Other Windows-only v332 fields such as `DockedCaptionFontName` and
+  `DockedCaptionHeight` remain in the file when edited, even though Mac does
+  not apply their Windows behavior.
 - `Config.backup.txt` is the previous live configuration, written before an
   atomic update. If the live file cannot be restored, BeipMU attempts recovery
   from this backup.

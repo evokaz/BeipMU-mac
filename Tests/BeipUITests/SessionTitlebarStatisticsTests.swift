@@ -824,7 +824,7 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
         XCTAssertEqual(menu.item(withTitle: "Settings…")?.keyEquivalent, FixedShortcut.settings.keyEquivalent)
         XCTAssertEqual(menu.item(withTitle: "Settings…")?.keyEquivalentModifierMask, FixedShortcut.settings.modifiers)
         let helpMenu = try XCTUnwrap(menu.item(withTitle: "Help")?.submenu)
-        XCTAssertEqual(helpMenu.items.map(\.title), ["BeipMU Help", "", "About…"])
+        XCTAssertEqual(helpMenu.items.map(\.title), ["BeipMU Help", "", "Check for Updates…", "", "About…"])
         XCTAssertTrue(helpMenu.items[1].isSeparatorItem)
         XCTAssertEqual(
             helpMenu.item(withTitle: "About…")?.action,
@@ -834,6 +834,12 @@ final class SessionTitlebarStatisticsTests: XCTestCase {
             helpMenu.item(withTitle: "BeipMU Help")?.action,
             #selector(ApplicationDelegate.showHelp(_:))
         )
+        XCTAssertEqual(
+            helpMenu.item(withTitle: "Check for Updates…")?.action,
+            #selector(ApplicationDelegate.checkForUpdatesManually(_:))
+        )
+        let nativeHelpMenu = ApplicationMenuBuilder.makeHelpMenu(includeAbout: false)
+        XCTAssertEqual(nativeHelpMenu.items.map(\.title), ["BeipMU Help", "", "Check for Updates…"])
         XCTAssertEqual(
             helpMenu.item(withTitle: "BeipMU Help")?.keyEquivalent,
             FixedShortcut.help.keyEquivalent
