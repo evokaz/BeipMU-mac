@@ -152,15 +152,12 @@ final class AboutWindowController: NSWindowController, NSWindowDelegate {
     private static func versionDescription(bundle: Bundle) -> String {
         let version = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
         let build = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String
-        switch (version, build) {
-        case let (version?, build?) where version != build:
-            return "Version \(version) (\(build))"
-        case let (version?, _):
+        if let version {
             return "Version \(version)"
-        case let (_, build?):
-            return "Version \(build)"
-        default:
-            return "Development build"
         }
+        if let build {
+            return "Version \(build)"
+        }
+        return "Development build"
     }
 }

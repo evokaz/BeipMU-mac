@@ -5,7 +5,9 @@ import XCTest
 @MainActor
 final class AboutWindowControllerTests: XCTestCase {
     func testAboutWindowShowsProductVersionAndAttribution() throws {
-        let controller = AboutWindowController()
+        let bundle = try makeVersionBundle(marketingVersion: "0.4", buildVersion: "4")
+        defer { try? FileManager.default.removeItem(at: bundle.bundleURL) }
+        let controller = AboutWindowController(bundle: bundle)
         let window = try XCTUnwrap(controller.window)
         let content = try XCTUnwrap(window.contentView)
         let views = recursiveSubviews(of: content)
@@ -13,7 +15,7 @@ final class AboutWindowControllerTests: XCTestCase {
         XCTAssertEqual(window.title, "About BeipMU for Mac")
         XCTAssertEqual(window.accessibilityIdentifier(), "aboutWindow")
         XCTAssertEqual(textField("aboutAppName", in: views)?.stringValue, "BeipMU for Mac")
-        XCTAssertFalse(textField("aboutVersion", in: views)?.stringValue.isEmpty ?? true)
+        XCTAssertEqual(textField("aboutVersion", in: views)?.stringValue, "Version 0.4")
 
         let project = button("aboutProjectGitHub", in: views)
         XCTAssertEqual(project?.title, "https://github.com/evokaz/BeipMU-mac")
@@ -28,6 +30,20 @@ final class AboutWindowControllerTests: XCTestCase {
         XCTAssertTrue(views.compactMap { ($0 as? NSTextField)?.stringValue }.contains {
             $0.contains("Special thanks to BeipDev")
         })
+    }
+
+    private func makeVersionBundle(marketingVersion: String, buildVersion: String) throws -> Bundle {
+        let bundleURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AboutVersion-\(UUID().uuidString).bundle", isDirectory: true)
+        try FileManager.default.createDirectory(at: bundleURL, withIntermediateDirectories: true)
+
+        let info: [String: Any] = [
+            "CFBundleShortVersionString": marketingVersion,
+            "CFBundleVersion": buildVersion,
+        ]
+        let data = try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
+        try data.write(to: bundleURL.appendingPathComponent("Info.plist"))
+        return try XCTUnwrap(Bundle(url: bundleURL))
     }
 
     private func textField(_ identifier: String, in views: [NSView]) -> NSTextField? {
