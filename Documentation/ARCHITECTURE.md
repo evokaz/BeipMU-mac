@@ -66,14 +66,14 @@ flowchart LR
 
 `WindowsCompatibilityVersion` is the shared Windows compatibility level for
 configuration writes and client metadata. It is independent of the Mac app
-release version and currently reports v332. `LegacyConfigurationDocument`
-parses Windows Config.txt syntax without discarding comments, ordering,
-quoting choices, or unknown fields, including historical v331 fields.
+release version. `LegacyConfigurationDocument` parses Windows Config.txt
+syntax without discarding comments, ordering, quoting choices, or unknown
+fields, including fields from older versions.
 `LegacyConfigurationProjection` turns supported fields into typed worlds,
 characters, puppets, automation groups, connection policy, logging, scripting,
-and workspace settings. New files use v332; `LegacyConfigurationWorkspace`
-edits the projection by applying narrow changes to the original document and
-then reparsing it.
+and workspace settings. New files use the current compatibility level;
+`LegacyConfigurationWorkspace` edits the projection by applying narrow
+changes to the original document and then reparsing it.
 
 The UI's `ProfileLibrary` owns the current workspace and uses revision checks
 to prevent a stale editor from overwriting newer changes. Writes are atomic;
@@ -124,8 +124,9 @@ modules from depending on AppKit.
 and the XPC protocol. The application sends immutable snapshots to
 `BeipScriptService`; the service evaluates JavaScriptCore code and returns a
 value, error, and ordered list of operations for the app to replay.
-The script host's `app.Version` and `app.BuildNumber` report the Windows v332
-compatibility level, not the Mac app's release or bundle build number.
+The script host's `app.Version` and `app.BuildNumber` report the current
+Windows compatibility level, independently of the Mac app's release and
+bundle build numbers.
 
 Each XPC connection receives its own `ScriptRuntime`. When a request exceeds
 the three-second watchdog or the user resets scripting, the client invalidates

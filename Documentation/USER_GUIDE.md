@@ -185,12 +185,12 @@ The app-owned data directory is:
 └── Recovery.dat
 ```
 
-- `Config.txt` uses Windows v332 compatibility. The editor preserves comments,
-  ordering, and unknown platform-specific fields while updating supported
-  values. The root-level `CheckForUpdates` field controls the Mac startup update
-  check. Other Windows-only v332 fields such as `DockedCaptionFontName` and
-  `DockedCaptionHeight` remain in the file when edited, even though Mac does
-  not apply their Windows behavior.
+- `Config.txt` uses the current Windows compatibility level. The editor
+  preserves comments, ordering, and unknown platform-specific fields while
+  updating supported values. The root-level `CheckForUpdates` field controls
+  the Mac startup update check. Windows settings that Mac does not apply, such
+  as `DockedCaptionFontName` and `DockedCaptionHeight`, remain in the file when
+  edited.
 - `Config.backup.txt` is the previous live configuration, written before an
   atomic update. If the live file cannot be restored, BeipMU attempts recovery
   from this backup.
