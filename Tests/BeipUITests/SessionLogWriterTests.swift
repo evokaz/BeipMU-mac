@@ -172,11 +172,13 @@ final class SessionLogWriterTests: XCTestCase {
         )
 
         coordinator.start(template: overflowingURL.path, history: .none, outputHistory: [], visibleHistory: [])
-        coordinator.start(template: healthyURL.path, history: .none, outputHistory: [], visibleHistory: [])
         overflowingHandle.blockNextWrite()
         coordinator.appendScript("1234567890", asLine: false)
         XCTAssertEqual(overflowingHandle.writeStarted.wait(timeout: .now() + 1), .success)
 
+        // Start the healthy writer only after the first append has gone out,
+        // so its bounded buffer cannot race the blocked writer to the limit.
+        coordinator.start(template: healthyURL.path, history: .none, outputHistory: [], visibleHistory: [])
         coordinator.appendScript("1234567", asLine: false)
         try await eventuallyOnMainActor("overflowing log removal") {
             coordinator.activeURLs == [healthyURL]
