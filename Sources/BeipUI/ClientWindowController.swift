@@ -798,6 +798,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private let profileLibrary: ProfileLibrary
     private var loggingCoordinator: SessionLoggingCoordinator!
     private var recoveryCoordinator: SessionRecoveryCoordinator!
+    private let outputImageLoader = OutputImageLoader()
     private let output = OutputTextView()
     private let unreadBoundaryCoordinator = SharedUnreadBoundaryCoordinator()
     private let input = CommandInputView()
@@ -1019,6 +1020,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         window.setAccessibilityIdentifier("mainWindow")
         super.init(window: window)
         recoveryCoordinator = SessionRecoveryCoordinator(store: recoveryStore)
+        output.setOutputImageLoader(outputImageLoader)
         output.setUnreadBoundaryCoordinator(unreadBoundaryCoordinator)
         loggingCoordinator = SessionLoggingCoordinator(
             context: .init(
@@ -2868,6 +2870,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         closeWebViews()
         closeAIWindow(preservingDockPlacement: true)
         stopCurrentSessionAndPersistStatistics()
+        if !canResumeRecoveredSession { outputImageLoader.resetForNewSession() }
         if !canResumeRecoveredSession { recoveryCoordinator.discard() }
         isSessionConnected = false
         currentServer = server
@@ -5602,7 +5605,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         if let existing = triggerSpawnWindows[title] { return (existing, false) }
         let controller = TriggerSpawnWindowController(
             title: title,
-            unreadBoundaryCoordinator: unreadBoundaryCoordinator
+            unreadBoundaryCoordinator: unreadBoundaryCoordinator,
+            imageLoader: outputImageLoader
         )
         controller.applyTheme(preferences.theme.palette)
         controller.applyBlinkInterval(TimeInterval(max(0, profileLibrary.workspace.projection.ansi.flashSpeed)) / 1_000)
@@ -5638,7 +5642,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         if let existing = triggerSpawnTabGroups[title] { return (existing, false) }
         let controller = TriggerSpawnTabGroupWindowController(
             title: title,
-            unreadBoundaryCoordinator: unreadBoundaryCoordinator
+            unreadBoundaryCoordinator: unreadBoundaryCoordinator,
+            imageLoader: outputImageLoader
         )
         controller.applyTheme(preferences.theme.palette)
         controller.applyBlinkInterval(TimeInterval(max(0, profileLibrary.workspace.projection.ansi.flashSpeed)) / 1_000)

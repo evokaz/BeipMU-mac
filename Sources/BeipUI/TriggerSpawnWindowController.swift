@@ -40,7 +40,8 @@ final class TriggerSpawnWindowController: NSWindowController, NSWindowDelegate {
 
     init(
         title: String,
-        unreadBoundaryCoordinator: SharedUnreadBoundaryCoordinator = SharedUnreadBoundaryCoordinator()
+        unreadBoundaryCoordinator: SharedUnreadBoundaryCoordinator = SharedUnreadBoundaryCoordinator(),
+        imageLoader: OutputImageLoader = OutputImageLoader()
     ) {
         output = OutputTextView()
         self.unreadBoundaryCoordinator = unreadBoundaryCoordinator
@@ -57,6 +58,7 @@ final class TriggerSpawnWindowController: NSWindowController, NSWindowDelegate {
         panel.hidesOnDeactivate = false
         panel.contentView = output.containerView
         super.init(window: panel)
+        output.setOutputImageLoader(imageLoader)
         output.setUnreadBoundaryCoordinator(unreadBoundaryCoordinator)
         output.setWindowFocused(panel.isKeyWindow)
         panel.delegate = self
@@ -243,6 +245,7 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
     private let root = NSView()
     private let dockingAccessory = DockSurfaceAccessoryViewController()
     private let unreadBoundaryCoordinator: SharedUnreadBoundaryCoordinator
+    private let imageLoader: OutputImageLoader
     private var tabs: [Tab] = []
     private var themePalette = WorkspaceThemeSettings().palette
     private var selectedID: UUID?
@@ -274,9 +277,11 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
 
     init(
         title: String,
-        unreadBoundaryCoordinator: SharedUnreadBoundaryCoordinator = SharedUnreadBoundaryCoordinator()
+        unreadBoundaryCoordinator: SharedUnreadBoundaryCoordinator = SharedUnreadBoundaryCoordinator(),
+        imageLoader: OutputImageLoader = OutputImageLoader()
     ) {
         self.unreadBoundaryCoordinator = unreadBoundaryCoordinator
+        self.imageLoader = imageLoader
         let panel = TriggerSpawnFloatingWindow(
             contentRect: NSRect(x: 0, y: 0, width: 560, height: 360),
             styleMask: [.titled, .closable, .resizable],
@@ -609,6 +614,7 @@ final class TriggerSpawnTabGroupWindowController: NSWindowController, NSWindowDe
 
     private func makeOutput() -> OutputTextView {
         let output = OutputTextView()
+        output.setOutputImageLoader(imageLoader)
         output.setUnreadBoundaryCoordinator(unreadBoundaryCoordinator)
         output.applyTheme(themePalette)
         output.applyBlinkInterval(blinkInterval)

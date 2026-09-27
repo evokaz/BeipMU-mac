@@ -506,6 +506,12 @@ final class OutputTextView: NSObject {
         unreadBoundaryCoordinator.unregister(self)
     }
 
+    func setOutputImageLoader(_ loader: OutputImageLoader) {
+        outputView.imageLoader = loader
+        secondaryOutputView?.imageLoader = loader
+        if showsInlineImagePreviews { loader.setEnabled(true) }
+    }
+
     func applyUnreadBoundaryPositionFromCoordinator(_ position: Int?) {
         newContentBoundaryPosition = position.map { min(max(0, $0), history.count) }
         guard pendingOutputDescriptorCount == 0, !isQueueingOutputMutation else {
@@ -784,6 +790,7 @@ final class OutputTextView: NSObject {
         scrollAdjustment: (@MainActor (NSScrollView) -> Void)? = nil
     ) {
         let view = VirtualizedOutputView(frame: NSRect(x: 0, y: 0, width: max(1, outputView.bounds.width), height: 1))
+        view.imageLoader = outputView.imageLoader
         view.blinkInterval = blinkInterval
         view.canvasBackgroundColor = defaultBackground
         view.showsInlineImagePreviews = showsInlineImagePreviews

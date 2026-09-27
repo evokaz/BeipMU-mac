@@ -4,7 +4,7 @@ import CoreText
 import Foundation
 
 @MainActor
-final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToolTipOwner {
+final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToolTipOwner, OutputImageLoaderObserver {
     struct InlinePreview: Equatable {
         var source: URL
         var altText: String
@@ -55,11 +55,6 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         var rect: NSRect
     }
 
-    private enum PreviewLoadState: Equatable {
-        case loading
-        case failed
-    }
-
     static let blinkAttribute = NSAttributedString.Key("BeipMUBlink")
 
     var onLink: ((URL) -> Void)?
@@ -102,12 +97,12 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
             needsDisplay = true
         }
     }
-    private var imageCache: [URL: NSImage] = [:]
-    private var imageTasks: [URL: Task<Void, Never>] = [:]
-    private var previewTasks: [URL: Task<Void, Never>] = [:]
-    private var previewStates: [URL: PreviewLoadState] = [:]
-    private(set) var previewDownloadCount = 0
-    private var animationTimer: Timer?
+    var imageLoader = OutputImageLoader() {
+        didSet {
+            imageLoader.register(self)
+            imageLoader.setReduceMotion(displayOptions.reduceMotion)
+        }
+    }
     private var displayOptions = AccessibilityDisplayOptions.current
     private(set) var batchMutationCountForTesting = 0
     private(set) var scrollAnimationTargetUpdateCountForTesting = 0
@@ -115,7 +110,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     var showsInlineImagePreviews = false {
         didSet {
             guard showsInlineImagePreviews != oldValue else { return }
-            if !showsInlineImagePreviews { cancelPreviewLoads() }
+            imageLoader.setEnabled(showsInlineImagePreviews)
             rebuildMeasurements()
             needsDisplay = true
         }
@@ -146,6 +141,8 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         setAccessibilityElement(true)
         setAccessibilityRole(.textArea)
         setAccessibilityLabel("MU star output")
+        imageLoader.register(self)
+        imageLoader.setReduceMotion(displayOptions.reduceMotion)
         NSWorkspace.shared.notificationCenter.addObserver(
             self,
             selector: #selector(accessibilityDisplayOptionsChanged(_:)),
@@ -160,8 +157,8 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     var isBlinkTimerActive: Bool { blinkTimer != nil }
     var blinkIntervalForTesting: TimeInterval { blinkInterval }
     private(set) var blinkTimerCreationCountForTesting = 0
-    var isAnimationTimerActive: Bool { animationTimer != nil }
-    var previewDownloadCountForTesting: Int { previewDownloadCount }
+    var isAnimationTimerActive: Bool { imageLoader.isAnimationTimerActive }
+    var previewDownloadCountForTesting: Int { imageLoader.requestCountForTesting }
     var selectedRangeIsEmpty: Bool { anchor == nil || anchor == focus }
     var newContentBoundaryItemIDForTesting: UUID? {
         guard let newContentBoundaryPosition else { return nil }
@@ -254,10 +251,6 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         markedItems.formIntersection(items.map(\.id))
         newContentBoundaryPosition = boundaryPosition.map { min(max(0, $0), items.count) }
         blinkingItemCount = items.reduce(0) { $0 + (hasBlink($1) ? 1 : 0) }
-        let activePreviewURLs = showsInlineImagePreviews
-            ? Set(items.flatMap(\.previews).map(\.source))
-            : []
-        cancelPreviewLoads(keeping: activePreviewURLs)
         rebuildIndexMap()
         let reusableHeights: [Double]? = if let preparedHeights,
                                              preparedHeights.count == items.count,
@@ -501,7 +494,6 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         newContentBoundaryPosition = nil
         blinkingItemCount = 0
         renderedItemCount = 0
-        cancelPreviewLoads()
         updateDocumentHeight()
         updateBlinkTimer()
         needsDisplay = true
@@ -514,13 +506,10 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
             blinkTimer?.invalidate()
             blinkTimer = nil
             blinkVisible = true
-            animationTimer?.invalidate()
-            animationTimer = nil
-            resetAnimationsToFirstFrame()
         } else {
             updateBlinkTimer()
-            updateAnimationTimer()
         }
+        imageLoader.setReduceMotion(options.reduceMotion)
         needsDisplay = true
     }
 
@@ -1116,7 +1105,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         attributedText: NSAttributedString,
         in rect: NSRect
     ) {
-        guard !assets.isEmpty else { return }
+        guard showsInlineImagePreviews, !assets.isEmpty else { return }
         let symbolConfig = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
         for entry in assets {
             let point = approximatePoint(
@@ -1124,7 +1113,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
                 attributedText: attributedText,
                 rect: rect
             )
-            if let image = imageCache[entry.asset.source] {
+            if let image = imageLoader.image(for: entry.asset.source) {
                 let side: CGFloat = entry.asset.kind == .avatar ? 32 : 24
                 let ratio = image.size.height > 0 ? image.size.width / image.size.height : 1
                 let size = NSSize(width: side * max(0.5, min(2, ratio)), height: side)
@@ -1137,7 +1126,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
                     hints: [.interpolation: NSImageInterpolation.high]
                 )
             } else {
-                scheduleImageLoad(entry.asset.source)
+                imageLoader.requestIfNeeded(entry.asset.source)
                 let symbol = switch entry.asset.kind {
                 case .image: "photo"
                 case .avatar: "person.crop.square"
@@ -1170,10 +1159,11 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         NSColor.separatorColor.setStroke()
         NSBezierPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), xRadius: 6, yRadius: 6).stroke()
 
-        guard let image = imageCache[preview.source] else {
-            schedulePreviewLoad(preview.source)
-            let title = previewStates[preview.source] == .failed ? "Unable to load image" : "Loading image…"
-            let symbol = previewStates[preview.source] == .failed ? "exclamationmark.triangle" : "photo"
+        guard let image = imageLoader.image(for: preview.source) else {
+            imageLoader.requestIfNeeded(preview.source)
+            let failed = imageLoader.hasFailed(preview.source)
+            let title = failed ? "Unable to load image" : "Loading image…"
+            let symbol = failed ? "exclamationmark.triangle" : "photo"
             let symbolSize = min(22, max(14, rect.height * 0.22))
             let symbolRect = NSRect(
                 x: rect.midX - symbolSize / 2,
@@ -1221,61 +1211,9 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         )
     }
 
-    private func scheduleImageLoad(_ url: URL) {
-        guard imageCache[url] == nil, imageTasks[url] == nil else { return }
-        imageTasks[url] = Task { [weak self] in
-            let data = await Task.detached(priority: .utility) { try? Data(contentsOf: url) }.value
-            guard !Task.isCancelled, let self else { return }
-            imageTasks.removeValue(forKey: url)
-            guard let data, let image = NSImage(data: data) else { return }
-            imageCache[url] = image
-            updateAnimationTimer()
-            needsDisplay = true
-            NSAccessibility.post(element: self, notification: .valueChanged)
-        }
-    }
-
-    private func schedulePreviewLoad(_ url: URL) {
-        guard showsInlineImagePreviews,
-              Self.isHTTPURL(url),
-              imageCache[url] == nil,
-              previewTasks[url] == nil,
-              previewStates[url] != .failed else { return }
-        previewStates[url] = .loading
-        previewDownloadCount += 1
-        previewTasks[url] = Task { [weak self] in
-            let data = try? await URLSession.shared.data(from: url).0
-            guard !Task.isCancelled, let self else { return }
-            previewTasks.removeValue(forKey: url)
-            guard let data, let image = NSImage(data: data) else {
-                previewStates[url] = .failed
-                needsDisplay = true
-                return
-            }
-            previewStates.removeValue(forKey: url)
-            imageCache[url] = image
-            updateAnimationTimer()
-            needsDisplay = true
-            NSAccessibility.post(element: self, notification: .valueChanged)
-        }
-    }
-
-    private func cancelPreviewLoads(keeping urls: Set<URL> = []) {
-        for url in Array(previewTasks.keys) where !urls.contains(url) {
-            guard let task = previewTasks[url] else { continue }
-            task.cancel()
-            previewTasks.removeValue(forKey: url)
-            previewStates.removeValue(forKey: url)
-            if !hasCompactAsset(source: url) { imageCache.removeValue(forKey: url) }
-        }
-        for url in Array(previewStates.keys) where !urls.contains(url) {
-            previewStates.removeValue(forKey: url)
-            if !hasCompactAsset(source: url) { imageCache.removeValue(forKey: url) }
-        }
-    }
-
-    private func hasCompactAsset(source url: URL) -> Bool {
-        retainedItems.contains { item in item.assets.contains { $0.asset.source == url } }
+    func outputImageLoaderDidUpdate(accessibilityChanged: Bool) {
+        needsDisplay = true
+        if accessibilityChanged { NSAccessibility.post(element: self, notification: .valueChanged) }
     }
 
     private func textRect(for item: Item, in rect: NSRect) -> NSRect {
@@ -1351,58 +1289,6 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
             }
         }
         return nil
-    }
-
-    private static func isHTTPURL(_ url: URL) -> Bool {
-        guard let scheme = url.scheme?.lowercased() else { return false }
-        return scheme == "http" || scheme == "https"
-    }
-
-    private func updateAnimationTimer() {
-        if displayOptions.reduceMotion {
-            animationTimer?.invalidate()
-            animationTimer = nil
-            resetAnimationsToFirstFrame()
-            return
-        }
-        let hasAnimation = imageCache.values.contains { image in
-            image.representations.contains { representation in
-                guard let bitmap = representation as? NSBitmapImageRep else { return false }
-                return (bitmap.value(forProperty: .frameCount) as? Int ?? 1) > 1
-            }
-        }
-        if hasAnimation, animationTimer == nil {
-            animationTimer = Timer.scheduledTimer(withTimeInterval: 0.12, repeats: true) { [weak self] _ in
-                MainActor.assumeIsolated { self?.advanceAnimations() }
-            }
-        } else if !hasAnimation {
-            animationTimer?.invalidate()
-            animationTimer = nil
-        }
-    }
-
-    private func advanceAnimations() {
-        var advanced = false
-        for image in imageCache.values {
-            for case let bitmap as NSBitmapImageRep in image.representations {
-                let count = bitmap.value(forProperty: .frameCount) as? Int ?? 1
-                guard count > 1 else { continue }
-                let current = bitmap.value(forProperty: .currentFrame) as? Int ?? 0
-                bitmap.setProperty(.currentFrame, withValue: (current + 1) % count)
-                advanced = true
-            }
-        }
-        if advanced { needsDisplay = true }
-    }
-
-    private func resetAnimationsToFirstFrame() {
-        for image in imageCache.values {
-            for case let bitmap as NSBitmapImageRep in image.representations {
-                if (bitmap.value(forProperty: .frameCount) as? Int ?? 1) > 1 {
-                    bitmap.setProperty(.currentFrame, withValue: 0)
-                }
-            }
-        }
     }
 
     private func approximatePoint(
