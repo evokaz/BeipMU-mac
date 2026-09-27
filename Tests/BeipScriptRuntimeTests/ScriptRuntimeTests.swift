@@ -83,7 +83,6 @@ final class ScriptRuntimeTests: XCTestCase {
     func testHostSnapshotPopulatesDocumentedCollectionsAndWindowState() async {
         let runtime = ScriptRuntime()
         let host = ScriptHostSnapshot(
-            buildNumber: 331,
             configPath: "/tmp/Config.txt",
             worlds: [.init(name: "Lambda", host: "lambda.test:8888", characters: [.init(name: "Guest")])],
             aliases: [.init(description: "North", matchText: "n")],
@@ -92,11 +91,11 @@ final class ScriptRuntimeTests: XCTestCase {
         )
 
         let result = await runtime.evaluate(
-            "[app.BuildNumber, app.ConfigPath, app.worlds.Count, app.worlds(0).characters(0).name, aliases.Count, triggers.Count, window.input.get(), window.connection.IsConnected(), window.GetVariable('target')].join('|')",
+            "[app.BuildNumber, app.Version, app.ConfigPath, app.worlds.Count, app.worlds(0).characters(0).name, aliases.Count, triggers.Count, window.input.get(), window.connection.IsConnected(), window.GetVariable('target')].join('|')",
             host: host
         )
 
-        XCTAssertEqual(result.value, "331|/tmp/Config.txt|1|Guest|1|1|look|true|Ada")
+        XCTAssertEqual(result.value, "332|332|/tmp/Config.txt|1|Guest|1|1|look|true|Ada")
         XCTAssertNil(result.error)
     }
 

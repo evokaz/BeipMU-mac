@@ -1,4 +1,5 @@
 import AppKit
+import BeipCore
 import XCTest
 @testable import BeipUI
 
@@ -16,6 +17,10 @@ final class AboutWindowControllerTests: XCTestCase {
         XCTAssertEqual(window.accessibilityIdentifier(), "aboutWindow")
         XCTAssertEqual(textField("aboutAppName", in: views)?.stringValue, "BeipMU for Mac")
         XCTAssertEqual(textField("aboutVersion", in: views)?.stringValue, "Version 0.4")
+        XCTAssertEqual(
+            textField("aboutWindowsCompatibility", in: views)?.stringValue,
+            "Windows compatibility: v\(WindowsCompatibilityVersion.current)"
+        )
 
         let project = button("aboutProjectGitHub", in: views)
         XCTAssertEqual(project?.title, "https://github.com/evokaz/BeipMU-mac")

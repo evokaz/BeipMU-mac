@@ -5357,8 +5357,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             )
         }
         return .init(
-            buildNumber: LegacyConfigurationProjection.currentWindowsVersion,
-            version: LegacyConfigurationProjection.currentWindowsVersion,
+            buildNumber: WindowsCompatibilityVersion.current,
+            version: WindowsCompatibilityVersion.current,
             buildDate: Self.applicationBuildDate,
             configPath: profileLibrary.workspace.sourceURL?.path ?? "",
             worlds: worlds,

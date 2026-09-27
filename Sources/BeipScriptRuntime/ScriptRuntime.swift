@@ -135,8 +135,8 @@ public struct ScriptHostSnapshot: Codable, Sendable, Equatable {
     public var window: Window
 
     public init(
-        buildNumber: Int = 331,
-        version: Int = 331,
+        buildNumber: Int = WindowsCompatibilityVersion.current,
+        version: Int = WindowsCompatibilityVersion.current,
         buildDate: String? = nil,
         configPath: String = "",
         worlds: [World] = [],

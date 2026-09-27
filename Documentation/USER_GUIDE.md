@@ -47,6 +47,14 @@ disable it. Conflicts with another shortcut or a fixed native menu command are
 rejected with a prompt naming the conflict. Standard macOS commands such as
 Settings, Help, and Quit remain fixed.
 
+## Clickable server output
+
+Server output may contain OSC 8 links. Command-click an `http:`, `https:`, or
+`ftp:` link to open it. Click a `send:` link to submit its decoded text through
+normal input processing, including aliases and client commands. Click a
+`prompt:` link to put its decoded text in the active input editor and select
+it; it does not submit the text. Link actions happen only when clicked.
+
 ## Customize the workspace
 
 **Settings…** opens a retained window with Appearance, Output, Input, Restore
@@ -173,9 +181,12 @@ The app-owned data directory is:
 └── Recovery.dat
 ```
 
-- `Config.txt` is the portable v331 configuration. The editor preserves
-  comments, ordering, and unknown platform-specific fields while updating
-  supported values.
+- `Config.txt` uses Windows v332 compatibility. The editor preserves comments,
+  ordering, and unknown platform-specific fields while updating supported
+  values. Windows-only v332 fields such as `CheckForUpdates`,
+  `DockedCaptionFontName`, and `DockedCaptionHeight` remain in the file when
+  edited, even though Mac does not expose those settings or apply their
+  Windows behavior.
 - `Config.backup.txt` is the previous live configuration, written before an
   atomic update. If the live file cannot be restored, BeipMU attempts recovery
   from this backup.

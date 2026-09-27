@@ -8,7 +8,9 @@ tools.
 This project is a native macOS reimplementation of
 [BeipMU](https://github.com/BeipDev/BeipMU), the Windows MU* client created by
 Bennet. It aims to preserve compatibility with BeipMU's configuration format
-and core functionality while providing a native AppKit interface.
+and core functionality while providing a native AppKit interface. Windows
+v332 compatibility refers to portable configuration and client metadata; the
+Mac app release version is tracked independently.
 
 This macOS reimplementation is maintained independently. Please report issues
 with BeipMU for Mac to this project rather than seeking support from the
@@ -28,8 +30,8 @@ architecture; the Intel slice is currently untested.
   settings, themes, keyboard customization, and accessibility-aware behavior.
 - Telnet negotiation, GMCP, MCP, Pueblo, ANSI/256/true color, NAWS, TLS, and
   multiple text encodings.
-- Worlds, characters, and puppets backed by a lossless BeipMU v332-compatible
-  `Config.txt` workspace.
+- Worlds, characters, and puppets backed by a lossless Windows BeipMU
+  v332-compatible `Config.txt` workspace.
 - Scoped aliases, triggers, macros, variables, delayed commands, spawn windows,
   and automation diagnostics.
 - JavaScriptCore scripting in an XPC service with a watchdog/reset boundary.

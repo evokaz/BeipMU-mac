@@ -96,7 +96,7 @@ final class TelnetParserTests: XCTestCase {
         guard case let .send(negotiation) = reply[0] else { return XCTFail("missing negotiation") }
         XCTAssertEqual(negotiation, Data([255, 253, 201]))
         guard case let .send(hello) = reply[1] else { return XCTFail("missing hello") }
-        XCTAssertTrue(hello.starts(with: Data([255, 250, 201]) + Data("Core.Hello {\"client\":\"Beip\", \"version\":\"331\"}".utf8)))
+        XCTAssertTrue(hello.starts(with: Data([255, 250, 201]) + Data("Core.Hello {\"client\":\"Beip\", \"version\":\"332\"}".utf8)))
 
         let input = Data([255, 250, 201]) + Data("Core.Ping {\"x\":1}".utf8) + Data([255, 240])
         let events = parser.consume(input)

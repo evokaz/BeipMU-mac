@@ -133,7 +133,7 @@ final class ConnectionScaleTests: XCTestCase {
             Data([255, 250, 201]) + Data(value.utf8) + Data([255, 240])
         }
         return Data([255, 253, 25, 255, 253, 201])
-            + gmcp(#"Core.Hello {"client":"Beip", "version":"331"}"#)
+            + gmcp(#"Core.Hello {"client":"Beip", "version":"332"}"#)
             + gmcp(#"Core.Supports.Set [ "WebView 1", "Beip.Stats 1", "Beip.Tilemap 1", "Beip.Id 1", "Client.Media 1" ]"#)
     }
 

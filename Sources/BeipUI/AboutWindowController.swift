@@ -1,4 +1,5 @@
 import AppKit
+import BeipCore
 
 @MainActor
 final class AboutWindowController: NSWindowController, NSWindowDelegate {
@@ -60,10 +61,17 @@ final class AboutWindowController: NSWindowController, NSWindowDelegate {
         version.textColor = .secondaryLabelColor
         version.setAccessibilityIdentifier("aboutVersion")
 
-        let headingStack = NSStackView(views: [appName, version])
+        let windowsCompatibility = NSTextField(labelWithString:
+            "Windows compatibility: v\(WindowsCompatibilityVersion.current)"
+        )
+        windowsCompatibility.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        windowsCompatibility.textColor = .secondaryLabelColor
+        windowsCompatibility.setAccessibilityIdentifier("aboutWindowsCompatibility")
+
+        let headingStack = NSStackView(views: [appName, version, windowsCompatibility])
         headingStack.orientation = .vertical
         headingStack.alignment = .leading
-        headingStack.spacing = 5
+        headingStack.spacing = 4
 
         let header = NSStackView(views: [icon, headingStack])
         header.orientation = .horizontal
@@ -101,7 +109,9 @@ final class AboutWindowController: NSWindowController, NSWindowDelegate {
             identifier: "aboutOriginalDeveloperLink"
         )
 
-        themedTextFields = [appName, version, projectLabel, thanks, originalProjectLabel]
+        themedTextFields = [
+            appName, version, windowsCompatibility, projectLabel, thanks, originalProjectLabel,
+        ]
         themedLinkButtons = [projectLink, originalLink]
 
         let originalProjectRow = NSStackView(views: [originalProjectLabel, originalLink])

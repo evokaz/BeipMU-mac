@@ -305,7 +305,7 @@ public struct TelnetParser: Sendable {
     }
 
     private func gmcpHello() -> Data {
-        subnegotiation(Code.gmcp, Data("Core.Hello {\"client\":\"Beip\", \"version\":\"331\"}".utf8))
+        subnegotiation(Code.gmcp, Data("Core.Hello {\"client\":\"Beip\", \"version\":\"\(WindowsCompatibilityVersion.current)\"}".utf8))
         + subnegotiation(Code.gmcp, Data("Core.Supports.Set [ \"WebView 1\", \"Beip.Stats 1\", \"Beip.Tilemap 1\", \"Beip.Id 1\", \"Client.Media 1\" ]".utf8))
     }
 }

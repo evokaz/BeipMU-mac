@@ -4,7 +4,7 @@ import Foundation
 
 /// Windows Config.txt compatibility level used for newly written files.
 public enum LegacyConfigurationVersion {
-    public static let currentWindows = 332
+    public static let currentWindows = WindowsCompatibilityVersion.current
 }
 
 /// Portable, typed view of the connection-related portion of Config.txt.
