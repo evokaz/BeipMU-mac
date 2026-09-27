@@ -740,6 +740,7 @@ final class OutputTextView: NSObject {
             )
             containerView.removeArrangedSubview(secondaryScrollView)
             secondaryScrollView.removeFromSuperview()
+            secondaryOutputView?.releaseImageReferences()
             self.secondaryScrollView = nil
             secondaryOutputView = nil
             return
@@ -981,6 +982,8 @@ final class OutputTextView: NSObject {
         tailAnimationTask = nil
         tailQuietTask?.cancel()
         tailQuietTask = nil
+        outputView.releaseImageReferences()
+        secondaryOutputView?.releaseImageReferences()
     }
 
     private var hasPendingOutputMutation: Bool {
@@ -1486,6 +1489,8 @@ final class OutputTextView: NSObject {
         }
         let contentRange = NSRange(location: textOffset, length: line.text.utf16.count)
         lineContentRanges[line.id] = contentRange
+        let imagePreviews = inlineImagePreviews(for: line)
+        let imageReferences = Set(line.assets.map(\.source)).union(imagePreviews.map(\.source))
         return .init(
             id: line.id,
             attributedText: value,
@@ -1493,14 +1498,13 @@ final class OutputTextView: NSObject {
             assets: line.assets
                 .filter { $0.kind != .image }
                 .map { ($0, textOffset + $0.characterOffset) },
-            previews: inlineImagePreviews(for: line),
+            previews: showsInlineImagePreviews ? imagePreviews : [],
+            imageReferences: imageReferences,
             paragraph: line.paragraph
         )
     }
 
     private func inlineImagePreviews(for line: RenderedLine) -> [VirtualizedOutputView.InlinePreview] {
-        guard showsInlineImagePreviews else { return [] }
-
         struct Candidate {
             var preview: VirtualizedOutputView.InlinePreview
             var location: Int

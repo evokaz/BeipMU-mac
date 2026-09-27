@@ -7,8 +7,9 @@ protocol OutputImageLoaderObserver: AnyObject {
 }
 
 /// Shares output image requests across every output surface for one client
-/// session. A URL is attempted once and retains either its decoded image or
-/// its terminal failure until the next session starts.
+/// session. A URL is attempted once per session. Decoded images are retained
+/// only while an output surface references them; attempt outcomes remain
+/// recorded until the next session starts.
 @MainActor
 final class OutputImageLoader {
     typealias Downloader = @Sendable (URL) async throws -> Data
@@ -17,20 +18,32 @@ final class OutputImageLoader {
         case loading
         case loaded(NSImage)
         case failed
+        case released
     }
 
-    private final class WeakObserver {
-        weak var value: (any OutputImageLoaderObserver)?
+    enum State: Equatable {
+        case notRequested
+        case loading
+        case loaded
+        case failed
+        case released
+    }
 
-        init(_ value: any OutputImageLoaderObserver) {
-            self.value = value
+    private final class ObserverRecord {
+        weak var observer: (any OutputImageLoaderObserver)?
+        var imageReferenceCounts: [URL: Int]
+
+        init(_ observer: any OutputImageLoaderObserver, imageReferenceCounts: [URL: Int] = [:]) {
+            self.observer = observer
+            self.imageReferenceCounts = imageReferenceCounts
         }
     }
 
     private let downloader: Downloader
     private var entries: [URL: Entry] = [:]
     private var tasks: [URL: Task<Void, Never>] = [:]
-    private var observers: [WeakObserver] = []
+    private var observers: [ObjectIdentifier: ObserverRecord] = [:]
+    private var imageReferenceCounts: [URL: Int] = [:]
     private var animationTimer: Timer?
     private var isEnabled = false
     private var reduceMotion = AccessibilityDisplayOptions.current.reduceMotion
@@ -43,10 +56,63 @@ final class OutputImageLoader {
         self.downloader = downloader
     }
 
-    func register(_ observer: any OutputImageLoaderObserver) {
-        pruneObservers()
-        guard !observers.contains(where: { $0.value === observer }) else { return }
-        observers.append(WeakObserver(observer))
+    func register(_ observer: any OutputImageLoaderObserver, imageReferenceCounts: [URL: Int] = [:]) {
+        _ = pruneDeadObservers()
+        let id = ObjectIdentifier(observer)
+        guard observers[id] == nil else { return }
+        let normalizedCounts = imageReferenceCounts.filter { $0.value > 0 }
+        observers[id] = ObserverRecord(observer, imageReferenceCounts: normalizedCounts)
+        _ = applyGlobalReferenceDeltas(normalizedCounts)
+    }
+
+    func setReferences(
+        for observer: any OutputImageLoaderObserver,
+        to imageReferenceCounts: [URL: Int]
+    ) {
+        _ = pruneDeadObservers()
+        let id = ObjectIdentifier(observer)
+        let record = observers[id] ?? ObserverRecord(observer)
+        observers[id] = record
+        let nextCounts = imageReferenceCounts.filter { $0.value > 0 }
+        var deltas: [URL: Int] = [:]
+        for url in Set(record.imageReferenceCounts.keys).union(nextCounts.keys) {
+            let delta = (nextCounts[url] ?? 0) - (record.imageReferenceCounts[url] ?? 0)
+            if delta != 0 { deltas[url] = delta }
+        }
+        record.imageReferenceCounts = nextCounts
+        if applyGlobalReferenceDeltas(deltas) { notifyObservers(accessibilityChanged: true) }
+    }
+
+    func adjustReferences(
+        for observer: any OutputImageLoaderObserver,
+        by deltas: [URL: Int]
+    ) {
+        guard !deltas.isEmpty else { return }
+        _ = pruneDeadObservers()
+        let id = ObjectIdentifier(observer)
+        let record = observers[id] ?? ObserverRecord(observer)
+        observers[id] = record
+        var normalizedDeltas: [URL: Int] = [:]
+        for (url, delta) in deltas where delta != 0 {
+            let oldCount = record.imageReferenceCounts[url] ?? 0
+            let newCount = max(0, oldCount + delta)
+            let normalizedDelta = newCount - oldCount
+            guard normalizedDelta != 0 else { continue }
+            normalizedDeltas[url] = normalizedDelta
+            if newCount == 0 {
+                record.imageReferenceCounts.removeValue(forKey: url)
+            } else {
+                record.imageReferenceCounts[url] = newCount
+            }
+        }
+        if applyGlobalReferenceDeltas(normalizedDeltas) { notifyObservers(accessibilityChanged: true) }
+    }
+
+    func unregister(_ observer: any OutputImageLoaderObserver) {
+        let id = ObjectIdentifier(observer)
+        guard let record = observers.removeValue(forKey: id) else { return }
+        let deltas = record.imageReferenceCounts.mapValues { -$0 }
+        if applyGlobalReferenceDeltas(deltas) { notifyObservers(accessibilityChanged: true) }
     }
 
     func setEnabled(_ enabled: Bool) {
@@ -80,9 +146,20 @@ final class OutputImageLoader {
         return true
     }
 
+    func state(for url: URL) -> State {
+        switch entries[url] {
+        case .loading: .loading
+        case .loaded: .loaded
+        case .failed: .failed
+        case .released: .released
+        case nil: .notRequested
+        }
+    }
+
     func requestIfNeeded(_ url: URL) {
         guard isEnabled,
               Self.isHTTPURL(url),
+              imageReferenceCounts[url, default: 0] > 0,
               !entries.keys.contains(url) else { return }
         entries[url] = .loading
         requestCountForTesting += 1
@@ -129,6 +206,48 @@ final class OutputImageLoader {
             entries[url] = .failed
         }
         tasks.removeAll(keepingCapacity: true)
+    }
+
+    /// Applies reference changes for all output views at once, then releases
+    /// decoded images or pending requests that no retained line still uses.
+    private func applyGlobalReferenceDeltas(_ deltas: [URL: Int]) -> Bool {
+        var releasedImage = false
+        for (url, delta) in deltas where delta != 0 {
+            let nextCount = max(0, imageReferenceCounts[url, default: 0] + delta)
+            if nextCount == 0 {
+                imageReferenceCounts.removeValue(forKey: url)
+                releasedImage = releaseImageIfUnreferenced(url) || releasedImage
+            } else {
+                imageReferenceCounts[url] = nextCount
+            }
+        }
+        if releasedImage { updateAnimationTimer() }
+        return releasedImage
+    }
+
+    private func releaseImageIfUnreferenced(_ url: URL) -> Bool {
+        guard imageReferenceCounts[url, default: 0] == 0 else { return false }
+        switch entries[url] {
+        case .loading, .loaded:
+            tasks.removeValue(forKey: url)?.cancel()
+            entries[url] = .released
+            return true
+        case .failed, .released, nil:
+            return false
+        }
+    }
+
+    @discardableResult
+    private func pruneDeadObservers() -> Bool {
+        let deadIDs = observers.compactMap { id, record in record.observer == nil ? id : nil }
+        var deltas: [URL: Int] = [:]
+        for id in deadIDs {
+            guard let record = observers.removeValue(forKey: id) else { continue }
+            for (url, count) in record.imageReferenceCounts {
+                deltas[url, default: 0] -= count
+            }
+        }
+        return applyGlobalReferenceDeltas(deltas)
     }
 
     private func updateAnimationTimer() {
@@ -179,12 +298,8 @@ final class OutputImageLoader {
     }
 
     private func notifyObservers(accessibilityChanged: Bool = false) {
-        pruneObservers()
-        observers.forEach { $0.value?.outputImageLoaderDidUpdate(accessibilityChanged: accessibilityChanged) }
-    }
-
-    private func pruneObservers() {
-        observers.removeAll { $0.value == nil }
+        _ = pruneDeadObservers()
+        observers.values.forEach { $0.observer?.outputImageLoaderDidUpdate(accessibilityChanged: accessibilityChanged) }
     }
 
     private static func isHTTPURL(_ url: URL) -> Bool {

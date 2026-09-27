@@ -21,6 +21,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         var contentRange: NSRange
         var assets: [(asset: InlineAsset, displayOffset: Int)]
         var previews: [InlinePreview] = []
+        var imageReferences: Set<URL> = []
         var paragraph: ParagraphStyle = .init()
     }
 
@@ -70,6 +71,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
 
     private var storage: [Item] = []
     private var head = 0
+    private var imageReferenceCounts: [URL: Int] = [:]
     private var itemIndices: [UUID: Int] = [:]
     private var layoutIndex = LineLayoutIndex()
     private var measuredWidth: CGFloat = 0
@@ -99,7 +101,9 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     }
     var imageLoader = OutputImageLoader() {
         didSet {
-            imageLoader.register(self)
+            guard oldValue !== imageLoader else { return }
+            oldValue.unregister(self)
+            imageLoader.register(self, imageReferenceCounts: imageReferenceCounts)
             imageLoader.setReduceMotion(displayOptions.reduceMotion)
         }
     }
@@ -141,7 +145,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         setAccessibilityElement(true)
         setAccessibilityRole(.textArea)
         setAccessibilityLabel("MU star output")
-        imageLoader.register(self)
+        imageLoader.register(self, imageReferenceCounts: imageReferenceCounts)
         imageLoader.setReduceMotion(displayOptions.reduceMotion)
         NSWorkspace.shared.notificationCenter.addObserver(
             self,
@@ -236,6 +240,8 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         let boundaryPosition = newContentBoundaryPosition
         storage = items
         head = 0
+        imageReferenceCounts = Self.imageReferenceCounts(for: items)
+        imageLoader.setReferences(for: self, to: imageReferenceCounts)
         anchor = nil
         focus = nil
         if let hoveredLink,
@@ -356,6 +362,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     ) {
         let removed = min(max(0, requestedCount), itemCount)
         let removedHeight = layoutIndex.yOffset(for: removed) ?? 0
+        var imageReferenceDeltas: [URL: Int] = [:]
 
         if removed > 0 {
             if let hoveredLink,
@@ -366,6 +373,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
             for index in 0..<removed {
                 if let removedItem = self.item(at: index) {
                     if hasBlink(removedItem) { blinkingItemCount -= 1 }
+                    Self.addImageReferenceDeltas(for: removedItem, by: -1, to: &imageReferenceDeltas)
                     itemIndices.removeValue(forKey: removedItem.id)
                     markedItems.remove(removedItem.id)
                 }
@@ -386,6 +394,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
 
         for preparedItem in preparedItems {
             let appendedItem = preparedItem.item
+            Self.addImageReferenceDeltas(for: appendedItem, by: 1, to: &imageReferenceDeltas)
             storage.append(appendedItem)
             if hasBlink(appendedItem) { blinkingItemCount += 1 }
             itemIndices[appendedItem.id] = storage.count - 1
@@ -394,6 +403,7 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
                 : measuredHeight(for: appendedItem)
             layoutIndex.append(height: height)
         }
+        adjustImageReferenceCounts(by: imageReferenceDeltas)
         renderedItemCount += preparedItems.count
         for (itemID, marked) in markerChanges {
             if marked { markedItems.insert(itemID) } else { markedItems.remove(itemID) }
@@ -431,13 +441,16 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
             self.hoveredLink = nil
         }
         let removedHeight = layoutIndex.yOffset(for: removed) ?? 0
+        var imageReferenceDeltas: [URL: Int] = [:]
         for index in 0..<removed {
             if let removedItem = item(at: index) {
                 if hasBlink(removedItem) { blinkingItemCount -= 1 }
+                Self.addImageReferenceDeltas(for: removedItem, by: -1, to: &imageReferenceDeltas)
                 itemIndices.removeValue(forKey: removedItem.id)
                 markedItems.remove(removedItem.id)
             }
         }
+        adjustImageReferenceCounts(by: imageReferenceDeltas)
         head += removed
         if let newContentBoundaryPosition {
             self.newContentBoundaryPosition = max(0, newContentBoundaryPosition - removed)
@@ -463,6 +476,9 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     func removeLast() -> Item? {
         guard itemCount > 0 else { return nil }
         let item = storage.removeLast()
+        var imageReferenceDeltas: [URL: Int] = [:]
+        Self.addImageReferenceDeltas(for: item, by: -1, to: &imageReferenceDeltas)
+        adjustImageReferenceCounts(by: imageReferenceDeltas)
         if hoveredLink?.itemID == item.id { hoveredLink = nil }
         if hasBlink(item) { blinkingItemCount -= 1 }
         markedItems.remove(item.id)
@@ -483,6 +499,8 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
     }
 
     func removeAll() {
+        imageReferenceCounts.removeAll(keepingCapacity: true)
+        imageLoader.setReferences(for: self, to: [:])
         storage.removeAll(keepingCapacity: true)
         head = 0
         itemIndices.removeAll(keepingCapacity: true)
@@ -497,6 +515,15 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         updateDocumentHeight()
         updateBlinkTimer()
         needsDisplay = true
+    }
+
+    func releaseImageReferences() {
+        guard !imageReferenceCounts.isEmpty else {
+            imageLoader.unregister(self)
+            return
+        }
+        imageReferenceCounts.removeAll(keepingCapacity: true)
+        imageLoader.unregister(self)
     }
 
     func applyAccessibilityDisplayOptions(_ options: AccessibilityDisplayOptions) {
@@ -885,6 +912,38 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
         return min(available, fixedContentWidth ?? available)
     }
 
+    private static func imageReferenceCounts(for items: [Item]) -> [URL: Int] {
+        var counts: [URL: Int] = [:]
+        for item in items {
+            addImageReferenceDeltas(for: item, by: 1, to: &counts)
+        }
+        return counts
+    }
+
+    private static func addImageReferenceDeltas(
+        for item: Item,
+        by delta: Int,
+        to counts: inout [URL: Int]
+    ) {
+        let urls = item.imageReferences
+            .union(item.assets.map { $0.asset.source })
+            .union(item.previews.map(\.source))
+        for url in urls { counts[url, default: 0] += delta }
+    }
+
+    private func adjustImageReferenceCounts(by deltas: [URL: Int]) {
+        guard !deltas.isEmpty else { return }
+        for (url, delta) in deltas where delta != 0 {
+            let nextCount = max(0, imageReferenceCounts[url, default: 0] + delta)
+            if nextCount == 0 {
+                imageReferenceCounts.removeValue(forKey: url)
+            } else {
+                imageReferenceCounts[url] = nextCount
+            }
+        }
+        imageLoader.adjustReferences(for: self, by: deltas)
+    }
+
     private func item(at logicalIndex: Int) -> Item? {
         guard logicalIndex >= 0, logicalIndex < itemCount else { return nil }
         return storage[head + logicalIndex]
@@ -1161,9 +1220,14 @@ final class VirtualizedOutputView: NSView, NSUserInterfaceValidations, NSViewToo
 
         guard let image = imageLoader.image(for: preview.source) else {
             imageLoader.requestIfNeeded(preview.source)
-            let failed = imageLoader.hasFailed(preview.source)
-            let title = failed ? "Unable to load image" : "Loading image…"
-            let symbol = failed ? "exclamationmark.triangle" : "photo"
+            let (title, symbol) = switch imageLoader.state(for: preview.source) {
+            case .failed:
+                ("Unable to load image", "exclamationmark.triangle")
+            case .released:
+                ("Preview unavailable", "exclamationmark.triangle")
+            default:
+                ("Loading image…", "photo")
+            }
             let symbolSize = min(22, max(14, rect.height * 0.22))
             let symbolRect = NSRect(
                 x: rect.midX - symbolSize / 2,

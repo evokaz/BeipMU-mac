@@ -81,13 +81,13 @@ final class OutputImageLoaderTests: XCTestCase {
             return Data()
         })
         let url = URL(string: "https://images.example.test/slow.png")!
-        loader.setEnabled(true)
+        let view = makePreviewView(loader: loader, url: url)
         loader.requestIfNeeded(url)
         XCTAssertEqual(loader.requestCountForTesting, 1)
 
-        loader.setEnabled(false)
+        view.showsInlineImagePreviews = false
         XCTAssertTrue(loader.hasFailed(url))
-        loader.setEnabled(true)
+        view.showsInlineImagePreviews = true
         loader.requestIfNeeded(url)
         XCTAssertEqual(loader.requestCountForTesting, 1)
         XCTAssertTrue(loader.hasFailed(url))
@@ -97,7 +97,7 @@ final class OutputImageLoaderTests: XCTestCase {
         let gif = try Self.animatedGIFData()
         let loader = OutputImageLoader(downloader: { _ in gif })
         let url = URL(string: "https://images.example.test/animated.gif")!
-        loader.setEnabled(true)
+        let view = makePreviewView(loader: loader, url: url)
         loader.requestIfNeeded(url)
 
         try await eventuallyOnMainActor("animated GIF decode") { loader.image(for: url) != nil }
@@ -109,9 +109,104 @@ final class OutputImageLoaderTests: XCTestCase {
         }
         XCTAssertEqual(loader.requestCountForTesting, 1)
 
-        loader.setEnabled(false)
+        view.showsInlineImagePreviews = false
         XCTAssertFalse(loader.isAnimationTimerActive)
         XCTAssertEqual(loader.requestCountForTesting, 1)
+    }
+
+    func testImagesStayCachedUntilTheirLastOutputReferenceIsRemoved() async throws {
+        let gif = try Self.animatedGIFData()
+        let loader = OutputImageLoader(downloader: { _ in gif })
+        let url = URL(string: "https://images.example.test/shared.gif")!
+        let firstView = makePreviewView(loader: loader, url: url)
+        let secondView = makePreviewView(loader: loader, url: url)
+        loader.requestIfNeeded(url)
+
+        try await eventuallyOnMainActor("shared GIF decode") { loader.image(for: url) != nil }
+        XCTAssertTrue(loader.isAnimationTimerActive)
+        XCTAssertEqual(loader.requestCountForTesting, 1)
+
+        firstView.removeAll()
+        XCTAssertNotNil(loader.image(for: url))
+
+        secondView.removeAll()
+        XCTAssertNil(loader.image(for: url))
+        XCTAssertEqual(loader.state(for: url), .released)
+        XCTAssertFalse(loader.isAnimationTimerActive)
+
+        firstView.setItems([.init(
+            id: UUID(),
+            attributedText: NSAttributedString(string: "shared image\n"),
+            contentRange: NSRange(location: 0, length: 12),
+            assets: [],
+            previews: [.init(source: url)]
+        )])
+        loader.requestIfNeeded(url)
+        XCTAssertEqual(loader.requestCountForTesting, 1)
+        XCTAssertEqual(loader.state(for: url), .released)
+    }
+
+    func testRemovingLastReferenceCancelsPendingAttemptWithoutRetrying() async throws {
+        let download = PendingImageDownload()
+        let loader = OutputImageLoader(downloader: { _ in try await download.waitForCancellation() })
+        let url = URL(string: "https://images.example.test/removed-while-loading.png")!
+        let view = makePreviewView(loader: loader, url: url)
+
+        loader.requestIfNeeded(url)
+        await download.waitUntilStarted()
+        XCTAssertEqual(loader.state(for: url), .loading)
+
+        view.removeAll()
+        XCTAssertEqual(loader.state(for: url), .released)
+        await download.waitUntilCancelled()
+
+        view.setItems([.init(
+            id: UUID(),
+            attributedText: NSAttributedString(string: "image\n"),
+            contentRange: NSRange(location: 0, length: 6),
+            assets: [],
+            previews: [.init(source: url)]
+        )])
+        loader.requestIfNeeded(url)
+        XCTAssertEqual(loader.requestCountForTesting, 1)
+        XCTAssertEqual(loader.state(for: url), .released)
+    }
+
+    func testHistoryEvictionReleasesDecodedImageButKeepsAttemptRecord() async throws {
+        let gif = try Self.animatedGIFData()
+        let loader = OutputImageLoader(downloader: { _ in gif })
+        let url = URL(string: "https://images.example.test/evicted.gif")!
+        let view = makePreviewView(loader: loader, url: url)
+        view.applyBatch(removingFirst: 0, appending: [
+            .init(
+                id: UUID(),
+                attributedText: NSAttributedString(string: "retained line\n"),
+                contentRange: NSRange(location: 0, length: 14),
+                assets: []
+            ),
+        ])
+        loader.requestIfNeeded(url)
+
+        try await eventuallyOnMainActor("GIF decode before history eviction") { loader.image(for: url) != nil }
+        view.applyBatch(removingFirst: 1, appending: [])
+
+        XCTAssertNil(loader.image(for: url))
+        XCTAssertEqual(loader.state(for: url), .released)
+        XCTAssertEqual(loader.requestCountForTesting, 1)
+    }
+
+    private func makePreviewView(loader: OutputImageLoader, url: URL) -> VirtualizedOutputView {
+        let view = VirtualizedOutputView(frame: NSRect(x: 0, y: 0, width: 420, height: 240))
+        view.imageLoader = loader
+        view.showsInlineImagePreviews = true
+        view.setItems([.init(
+            id: UUID(),
+            attributedText: NSAttributedString(string: "image\n"),
+            contentRange: NSRange(location: 0, length: 5),
+            assets: [],
+            previews: [.init(source: url)]
+        )])
+        return view
     }
 
     private func draw(_ view: VirtualizedOutputView) {
@@ -174,4 +269,36 @@ private actor FailedImageDownloads {
     }
 
     func count() -> Int { attempts }
+}
+
+private actor PendingImageDownload {
+    private var started = false
+    private var cancelled = false
+    private var startedContinuation: CheckedContinuation<Void, Never>?
+    private var cancelledContinuation: CheckedContinuation<Void, Never>?
+
+    func waitForCancellation() async throws -> Data {
+        started = true
+        startedContinuation?.resume()
+        startedContinuation = nil
+        do {
+            try await Task.sleep(for: .seconds(60))
+            return Data()
+        } catch {
+            cancelled = true
+            cancelledContinuation?.resume()
+            cancelledContinuation = nil
+            throw error
+        }
+    }
+
+    func waitUntilStarted() async {
+        guard !started else { return }
+        await withCheckedContinuation { startedContinuation = $0 }
+    }
+
+    func waitUntilCancelled() async {
+        guard !cancelled else { return }
+        await withCheckedContinuation { cancelledContinuation = $0 }
+    }
 }
