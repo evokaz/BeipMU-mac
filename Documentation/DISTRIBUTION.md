@@ -90,7 +90,8 @@ The default format is `zip`. The script:
 1. generates `BeipMU.xcodeproj` from `project.yml`;
 2. builds a universal Release app in `DerivedData/`;
 3. applies an ad hoc signature to the app and embedded content;
-4. copies this document into the archive as `INSTALL.md`;
+4. includes this document as `INSTALL.md` and the project `LICENSE` alongside
+   the app in the ZIP, and includes `LICENSE` alongside the app in the DMG;
 5. writes ZIP and/or DMG artifacts to `dist/`; and
 6. creates a SHA-256 file beside every artifact.
 

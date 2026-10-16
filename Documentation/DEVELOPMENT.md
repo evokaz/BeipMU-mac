@@ -203,7 +203,8 @@ Create a DMG or both formats:
 
 The script regenerates the project, performs a Release build, applies an ad hoc
 signature, and writes each artifact plus its SHA-256 file to `dist/`. It also
-places `Documentation/DISTRIBUTION.md` in archives as `INSTALL.md`.
+places `Documentation/DISTRIBUTION.md` in ZIP archives as `INSTALL.md` and
+includes the project `LICENSE` alongside the app in both ZIP and DMG artifacts.
 
 Before publishing, run package tests, app build, XCUITests, both performance
 checks, and a clean-machine installation check. Distribution policy and user

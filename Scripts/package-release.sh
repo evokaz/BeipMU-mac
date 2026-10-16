@@ -125,6 +125,7 @@ verify_distributable_app() {
 verify_distributable_app "$app" "Release app"
 ditto "$app" "$staging/BeipMU.app"
 cp "$repo_dir/Documentation/DISTRIBUTION.md" "$staging/INSTALL.md"
+cp "$repo_dir/LICENSE" "$staging/LICENSE"
 
 rm -f \
   "$zip_path" \
@@ -144,6 +145,7 @@ if [ "$format" = zip ] || [ "$format" = both ]; then
   zip_verification="$staging/zip-verification"
   mkdir "$zip_verification"
   ditto -x -k "$zip_path" "$zip_verification"
+  test -f "$zip_verification/LICENSE"
   verify_distributable_app "$zip_verification/BeipMU.app" "$zip_name"
   echo "Created $zip_path"
   create_checksum "$zip_name"
@@ -153,6 +155,7 @@ if [ "$format" = dmg ] || [ "$format" = both ]; then
   dmg_staging="$staging/dmg"
   mkdir "$dmg_staging"
   ditto "$app" "$dmg_staging/BeipMU.app"
+  cp "$repo_dir/LICENSE" "$dmg_staging/LICENSE"
   ln -s /Applications "$dmg_staging/Applications"
   hdiutil create \
     -volname "BeipMU" \
@@ -168,6 +171,7 @@ if [ "$format" = dmg ] || [ "$format" = both ]; then
     -mountpoint "$dmg_verification" \
     "$dmg_path" >/dev/null
   mounted_dmg="$dmg_verification"
+  test -f "$dmg_verification/LICENSE"
   verify_distributable_app "$dmg_verification/BeipMU.app" "$dmg_name"
   hdiutil detach "$mounted_dmg" >/dev/null
   mounted_dmg=
