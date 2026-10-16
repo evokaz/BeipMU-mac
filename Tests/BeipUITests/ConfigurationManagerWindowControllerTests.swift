@@ -291,6 +291,44 @@ final class ConfigurationManagerWindowControllerTests: XCTestCase {
         XCTAssertEqual(host.nextValidKeyView, port)
     }
 
+    func testEmptyConnectStringExampleIsNotSavedAsProfileText() throws {
+        var workspace = try LegacyConfigurationWorkspace.empty(isDirty: false)
+        let serverID = workspace.addServer()
+        let characterID = try workspace.addCharacter(toServerID: serverID)
+        let library = ProfileLibrary(workspace: workspace)
+        let controller = ConfigurationManagerWindowController(library: library)
+        defer { controller.close() }
+
+        let content = try XCTUnwrap(controller.window?.contentView)
+        let table = try XCTUnwrap(
+            recursiveSubviews(of: content)
+                .compactMap { $0 as? NSOutlineView }
+                .first { $0.accessibilityIdentifier() == "configurationProfileList" }
+        )
+        table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        notifySelectionChange(table, controller: controller)
+
+        let connect = try XCTUnwrap(
+            recursiveSubviews(of: content)
+                .first { $0.accessibilityIdentifier() == "characterConnectText" } as? NSTextView
+        )
+        XCTAssertEqual(connect.string, "")
+        XCTAssertEqual(connect.accessibilityHelp(), "Example: connect %NAME% %PASSWORD%")
+
+        let apply = try XCTUnwrap(
+            recursiveSubviews(of: content)
+                .compactMap { $0 as? NSButton }
+                .first { $0.accessibilityIdentifier() == "applyWorldChanges" }
+        )
+        apply.performClick(nil)
+
+        let character = try XCTUnwrap(
+            library.workspace.servers.first(where: { $0.profile.id == serverID })?.characters
+                .first(where: { $0.id == characterID })
+        )
+        XCTAssertEqual(character.connectText, "")
+    }
+
     func testTabAndShiftTabLeaveCharacterMultilineFields() throws {
         var workspace = try LegacyConfigurationWorkspace.empty(isDirty: false)
         let serverID = workspace.addServer()

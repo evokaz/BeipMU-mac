@@ -11,6 +11,29 @@ private final class OutlineDocumentView: NSView {
 }
 
 private final class TabbableFormTextView: NSTextView {
+    var placeholderText: String? {
+        didSet { needsDisplay = true }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard string.isEmpty, let placeholderText, !placeholderText.isEmpty else { return }
+
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize),
+            .foregroundColor: NSColor.placeholderTextColor,
+        ]
+        let origin = textContainerOrigin
+        let x = origin.x + (textContainer?.lineFragmentPadding ?? 0)
+        NSAttributedString(string: placeholderText, attributes: attributes)
+            .draw(at: NSPoint(x: x, y: origin.y))
+    }
+
+    override func didChangeText() {
+        super.didChangeText()
+        needsDisplay = true
+    }
+
     override func insertTab(_ sender: Any?) {
         window?.selectNextKeyView(self)
     }
@@ -763,6 +786,8 @@ final class ConfigurationManagerWindowController: NSWindowController, NSOutlineV
         let connect = multilineTextField(character.connectText, identifier: "characterConnectText", height: 60)
         let info = multilineTextField(character.info, identifier: "characterInfo", height: 60)
         let connectText = connect.documentView as? NSTextView
+        (connect.documentView as? TabbableFormTextView)?.placeholderText = "Example: connect %NAME% %PASSWORD%"
+        connectText?.setAccessibilityHelp("Example: connect %NAME% %PASSWORD%")
         let infoText = info.documentView as? NSTextView
         let form = NSStackView(views: [
             formRow("Name", control: name, labelWidth: 62),
