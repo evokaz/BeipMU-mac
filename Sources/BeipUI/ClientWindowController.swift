@@ -886,6 +886,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private var unreadCount = 0
     private(set) var activityPresentationCountForTesting = 0
     private(set) var sessionTabRebuildCountForTesting = 0
+    private(set) var connectionCallbackDispatchCountForTesting = 0
+    private(set) var connectWithPlayerStartupCountForTesting = 0
     private var lastFindQuery = ""
     private var sessionTabColor: NSColor?
     let tabDragIdentifier = UUID()
@@ -898,6 +900,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     private var bypassLastTabReplacement = false
     private var suppressPersistence = false
     private var connectionStateText = "Disconnected"
+    private var isSessionStartupReady = false
     private var isTerminallyDisconnected = true
     private weak var taskbarView: NSStackView?
     private weak var rootStackView: NSStackView?
@@ -1664,11 +1667,13 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         get { isSessionConnected }
         set {
             isSessionConnected = newValue
+            isSessionStartupReady = newValue
             connectionStateText = newValue ? "Connected" : "Disconnected"
             isTerminallyDisconnected = !newValue
             refreshSessionTabsAcrossGroup()
         }
     }
+    var isSessionStartupReadyForTesting: Bool { isSessionStartupReady }
     var closeConnectedTabConfirmationHandlerForTesting: (@MainActor (String, String) -> Bool)?
     var inputHeightPreferenceForTesting: Double { preferences.inputHeight }
     private(set) var inputLayoutRestorationGenerationForTesting: UInt64 = 0
@@ -2873,6 +2878,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         if !canResumeRecoveredSession { outputImageLoader.resetForNewSession() }
         if !canResumeRecoveredSession { recoveryCoordinator.discard() }
         isSessionConnected = false
+        isSessionStartupReady = false
         currentServer = server
         currentCharacter = character
         currentPuppet = puppet
@@ -2913,7 +2919,14 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             activeCharacterProfile = nil
             output.clear()
             master.attachPuppetChild(self, puppet: puppet)
-            masterConnectionStateChanged(connected: master.connectionStateText == "Connected")
+            if master.isSessionConnected {
+                masterTransportConnected()
+                if master.isSessionStartupReady {
+                    masterConnectionStateChanged(connected: true, forceConnectCallback: true)
+                }
+            } else {
+                masterConnectionStateChanged(connected: false)
+            }
             appendClient("Puppet \(puppet.name) is attached to \(character?.name ?? "the character")'s connection.")
             return
         }
@@ -3071,6 +3084,7 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
     }
 
     private func handleConnectionState(_ state: ConnectionState, from source: SessionActor?) async {
+        isSessionStartupReady = state == .connected
         switch state {
         case .disconnected:
             stopLogsForConnectionLoss()
@@ -3087,14 +3101,9 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
             isTerminallyDisconnected = false
             connectionStateText = "Connecting…"; stateLabel.stringValue = connectionStateText; stateLabel.textColor = .systemOrange
         case .connected:
-            isSessionConnected = true
-            isTerminallyDisconnected = false
-            lastTypedAt = Date()
-            connectionStateText = "Connected"
-            stateLabel.stringValue = connectionStateText
-            stateLabel.textColor = .systemGreen
-            startAutomaticLog()
-            if let source { await persistActiveCharacterStatistics(from: source, markLastUsed: true) }
+            // Startup hooks are dispatched here after SessionActor has sent
+            // any pending Connect String successfully.
+            break
         case .disconnecting:
             stopLogsForConnectionLoss()
             isSessionConnected = false
@@ -3111,13 +3120,15 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         refreshSessionTabsAcrossGroup()
         refreshTitlebarStatistics()
         refreshDiagnostics()
-        if case .connected = state { webViewWindows.values.forEach { $0.connectionChanged(connected: true) } }
         if case .disconnected = state { webViewWindows.values.forEach { $0.connectionChanged(connected: false) } }
         if case .failed = state { webViewWindows.values.forEach { $0.connectionChanged(connected: false) } }
         if case .connected = state {
+            connectionCallbackDispatchCountForTesting &+= 1
+            webViewWindows.values.forEach { $0.connectionChanged(connected: true) }
             applyScriptEvaluation(await scriptService.dispatchConnectionEvent("connect", host: scriptHostSnapshot), showValue: false)
             if let server = currentServer, let character = currentCharacter {
                 for puppet in character.puppets where puppet.connectWithPlayer {
+                    connectWithPlayerStartupCountForTesting &+= 1
                     _ = (NSApp.delegate as? ApplicationDelegate)?.openPuppet(
                         master: self, server: server, character: character, puppet: puppet
                     )
@@ -3140,8 +3151,33 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         }
     }
 
+    private func handleTransportConnected(from source: SessionActor?) async {
+        isSessionStartupReady = false
+        isSessionConnected = true
+        isTerminallyDisconnected = false
+        lastTypedAt = Date()
+        connectionStateText = "Connected"
+        stateLabel.stringValue = connectionStateText
+        stateLabel.textColor = .systemGreen
+        startAutomaticLog()
+        if let source { await persistActiveCharacterStatistics(from: source, markLastUsed: true) }
+        puppetChildren.values.forEach { $0.masterTransportConnected() }
+        refreshSessionTabsAcrossGroup()
+        refreshTitlebarStatistics()
+        refreshDiagnostics()
+    }
+
     func applyConnectionStateForTesting(_ state: ConnectionState) async {
+        if case .connected = state { await handleTransportConnected(from: nil) }
         await handleConnectionState(state, from: nil)
+    }
+
+    func applyTransportConnectedForTesting() async {
+        await handleTransportConnected(from: nil)
+    }
+
+    func applyStartupReadyForTesting() async {
+        await handleConnectionState(.connected, from: nil)
     }
 
     private func handle(_ event: SessionEvent, from source: SessionActor) async {
@@ -3149,6 +3185,8 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         switch event {
         case let .state(state):
             await handleConnectionState(state, from: source)
+        case .transportConnected:
+            await handleTransportConnected(from: source)
         case let .renderedLine(line):
             guard !suppressSessionData else { return }
             if routeMasterLineToPuppet(line, isPrompt: false) { return }
@@ -3358,9 +3396,10 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         masterConnectionStateChanged(connected: false)
     }
 
-    private func masterConnectionStateChanged(connected: Bool) {
+    private func masterConnectionStateChanged(connected: Bool, forceConnectCallback: Bool = false) {
         if !connected { stopLogsForConnectionLoss() }
         let changed = (connectionStateText == "Connected") != connected
+        isSessionStartupReady = connected
         isSessionConnected = connected
         isTerminallyDisconnected = !connected
         if connected, changed { lastTypedAt = Date() }
@@ -3371,8 +3410,11 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         webViewWindows.values.forEach { $0.connectionChanged(connected: connected) }
         refreshDiagnostics()
         refreshSessionTabsAcrossGroup()
-        guard changed else { return }
-        if connected { startAutomaticLog() }
+        guard changed || (connected && forceConnectCallback) else { return }
+        if connected {
+            connectionCallbackDispatchCountForTesting &+= 1
+            startAutomaticLog()
+        }
         Task { [weak self, scriptService] in
             guard let self else { return }
             applyScriptEvaluation(
@@ -3385,10 +3427,25 @@ final class ClientWindowController: NSWindowController, NSWindowDelegate, NSSpli
         }
     }
 
+    private func masterTransportConnected() {
+        isSessionStartupReady = false
+        let changed = connectionStateText != "Connected"
+        isSessionConnected = true
+        isTerminallyDisconnected = false
+        if changed { lastTypedAt = Date() }
+        connectionStateText = "Connected"
+        stateLabel.stringValue = connectionStateText
+        stateLabel.textColor = .systemGreen
+        startAutomaticLog()
+        refreshTitlebarStatistics()
+        refreshDiagnostics()
+        refreshSessionTabsAcrossGroup()
+    }
+
     private func masterConnectionStateChanged(_ state: ConnectionState) {
         switch state {
         case .connected:
-            masterConnectionStateChanged(connected: true)
+            masterConnectionStateChanged(connected: true, forceConnectCallback: true)
         case .disconnected, .failed:
             masterConnectionStateChanged(connected: false)
         case .resolving, .connecting:

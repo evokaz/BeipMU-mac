@@ -61,6 +61,7 @@ public protocol ByteStreamProcessor: Sendable {
     mutating func configureANSI(_ settings: ANSISettings)
     mutating func setTerminalType(_ value: String)
     mutating func consume(_ data: Data) -> [ProtocolOutput]
+    var hasBufferedDisplayableText: Bool { get }
     mutating func encode(_ text: String) throws -> Data
     mutating func encodeMCP(_ message: MCPMessage) -> [Data]
     mutating func windowSizeChanged(columns: UInt16, rows: UInt16) -> Data?
@@ -68,6 +69,7 @@ public protocol ByteStreamProcessor: Sendable {
 }
 
 public extension ByteStreamProcessor {
+    var hasBufferedDisplayableText: Bool { false }
     mutating func resetFormatting() {}
     mutating func configureANSI(_ settings: ANSISettings) {}
     mutating func setTerminalType(_ value: String) {}
@@ -80,6 +82,7 @@ public extension ByteStreamProcessor {
 
 public enum SessionEvent: Sendable, Hashable {
     case state(ConnectionState)
+    case transportConnected
     case received(Data)
     case sent(Data)
     case prompt(RenderedLine)
@@ -95,6 +98,13 @@ public enum SessionEvent: Sendable, Hashable {
 }
 
 public actor SessionActor {
+    private struct PendingConnectText {
+        let generation: UInt64
+        let text: String
+        var connectionReady = false
+        var hasDisplayableGreeting = false
+    }
+
     private let transport: any SessionTransport
     private var processor: any ByteStreamProcessor
     private var eventContinuation: AsyncStream<SessionEvent>.Continuation?
@@ -103,9 +113,14 @@ public actor SessionActor {
     private var windowColumns: UInt16 = 80
     private var windowRows: UInt16 = 24
     /// Changes whenever the active connection attempt is replaced or stopped.
-    /// A Connect String send can suspend, so its later completion must not
-    /// announce a connection that is no longer current.
+    /// Pending automatic login text is bound to the attempt that created it.
     private var connectionGeneration: UInt64 = 0
+    private var pendingConnectText: PendingConnectText?
+    private var connectTextEchoesToSuppress: [String] = []
+    private var connectTextEchoDeadline: ContinuousClock.Instant?
+    private var greetingFallbackTask: Task<Void, Never>?
+    private var startupReadyGeneration: UInt64?
+    private var startupFailedGeneration: UInt64?
     private var isConnected = false
     private var connectedAt: ContinuousClock.Instant?
     private var statisticsValue = ConnectionStatistics()
@@ -144,7 +159,7 @@ public actor SessionActor {
         self.idleNow = idleNow
     }
 
-    deinit { transportTask?.cancel(); idleTask?.cancel() }
+    deinit { transportTask?.cancel(); idleTask?.cancel(); greetingFallbackTask?.cancel() }
 
     public func statistics() -> ConnectionStatistics {
         var result = statisticsValue
@@ -163,8 +178,23 @@ public actor SessionActor {
 
     public func connect(_ request: ConnectionRequest) async {
         connectionGeneration &+= 1
+        let generation = connectionGeneration
         self.request = request
+        recordConnectedDuration()
         isConnected = false
+        idleTask?.cancel()
+        idleTask = nil
+        startupReadyGeneration = nil
+        startupFailedGeneration = nil
+        pendingConnectText = request.character.flatMap { character in
+            let text = expandConnectText(character.connectText, character: character)
+            guard !text.isEmpty else { return nil }
+            return PendingConnectText(generation: generation, text: text)
+        }
+        connectTextEchoesToSuppress = []
+        connectTextEchoDeadline = nil
+        greetingFallbackTask?.cancel()
+        greetingFallbackTask = nil
         processor.reset()
         let stream = await transport.events()
         transportTask?.cancel()
@@ -185,6 +215,11 @@ public actor SessionActor {
 
     public func disconnect() async {
         connectionGeneration &+= 1
+        pendingConnectText = nil
+        connectTextEchoesToSuppress = []
+        connectTextEchoDeadline = nil
+        greetingFallbackTask?.cancel()
+        greetingFallbackTask = nil
         recordConnectedDuration()
         isConnected = false
         idleTask?.cancel()
@@ -237,7 +272,8 @@ public actor SessionActor {
         await send(text, echo: true)
     }
 
-    private func send(_ text: String, echo: Bool, countsAsActivity: Bool = true) async {
+    @discardableResult
+    private func send(_ text: String, echo: Bool, countsAsActivity: Bool = true) async -> Bool {
         if countsAsActivity { recordActivity() }
         if echo, localEchoEnabled {
             let style = TextStyle(foreground: localEchoColor)
@@ -250,8 +286,10 @@ public actor SessionActor {
         do {
             let data = try processor.encode(text + "\r\n")
             try await transport.send(data)
+            return true
         } catch {
             eventContinuation?.yield(.error(error.localizedDescription))
+            return false
         }
     }
 
@@ -296,22 +334,43 @@ public actor SessionActor {
         case let .state(state):
             switch state {
             case .connected:
-                let generation = connectionGeneration
                 isConnected = true
                 connectedAt = .now
                 lastIdleActivityAt = idleNow()
                 statisticsValue.connectionCount += 1
-                startIdleActionIfNeeded()
-                if let character = request?.character, !character.connectText.isEmpty {
-                    await send(expandConnectText(character.connectText, character: character), echo: false)
+                if var pending = pendingConnectText, pending.generation == connectionGeneration {
+                    pending.connectionReady = true
+                    pendingConnectText = pending
                 }
-                guard generation == connectionGeneration, isConnected else { return }
-                eventContinuation?.yield(.state(state))
+                let generation = connectionGeneration
+                eventContinuation?.yield(.transportConnected)
+                if pendingConnectText?.generation == generation {
+                    await sendConnectTextIfReady(for: generation)
+                } else {
+                    publishStartupReady(for: generation)
+                }
             case .disconnected, .failed:
+                let wasConnected = isConnected
                 recordConnectedDuration()
                 isConnected = false
                 idleTask?.cancel()
                 idleTask = nil
+                if wasConnected {
+                    pendingConnectText = nil
+                    connectTextEchoesToSuppress = []
+                    connectTextEchoDeadline = nil
+                } else if case .failed = state, var pending = pendingConnectText {
+                    // A failed pre-ready transport attempt may be retried by
+                    // NetworkTransport. Keep its command for the next ready
+                    // connection, but require a fresh greeting there.
+                    pending.connectionReady = false
+                    pending.hasDisplayableGreeting = false
+                    pendingConnectText = pending
+                    connectTextEchoesToSuppress = []
+                    connectTextEchoDeadline = nil
+                }
+                greetingFallbackTask?.cancel()
+                greetingFallbackTask = nil
                 eventContinuation?.yield(.state(state))
             case .resolving, .connecting, .disconnecting:
                 eventContinuation?.yield(.state(state))
@@ -330,6 +389,7 @@ public actor SessionActor {
             for output in processor.consume(data) {
                 await handle(output)
             }
+            scheduleGreetingFallbackIfNeeded()
         case let .notice(notice):
             eventContinuation?.yield(.connectionNotice(notice))
         }
@@ -340,9 +400,18 @@ public actor SessionActor {
         case let .transmit(data):
             await transmit(data)
         case let .line(line):
+            guard !suppressConnectTextEcho(line.text) else {
+                return
+            }
             eventContinuation?.yield(.renderedLine(line))
             eventContinuation?.yield(.activity(important: false))
-        case let .prompt(line): eventContinuation?.yield(.prompt(line))
+            if !line.text.isEmpty { await noteDisplayableGreeting() }
+        case let .prompt(line):
+            guard !suppressConnectTextEcho(line.text) else {
+                return
+            }
+            eventContinuation?.yield(.prompt(line))
+            if !line.text.isEmpty { await noteDisplayableGreeting() }
         case .beep: eventContinuation?.yield(.beep)
         case let .gmcp(message): eventContinuation?.yield(.gmcp(message))
         case let .mcp(message): eventContinuation?.yield(.mcp(message))
@@ -366,7 +435,90 @@ public actor SessionActor {
             .replacingOccurrences(of: "%PASSWORD%", with: character.password)
     }
 
+    private func noteDisplayableGreeting(cancelFallback: Bool = true) async {
+        guard var pending = pendingConnectText,
+              pending.generation == connectionGeneration else { return }
+        pending.hasDisplayableGreeting = true
+        pendingConnectText = pending
+        if cancelFallback { greetingFallbackTask?.cancel() }
+        greetingFallbackTask = nil
+        await sendConnectTextIfReady(for: pending.generation)
+    }
+
+    private func scheduleGreetingFallbackIfNeeded() {
+        guard let pending = pendingConnectText,
+              pending.generation == connectionGeneration,
+              pending.connectionReady,
+              processor.hasBufferedDisplayableText else { return }
+        greetingFallbackTask?.cancel()
+        let generation = pending.generation
+        greetingFallbackTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            await self?.sendAfterUnterminatedGreeting(for: generation)
+        }
+    }
+
+    private func sendAfterUnterminatedGreeting(for generation: UInt64) async {
+        guard generation == connectionGeneration,
+              !Task.isCancelled,
+              processor.hasBufferedDisplayableText else { return }
+        await noteDisplayableGreeting(cancelFallback: false)
+    }
+
+    private func suppressConnectTextEcho(_ text: String) -> Bool {
+        guard let deadline = connectTextEchoDeadline,
+              ContinuousClock.now < deadline,
+              let index = connectTextEchoesToSuppress.firstIndex(of: text) else {
+            connectTextEchoesToSuppress = []
+            connectTextEchoDeadline = nil
+            return false
+        }
+        connectTextEchoesToSuppress.remove(at: index)
+        if connectTextEchoesToSuppress.isEmpty { connectTextEchoDeadline = nil }
+        return true
+    }
+
+    private func sendConnectTextIfReady(for generation: UInt64) async {
+        guard generation == connectionGeneration,
+              isConnected,
+              let pending = pendingConnectText,
+              pending.generation == generation,
+              pending.connectionReady,
+              pending.hasDisplayableGreeting else { return }
+
+        // Clear the pending command before awaiting the transport. A reconnect
+        // during the send cannot cause this attempt to send it a second time.
+        pendingConnectText = nil
+        connectTextEchoesToSuppress = pending.text
+            .components(separatedBy: .newlines)
+            .filter { !$0.isEmpty }
+        connectTextEchoDeadline = connectTextEchoesToSuppress.isEmpty
+            ? nil : ContinuousClock.now.advanced(by: .seconds(2))
+        let didSend = await send(pending.text, echo: false)
+        guard didSend else {
+            if generation == connectionGeneration {
+                connectTextEchoesToSuppress = []
+                connectTextEchoDeadline = nil
+                startupFailedGeneration = generation
+            }
+            return
+        }
+        publishStartupReady(for: generation)
+    }
+
+    private func publishStartupReady(for generation: UInt64) {
+        guard generation == connectionGeneration,
+              isConnected,
+              startupFailedGeneration != generation,
+              startupReadyGeneration != generation else { return }
+        startupReadyGeneration = generation
+        eventContinuation?.yield(.state(.connected))
+        startIdleActionIfNeeded()
+    }
+
     private func startIdleActionIfNeeded() {
+        guard isStartupReady else { return }
         idleTask?.cancel()
         let configured = idleConfiguration ?? request?.character.flatMap { character in
             guard let interval = character.idleTimeout, interval > 0, !character.idleText.isEmpty else { return nil }
@@ -386,11 +538,15 @@ public actor SessionActor {
 
     private func recordActivity() {
         lastIdleActivityAt = idleNow()
-        if isConnected { startIdleActionIfNeeded() }
+        if isStartupReady { startIdleActionIfNeeded() }
+    }
+
+    private var isStartupReady: Bool {
+        isConnected && startupReadyGeneration == connectionGeneration
     }
 
     private func sendIdleTextIfNeeded(_ text: String, after interval: TimeInterval) async {
-        guard isConnected,
+        guard isStartupReady,
               let lastIdleActivityAt,
               idleNow() - lastIdleActivityAt >= interval else { return }
         await send(text, echo: true, countsAsActivity: false)

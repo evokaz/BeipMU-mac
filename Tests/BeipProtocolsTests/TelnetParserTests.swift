@@ -4,6 +4,19 @@ import Foundation
 import XCTest
 
 final class TelnetParserTests: XCTestCase {
+    func testPipelineRecognizesOnlyBufferedDisplayableGreetingText() {
+        var pipeline = MUDProtocolPipeline()
+        XCTAssertFalse(pipeline.hasBufferedDisplayableText)
+        _ = pipeline.consume(Data([255, 251, 1]))
+        XCTAssertFalse(pipeline.hasBufferedDisplayableText)
+        _ = pipeline.consume(Data("\u{1B}[31m".utf8))
+        XCTAssertFalse(pipeline.hasBufferedDisplayableText)
+        _ = pipeline.consume(Data("Password: ".utf8))
+        XCTAssertTrue(pipeline.hasBufferedDisplayableText)
+        _ = pipeline.consume(Data("\n".utf8))
+        XCTAssertFalse(pipeline.hasBufferedDisplayableText)
+    }
+
     func testBELIsAnExplicitEventAndNeverEntersText() {
         var parser = TelnetParser()
         XCTAssertEqual(parser.consume(Data([7, 7])), [.beep, .beep])

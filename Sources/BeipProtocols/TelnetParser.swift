@@ -50,6 +50,7 @@ public struct TelnetParser: Sendable {
     private var insideOSC = false
     private var escapePending = false
     public private(set) var negotiatedNAWS = false
+    public var bufferedText: Data { discardingOversizedLine ? Data() : buffer }
     public var terminalType = "Beip"
     public var charsetLimit: TextEncoding?
 

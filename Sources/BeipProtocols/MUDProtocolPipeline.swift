@@ -10,6 +10,13 @@ public struct MUDProtocolPipeline: ByteStreamProcessor {
     private let puebloConfigured: Bool
     private var puebloActive: Bool
 
+    public var hasBufferedDisplayableText: Bool {
+        guard !telnet.bufferedText.isEmpty else { return false }
+        var preview = ansi
+        let text = BeipTextDecoder.decode(telnet.bufferedText, encoding: encoding)
+        return !preview.parse(text).text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     public init(
         encoding: TextEncoding = .cp1252,
         mcp: Bool = false,
