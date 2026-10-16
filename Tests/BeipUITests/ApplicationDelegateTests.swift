@@ -1,4 +1,5 @@
 import AppKit
+import BeipPersistence
 import XCTest
 @testable import BeipUI
 
@@ -13,6 +14,23 @@ final class ApplicationDelegateTests: XCTestCase {
         XCTAssertEqual(alert.alertStyle, .informational)
         XCTAssertEqual(alert.informativeText, "BeipMU is now using settings from the selected file “Config-import.txt”.")
         XCTAssertEqual(alert.buttons.map(\.title), ["OK"])
+    }
+
+    @MainActor
+    func testNewerConfigurationWarningNamesVersionsAndDefaultsToCancelAction() {
+        let version = LegacyConfigurationVersion.currentWindows + 1
+        let alert = ApplicationDelegate.newerConfigurationImportAlert(
+            version: version,
+            fileName: "FutureConfig.txt"
+        )
+
+        XCTAssertEqual(alert.messageText, "Import an Untested Configuration?")
+        XCTAssertTrue(alert.informativeText.contains("FutureConfig.txt"))
+        XCTAssertTrue(alert.informativeText.contains("version \(version)"))
+        XCTAssertTrue(alert.informativeText.contains("version \(LegacyConfigurationVersion.currentWindows)"))
+        XCTAssertTrue(alert.informativeText.contains("has not been tested"))
+        XCTAssertEqual(alert.alertStyle, .warning)
+        XCTAssertEqual(alert.buttons.map(\.title), ["Cancel", "Import Anyway"])
     }
 
     @MainActor

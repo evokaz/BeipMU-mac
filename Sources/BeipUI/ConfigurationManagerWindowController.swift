@@ -1317,7 +1317,25 @@ final class ConfigurationManagerWindowController: NSWindowController, NSOutlineV
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
-            let imported = try library.importProfile(from: url)
+            let data = try Data(contentsOf: url)
+            guard let source = String(data: data, encoding: .utf8) else {
+                throw LegacyConfigurationError.notUTF8
+            }
+            let document = try LegacyConfigurationDocument(source: source)
+            var validationWorkspace = library.workspace
+            _ = try validationWorkspace.mergeProfileHierarchy(
+                from: document,
+                allowsNewerVersion: true
+            )
+            let version = document.configurationVersion ?? 0
+            guard ApplicationDelegate.confirmNewerConfigurationImport(
+                version: version,
+                fileName: url.lastPathComponent
+            ) else { return }
+            let imported = try library.importProfile(
+                document: document,
+                allowsNewerVersion: version > LegacyConfigurationVersion.currentWindows
+            )
             reload(select: selection(for: imported))
         } catch { present(error) }
     }

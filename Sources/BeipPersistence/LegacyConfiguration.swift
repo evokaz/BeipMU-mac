@@ -44,6 +44,12 @@ public struct LegacyConfigurationDocument: Sendable {
         return nil
     }
 
+    /// Windows Config.txt compatibility version declared by this document.
+    /// A missing or malformed value is treated as an unspecified legacy version.
+    public var configurationVersion: Int? {
+        value(at: ["Version"]).flatMap(Int.init)
+    }
+
     public mutating func setValue(_ value: String, at path: [String], quoted: Bool = true) throws {
         guard let range = assignmentRange(at: path, nodes: nodes) else {
             throw LegacyConfigurationError.missingPath(path.joined(separator: "."))

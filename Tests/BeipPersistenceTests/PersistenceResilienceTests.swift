@@ -38,6 +38,27 @@ final class PersistenceResilienceTests: XCTestCase {
         }
     }
 
+    func testConfigurationRecoveryCanOptIntoNewerFixedBackup() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let primary = directory.appendingPathComponent("Config.txt")
+        let backup = directory.appendingPathComponent("Config.backup.txt")
+        let newerConfig = """
+        Version=999
+        Connections { Shortcuts {} }
+        """
+        let damagedPrimary = Data([0xff, 0xfe, 0xfd])
+        try damagedPrimary.write(to: primary)
+        try Data(newerConfig.utf8).write(to: backup)
+
+        let engine = LegacyConfigurationPersistenceEngine(url: primary, backupStrategy: .fixed)
+        let recovery = try engine.loadRecoveringFromBackup(allowingNewerBackups: true)
+
+        XCTAssertEqual(recovery.document.configurationVersion, 999)
+        XCTAssertEqual(recovery.recoveredFrom, backup)
+        XCTAssertEqual(try Data(contentsOf: primary), damagedPrimary)
+    }
+
     func testMalformedAtlasXMLArchiveAndUnsafeArchivePathsAreRejected() throws {
         XCTAssertThrowsError(try AtlasReader.read(from: Data("<atlas><map>".utf8)))
 

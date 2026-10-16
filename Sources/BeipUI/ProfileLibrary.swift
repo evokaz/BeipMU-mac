@@ -27,11 +27,18 @@ final class ProfileLibrary {
         primaryFingerprint = nil
         workspace = try .empty(isDirty: false)
         try FileManager.default.createDirectory(at: storageDirectory, withIntermediateDirectories: true)
-        if let loaded = try? persistence.loadRecoveringFromBackup() {
+        // The app-owned primary and its fixed backup can both contain a newer
+        // configuration that was accepted through the import flow.
+        if let loaded = try? persistence.loadRecoveringFromBackup(
+            allowingNewerPrimary: true,
+            allowingNewerBackups: true
+        ) {
             workspace = try LegacyConfigurationWorkspace(
                 document: loaded.document,
                 sourceURL: configURL,
-                recoveredFrom: loaded.recoveredFrom
+                recoveredFrom: loaded.recoveredFrom,
+                allowsNewerVersion: (loaded.document.configurationVersion ?? 0)
+                    > LegacyConfigurationVersion.currentWindows
             )
             primaryFingerprint = loaded.primaryFingerprint
             if loaded.recoveredFrom != nil {
@@ -44,10 +51,12 @@ final class ProfileLibrary {
                 // One-time migration for Release builds that remembered an
                 // external Config.txt as their live database. Debug and
                 // UI-test contexts never enter this branch.
-                try persistCurrentWorkspace()
+                try persistCurrentWorkspace(backingUpCurrent: false)
                 clearLegacySelectedPath()
         } else {
-            try persistCurrentWorkspace()
+            // Do not replace the last backup with bytes from a primary that
+            // failed validation during startup.
+            try persistCurrentWorkspace(backingUpCurrent: false)
         }
     }
 
@@ -198,14 +207,25 @@ final class ProfileLibrary {
             throw LegacyConfigurationError.notUTF8
         }
         let document = try LegacyConfigurationDocument(source: source)
-        let imported = try LegacyConfigurationWorkspace(document: document)
+        try importConfiguration(document: document)
+    }
+
+    func importConfiguration(
+        document: LegacyConfigurationDocument,
+        allowsNewerVersion: Bool = false
+    ) throws {
+        let imported = try LegacyConfigurationWorkspace(
+            document: document,
+            allowsNewerVersion: allowsNewerVersion
+        )
         if let persistentConfigURL {
             guard let persistence else { fatalError("persistent configuration engine missing") }
             primaryFingerprint = try persistence.replace(document)
             workspace = try LegacyConfigurationWorkspace(
                 document: document,
                 sourceURL: persistentConfigURL,
-                isDirty: false
+                isDirty: false,
+                allowsNewerVersion: allowsNewerVersion
             )
         } else {
             workspace = imported
@@ -246,9 +266,20 @@ final class ProfileLibrary {
     @discardableResult
     func importProfile(from url: URL) throws -> LegacyConfigurationWorkspace.ProfileMergeResult {
         let document = try LegacyConfigurationPersistenceEngine.readDocument(from: url)
+        return try importProfile(document: document)
+    }
+
+    @discardableResult
+    func importProfile(
+        document: LegacyConfigurationDocument,
+        allowsNewerVersion: Bool = false
+    ) throws -> LegacyConfigurationWorkspace.ProfileMergeResult {
         var result: LegacyConfigurationWorkspace.ProfileMergeResult!
         try mutate { candidate in
-            result = try candidate.mergeProfileHierarchy(from: document)
+            result = try candidate.mergeProfileHierarchy(
+                from: document,
+                allowsNewerVersion: allowsNewerVersion
+            )
         }
         return result
     }

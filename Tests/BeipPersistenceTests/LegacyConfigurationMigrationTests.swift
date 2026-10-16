@@ -19,6 +19,88 @@ final class LegacyConfigurationMigrationTests: XCTestCase {
         }
     }
 
+    func testExplicitlyAllowedNewerConfigurationKeepsItsVersionOnWrite() throws {
+        let newerVersion = WindowsCompatibilityVersion.current + 9
+        let document = try LegacyConfigurationDocument(source: """
+        Version=\(newerVersion)
+        FutureRoot="preserve me"
+        Connections {
+          Shortcuts {
+            World { Host="before.example:4000" FutureWorld="keep" }
+          }
+        }
+        """)
+        var workspace = try LegacyConfigurationWorkspace(
+            document: document,
+            allowsNewerVersion: true
+        )
+        let world = try XCTUnwrap(workspace.servers.first)
+        try workspace.updateServer(id: world.profile.id) {
+            $0.profile.host = "after.example"
+            $0.profile.port = 5000
+        }
+
+        let saved = try workspace.renderedDocument()
+        XCTAssertEqual(saved.configurationVersion, newerVersion)
+        XCTAssertEqual(saved.value(at: ["FutureRoot"]), "preserve me")
+        XCTAssertEqual(saved.value(at: ["Connections", "Shortcuts", "World", "FutureWorld"]), "keep")
+        XCTAssertEqual(saved.value(at: ["Connections", "Shortcuts", "World", "Host"]), "after.example:5000")
+    }
+
+    func testNewerWorldAndAutomationImportsRetainDestinationVersion() throws {
+        let newerVersion = WindowsCompatibilityVersion.current + 9
+        let worldSource = try LegacyConfigurationDocument(source: """
+        Version=\(newerVersion)
+        Connections { Shortcuts {
+          Imported { Host="world.example:4000" FutureWorld="keep" }
+        } }
+        """)
+        var worldTarget = try LegacyConfigurationWorkspace.empty()
+        _ = try worldTarget.mergeProfileHierarchy(from: worldSource, allowsNewerVersion: true)
+        let mergedWorld = try worldTarget.renderedDocument()
+        XCTAssertEqual(mergedWorld.configurationVersion, WindowsCompatibilityVersion.current)
+        XCTAssertEqual(mergedWorld.value(at: ["Connections", "Shortcuts", "Imported", "FutureWorld"]), "keep")
+
+        let aliasSource = try LegacyConfigurationDocument(source: """
+        Version=\(newerVersion)
+        Connections { Aliases {
+          { Description="Imported alias" FindString.MatchText="x" Replace="north" FutureAlias="keep" }
+        } }
+        """)
+        var automationTarget = try LegacyConfigurationWorkspace.empty()
+        let imported = try automationTarget.importAutomation(
+            from: aliasSource,
+            kind: .aliases,
+            destination: .scope(.global),
+            allowsNewerVersion: true
+        )
+        XCTAssertEqual(imported.paths, [[0]])
+        let mergedAutomation = try automationTarget.renderedDocument()
+        XCTAssertEqual(mergedAutomation.configurationVersion, WindowsCompatibilityVersion.current)
+        XCTAssertTrue(mergedAutomation.serialized().contains("FutureAlias=\"keep\""))
+
+        let contextualTriggerSource = try LegacyConfigurationDocument(source: """
+        Version=\(newerVersion)
+        Connections { Shortcuts {
+          Imported {
+            Host="trigger.example:4000"
+            Triggers { { Description="Future trigger" FindString.MatchText="future" FutureTrigger="keep" } }
+          }
+        } }
+        """)
+        var contextualTarget = try LegacyConfigurationWorkspace.empty()
+        let contextualImport = try contextualTarget.importAutomation(
+            from: contextualTriggerSource,
+            kind: .triggers,
+            destination: .scope(.global),
+            allowsNewerVersion: true
+        )
+        let mergedContextual = try contextualTarget.renderedDocument()
+        XCTAssertEqual(contextualImport.scope, .server(try XCTUnwrap(contextualTarget.servers.first?.profile.id)))
+        XCTAssertEqual(mergedContextual.configurationVersion, WindowsCompatibilityVersion.current)
+        XCTAssertTrue(mergedContextual.serialized().contains("FutureTrigger=\"keep\""))
+    }
+
     func testPre261PortableMigrationsMatchWindowsVersionGates() throws {
         let source = """
         Version=214

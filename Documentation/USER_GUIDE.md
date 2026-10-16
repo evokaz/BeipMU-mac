@@ -81,6 +81,12 @@ selected file's settings. Exported configurations can contain credentials and
 other private settings in plaintext; the export warning reminds you to store the
 file securely.
 
+Importing a Config.txt newer than the supported Windows version is experimental.
+BeipMU asks for confirmation and warns that the file has not been tested. The
+same warning applies when importing a world, alias, trigger, or macro from a
+newer Config.txt. Accepted full configurations retain their version when saved
+and exported.
+
 Right-click the output or input area to open the relevant settings directly
 for the active tab. The output context menu also provides pause, split, copy,
 clear, delete-line, and default-inheritance controls. Workspace-wide options,
@@ -212,8 +218,9 @@ directory.
 
 Use **File → Import Config…** or **File → Export Config…** for the complete
 portable configuration. Import is parsed and projected before it replaces live
-state, so an invalid file is rejected. The Worlds & Characters manager also
-supports profile-level import and export.
+state, so an invalid file is rejected. Newer versions require explicit
+confirmation after an untested configuration warning. The Worlds & Characters
+manager also supports profile-level import and export.
 
 > [!IMPORTANT]
 > Character connection strings may include passwords in plaintext. The app

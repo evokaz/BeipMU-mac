@@ -830,11 +830,42 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSMenuItemVali
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
-            try profileLibrary.importConfiguration(from: url)
+            let data = try Data(contentsOf: url)
+            guard let source = String(data: data, encoding: .utf8) else {
+                throw LegacyConfigurationError.notUTF8
+            }
+            let document = try LegacyConfigurationDocument(source: source)
+            _ = try LegacyConfigurationWorkspace(document: document, allowsNewerVersion: true)
+            let version = document.configurationVersion ?? 0
+            guard Self.confirmNewerConfigurationImport(
+                version: version,
+                fileName: url.lastPathComponent
+            ) else { return }
+            let allowsNewerVersion = version > LegacyConfigurationVersion.currentWindows
+            try profileLibrary.importConfiguration(
+                document: document,
+                allowsNewerVersion: allowsNewerVersion
+            )
             Self.configurationImportedAlert(for: url).runModal()
         } catch {
             NSApplication.shared.presentError(error)
         }
+    }
+
+    static func newerConfigurationImportAlert(version: Int, fileName: String) -> NSAlert {
+        let alert = NSAlert()
+        alert.messageText = "Import an Untested Configuration?"
+        alert.informativeText = "\(fileName) uses Config.txt version \(version), newer than the supported version \(LegacyConfigurationVersion.currentWindows). This experimental import has not been tested with BeipMU for Mac. Some settings may be ignored or may not work correctly."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Import Anyway")
+        return alert
+    }
+
+    static func confirmNewerConfigurationImport(version: Int, fileName: String) -> Bool {
+        guard version > LegacyConfigurationVersion.currentWindows else { return true }
+        return newerConfigurationImportAlert(version: version, fileName: fileName).runModal()
+            == .alertSecondButtonReturn
     }
 
     static func configurationImportedAlert(for url: URL) -> NSAlert {

@@ -2965,12 +2965,23 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
         do {
             let source = try String(contentsOf: url, encoding: .utf8)
             let imported = try LegacyConfigurationDocument(source: source)
+            let version = imported.configurationVersion ?? 0
+            let allowsNewerVersion = version > LegacyConfigurationVersion.currentWindows
             var candidate = macroWorkspace
-            let result = try candidate.importAutomation(from: imported, kind: .macros, destination: destination)
+            let result = try candidate.importAutomation(
+                from: imported,
+                kind: .macros,
+                destination: destination,
+                allowsNewerVersion: allowsNewerVersion
+            )
             guard !result.paths.isEmpty else {
                 status.stringValue = "No keyboard macros found to import."
                 return
             }
+            guard ApplicationDelegate.confirmNewerConfigurationImport(
+                version: version,
+                fileName: url.lastPathComponent
+            ) else { return }
             stagedMacroWorkspace = candidate
             let suffix = result.paths.count == 1 ? "" : "s"
             status.stringValue = "Imported \(result.paths.count) macro\(suffix) into the staged workspace."
@@ -3397,9 +3408,31 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
         do {
             let source = try String(contentsOf: url, encoding: .utf8)
             let imported = try LegacyConfigurationDocument(source: source)
+            let version = imported.configurationVersion ?? 0
+            let allowsNewerVersion = version > LegacyConfigurationVersion.currentWindows
+            var validationWorkspace = library.workspace
+            let validationResult = try validationWorkspace.importAutomation(
+                from: imported,
+                kind: .triggers,
+                destination: destination,
+                allowsNewerVersion: allowsNewerVersion
+            )
+            guard !validationResult.paths.isEmpty else {
+                status.stringValue = "No triggers found to import."
+                return
+            }
+            guard ApplicationDelegate.confirmNewerConfigurationImport(
+                version: version,
+                fileName: url.lastPathComponent
+            ) else { return }
             var result: LegacyConfigurationWorkspace.AutomationImportResult!
             try library.mutate { workspace in
-                result = try workspace.importAutomation(from: imported, kind: .triggers, destination: destination)
+                result = try workspace.importAutomation(
+                    from: imported,
+                    kind: .triggers,
+                    destination: destination,
+                    allowsNewerVersion: allowsNewerVersion
+                )
             }
             guard !result.paths.isEmpty else {
                 status.stringValue = "No triggers found to import."
@@ -3419,9 +3452,31 @@ final class AutomationEditorWindowController: NSWindowController, NSTableViewDat
         do {
             let source = try String(contentsOf: url, encoding: .utf8)
             let imported = try LegacyConfigurationDocument(source: source)
+            let version = imported.configurationVersion ?? 0
+            let allowsNewerVersion = version > LegacyConfigurationVersion.currentWindows
+            var validationWorkspace = library.workspace
+            let validationResult = try validationWorkspace.importAutomation(
+                from: imported,
+                kind: .aliases,
+                destination: destination,
+                allowsNewerVersion: allowsNewerVersion
+            )
+            guard !validationResult.paths.isEmpty else {
+                status.stringValue = "No aliases found to import."
+                return
+            }
+            guard ApplicationDelegate.confirmNewerConfigurationImport(
+                version: version,
+                fileName: url.lastPathComponent
+            ) else { return }
             var result: LegacyConfigurationWorkspace.AutomationImportResult!
             try library.mutate { workspace in
-                result = try workspace.importAutomation(from: imported, kind: .aliases, destination: destination)
+                result = try workspace.importAutomation(
+                    from: imported,
+                    kind: .aliases,
+                    destination: destination,
+                    allowsNewerVersion: allowsNewerVersion
+                )
             }
             guard !result.paths.isEmpty else {
                 status.stringValue = "No aliases found to import."

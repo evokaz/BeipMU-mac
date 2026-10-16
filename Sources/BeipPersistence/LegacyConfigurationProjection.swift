@@ -153,6 +153,9 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
     public var automation: Automation
 
     public var sourceVersion: Int
+    /// Whether this projection was explicitly created to inspect a config
+    /// newer than the compatibility level supported by this build.
+    public private(set) var allowsNewerVersion: Bool
     /// Whether the portable menu strip is placed above the workspace.
     /// Config.txt stores this as the root-level `TaskbarOnTop` assignment;
     /// absent or invalid values intentionally use the Windows default.
@@ -168,12 +171,13 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
     public var loggingPath: String
     public var servers: [Server]
 
-    public init(document: LegacyConfigurationDocument) throws {
+    public init(document: LegacyConfigurationDocument, allowsNewerVersion: Bool = false) throws {
         let version = document.rootValue("Version").flatMap(Int.init) ?? 0
-        guard version <= Self.currentWindowsVersion else {
+        guard allowsNewerVersion || version <= Self.currentWindowsVersion else {
             throw ProjectionError.newerConfiguration(found: version, supported: Self.currentWindowsVersion)
         }
         sourceVersion = version
+        self.allowsNewerVersion = allowsNewerVersion
         taskbarOnTop = document.rootBool("TaskbarOnTop") ?? true
         checkForUpdates = document.rootBool("CheckForUpdates") ?? false
         let connections = document.firstBlock(named: "Connections")?.children ?? []
@@ -392,7 +396,7 @@ public struct LegacyConfigurationProjection: Sendable, Equatable {
         to document: LegacyConfigurationDocument,
         targetVersion: Int = Self.currentWindowsVersion
     ) throws -> LegacyConfigurationDocument {
-        guard targetVersion <= Self.currentWindowsVersion else {
+        guard allowsNewerVersion || targetVersion <= Self.currentWindowsVersion else {
             throw ProjectionError.newerConfiguration(found: targetVersion, supported: Self.currentWindowsVersion)
         }
         var result = document

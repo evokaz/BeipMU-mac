@@ -157,6 +157,114 @@ final class ProfileLibraryPersistenceTests: XCTestCase {
         XCTAssertEqual(relaunched.workspace.servers.first?.profile.name, "Keep Me")
     }
 
+    func testAcceptedNewerFullImportSurvivesEditExportAndRelaunch() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BeipMU.ProfileLibraryTests.\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let version = LegacyConfigurationVersion.currentWindows + 9
+        let document = try LegacyConfigurationDocument(source: """
+        Version=\(version)
+        FutureRoot="preserve root"
+        Connections { Shortcuts {
+          FutureWorld { Host="before.example:4000" FutureWorld="preserve world" }
+        } }
+        """)
+        let library = try ProfileLibrary(storageDirectory: directory)
+        try library.importConfiguration(document: document, allowsNewerVersion: true)
+        let world = try XCTUnwrap(library.workspace.servers.first)
+        try library.mutate { workspace in
+            try workspace.updateServer(id: world.profile.id) {
+                $0.profile.host = "after.example"
+                $0.profile.port = 5000
+            }
+        }
+
+        let export = directory.appendingPathComponent("Export.txt")
+        try library.export(to: export)
+        let exported = try LegacyConfigurationDocument(
+            source: String(contentsOf: export, encoding: .utf8)
+        )
+        XCTAssertEqual(exported.configurationVersion, version)
+        XCTAssertEqual(exported.value(at: ["FutureRoot"]), "preserve root")
+        XCTAssertEqual(exported.value(at: ["Connections", "Shortcuts", "FutureWorld", "FutureWorld"]), "preserve world")
+        XCTAssertEqual(exported.value(at: ["Connections", "Shortcuts", "FutureWorld", "Host"]), "after.example:5000")
+
+        let relaunched = try ProfileLibrary(storageDirectory: directory)
+        XCTAssertEqual(relaunched.workspace.projection.sourceVersion, version)
+        XCTAssertEqual(relaunched.workspace.servers.first?.profile.host, "after.example")
+        XCTAssertEqual(relaunched.workspace.servers.first?.profile.port, 5000)
+    }
+
+    func testAcceptedNewerConfigurationRecoversFromBackupAfterPrimaryDamage() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BeipMU.ProfileLibraryTests.\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let version = LegacyConfigurationVersion.currentWindows + 9
+        let document = try LegacyConfigurationDocument(source: """
+        Version=\(version)
+        FutureRoot="preserve root"
+        Connections { Shortcuts {
+          FutureWorld { Host="before.example:4000" FutureWorld="preserve world" }
+        } }
+        """)
+        let library = try ProfileLibrary(storageDirectory: directory)
+        try library.importConfiguration(document: document, allowsNewerVersion: true)
+        let world = try XCTUnwrap(library.workspace.servers.first)
+        try library.mutate { workspace in
+            try workspace.updateServer(id: world.profile.id) {
+                $0.profile.host = "after.example"
+                $0.profile.port = 5000
+            }
+        }
+
+        let backupURL = directory.appendingPathComponent("Config.backup.txt")
+        let preservedBackup = try Data(contentsOf: backupURL)
+        try Data("Version={".utf8).write(to: directory.appendingPathComponent("Config.txt"))
+
+        let recovered = try ProfileLibrary(storageDirectory: directory)
+
+        XCTAssertEqual(recovered.workspace.projection.sourceVersion, version)
+        XCTAssertEqual(recovered.workspace.servers.first?.profile.host, "before.example")
+        XCTAssertEqual(recovered.workspace.servers.first?.profile.port, 4000)
+        XCTAssertEqual(recovered.workspace.document.value(at: ["FutureRoot"]), "preserve root")
+        XCTAssertEqual(
+            recovered.workspace.document.value(at: ["Connections", "Shortcuts", "FutureWorld", "FutureWorld"]),
+            "preserve world"
+        )
+        XCTAssertEqual(try Data(contentsOf: backupURL), preservedBackup)
+        XCTAssertNoThrow(
+            try LegacyConfigurationDocument(
+                source: String(
+                    contentsOf: directory.appendingPathComponent("Config.txt"),
+                    encoding: .utf8
+                )
+            )
+        )
+    }
+
+    func testFailedStartupRecoveryPreservesFixedBackup() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BeipMU.ProfileLibraryTests.\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        _ = try ProfileLibrary(storageDirectory: directory)
+        let primaryURL = directory.appendingPathComponent("Config.txt")
+        let backupURL = directory.appendingPathComponent("Config.backup.txt")
+        try Data("Version={".utf8).write(to: primaryURL)
+        let invalidBackup = Data([0xff, 0xfe, 0xfd])
+        try invalidBackup.write(to: backupURL)
+
+        let relaunched = try ProfileLibrary(storageDirectory: directory)
+
+        XCTAssertTrue(relaunched.workspace.servers.isEmpty)
+        XCTAssertEqual(try Data(contentsOf: backupURL), invalidBackup)
+    }
+
     func testRelaunchRecoversLastValidPersistentBackup() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("BeipMU.ProfileLibraryTests.\(UUID().uuidString)", isDirectory: true)

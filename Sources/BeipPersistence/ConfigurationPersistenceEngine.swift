@@ -73,9 +73,9 @@ package struct LegacyConfigurationPersistenceEngine: Sendable {
 
     /// Loads and validates the primary configuration without touching any
     /// backup or the primary file.
-    package func load() throws -> LoadedConfiguration {
+    package func load(allowingNewerVersion: Bool = false) throws -> LoadedConfiguration {
         let data = try Data(contentsOf: url)
-        let document = try Self.readableDocument(data: data)
+        let document = try Self.readableDocument(data: data, allowingNewerVersion: allowingNewerVersion)
         return LoadedConfiguration(
             document: document,
             primaryFingerprint: Self.digest(data),
@@ -86,15 +86,22 @@ package struct LegacyConfigurationPersistenceEngine: Sendable {
     /// Loads the primary configuration, falling back to the newest readable
     /// backup selected by ``backupStrategy``. Recovery never writes either
     /// file; callers decide whether and when to explicitly replace the
-    /// primary with the recovered document.
-    package func loadRecoveringFromBackup() throws -> LoadedConfiguration {
+    /// primary with the recovered document. Newer-version acceptance is
+    /// controlled separately for the live primary and recovery candidates.
+    package func loadRecoveringFromBackup(
+        allowingNewerPrimary: Bool = false,
+        allowingNewerBackups: Bool = false
+    ) throws -> LoadedConfiguration {
         do {
-            return try load()
+            return try load(allowingNewerVersion: allowingNewerPrimary)
         } catch {
             let primaryData = try? Data(contentsOf: url)
             for backup in backupCandidates() {
                 guard let data = try? Data(contentsOf: backup),
-                      let document = try? Self.readableDocument(data: data) else {
+                      let document = try? Self.readableDocument(
+                        data: data,
+                        allowingNewerVersion: allowingNewerBackups
+                      ) else {
                     continue
                 }
                 return LoadedConfiguration(
@@ -279,12 +286,18 @@ package struct LegacyConfigurationPersistenceEngine: Sendable {
         return conflict
     }
 
-    private static func readableDocument(data: Data) throws -> LegacyConfigurationDocument {
+    private static func readableDocument(
+        data: Data,
+        allowingNewerVersion: Bool = false
+    ) throws -> LegacyConfigurationDocument {
         guard let source = String(data: data, encoding: .utf8) else {
             throw LegacyConfigurationError.notUTF8
         }
         let document = try LegacyConfigurationDocument(source: source)
-        _ = try LegacyConfigurationProjection(document: document)
+        _ = try LegacyConfigurationProjection(
+            document: document,
+            allowsNewerVersion: allowingNewerVersion
+        )
         return document
     }
 

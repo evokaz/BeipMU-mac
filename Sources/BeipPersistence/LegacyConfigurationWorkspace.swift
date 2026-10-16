@@ -123,9 +123,13 @@ public struct LegacyConfigurationWorkspace: Sendable {
         document: LegacyConfigurationDocument,
         sourceURL: URL? = nil,
         recoveredFrom: URL? = nil,
-        isDirty: Bool = false
+        isDirty: Bool = false,
+        allowsNewerVersion: Bool = false
     ) throws {
-        let projected = try LegacyConfigurationProjection(document: document)
+        let projected = try LegacyConfigurationProjection(
+            document: document,
+            allowsNewerVersion: allowsNewerVersion
+        )
         self.document = document
         self.projection = projected
         self.sourceURL = sourceURL
@@ -1831,13 +1835,15 @@ public struct LegacyConfigurationWorkspace: Sendable {
     public mutating func importAutomation(
         from source: LegacyConfigurationDocument,
         kind: AutomationKind,
-        destination: AutomationImportDestination
+        destination: AutomationImportDestination,
+        allowsNewerVersion: Bool = false
     ) throws -> AutomationImportResult {
         var candidate = self
         let result = try candidate.importAutomationImpl(
             from: source,
             kind: kind,
-            destination: destination
+            destination: destination,
+            allowsNewerVersion: allowsNewerVersion
         )
         self = candidate
         return result
@@ -1846,9 +1852,13 @@ public struct LegacyConfigurationWorkspace: Sendable {
     private mutating func importAutomationImpl(
         from source: LegacyConfigurationDocument,
         kind: AutomationKind,
-        destination: AutomationImportDestination
+        destination: AutomationImportDestination,
+        allowsNewerVersion: Bool
     ) throws -> AutomationImportResult {
-        let imported = try LegacyConfigurationWorkspace(document: source)
+        let imported = try LegacyConfigurationWorkspace(
+            document: source,
+            allowsNewerVersion: allowsNewerVersion
+        )
         let contexts = try imported.sourceAutomationContexts(for: kind)
         guard !contexts.isEmpty else {
             throw WorkspaceError.wrongAutomationCategory(expected: kind)
@@ -1860,7 +1870,7 @@ public struct LegacyConfigurationWorkspace: Sendable {
 
         if let context = contextual.first {
             let before = try matchingScope(for: context).map { automationCount(in: $0, kind: kind) } ?? 0
-            _ = try mergeProfileHierarchy(from: source)
+            _ = try mergeProfileHierarchy(from: source, allowsNewerVersion: allowsNewerVersion)
             guard let scope = try matchingScope(for: context) else {
                 throw WorkspaceError.automationEntryNotFound
             }
@@ -1894,18 +1904,26 @@ public struct LegacyConfigurationWorkspace: Sendable {
     /// blocks are copied raw and automation leaf conflicts are renamed.
     @discardableResult
     public mutating func mergeProfileHierarchy(
-        from source: LegacyConfigurationDocument
+        from source: LegacyConfigurationDocument,
+        allowsNewerVersion: Bool = false
     ) throws -> ProfileMergeResult {
         var candidate = self
-        let result = try candidate.mergeProfileHierarchyImpl(from: source)
+        let result = try candidate.mergeProfileHierarchyImpl(
+            from: source,
+            allowsNewerVersion: allowsNewerVersion
+        )
         self = candidate
         return result
     }
 
     private mutating func mergeProfileHierarchyImpl(
-        from source: LegacyConfigurationDocument
+        from source: LegacyConfigurationDocument,
+        allowsNewerVersion: Bool
     ) throws -> ProfileMergeResult {
-        let imported = try LegacyConfigurationWorkspace(document: source)
+        let imported = try LegacyConfigurationWorkspace(
+            document: source,
+            allowsNewerVersion: allowsNewerVersion
+        )
         guard !imported.servers.isEmpty else { throw WorkspaceError.noProfilesFound }
         guard imported.servers.count == 1 else { throw WorkspaceError.multipleWorlds }
         let sourceWorld = imported.servers[0]
@@ -1977,7 +1995,10 @@ public struct LegacyConfigurationWorkspace: Sendable {
     }
 
     public func renderedDocument() throws -> LegacyConfigurationDocument {
-        try projection.applying(to: document)
+        try projection.applying(
+            to: document,
+            targetVersion: max(LegacyConfigurationVersion.currentWindows, projection.sourceVersion)
+        )
     }
 
     public mutating func acceptSavedDocument(_ savedDocument: LegacyConfigurationDocument, at url: URL) {
@@ -2532,7 +2553,10 @@ public struct LegacyConfigurationWorkspace: Sendable {
     }
 
     private mutating func reloadProjectionAfterAutomationEdit() throws {
-        var projected = try LegacyConfigurationProjection(document: document)
+        var projected = try LegacyConfigurationProjection(
+            document: document,
+            allowsNewerVersion: projection.allowsNewerVersion
+        )
         Self.applyStableIDs(
             to: &projected,
             serverIDs: &stableServerIDs,
